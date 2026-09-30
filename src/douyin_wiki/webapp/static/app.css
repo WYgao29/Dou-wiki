@@ -142,7 +142,6 @@ body:has(.app-shell[data-page="library"] .selection-bar:not(.hidden)) .toast {
 .app-shell.is-sidebar-collapsed .library-sidebar, .app-shell.is-panel-collapsed .side-panel {
   visibility: hidden; pointer-events: none;
 }
-.app-shell.is-sidebar-collapsed .sidebar-restore-button { display: inline-grid; }
 
 /* 6. Sidebar and reader navigation */
 
@@ -256,7 +255,6 @@ body:has(.app-shell[data-page="library"] .selection-bar:not(.hidden)) .toast {
 
 /* 7. Headers and right panel */
 
-.mobile-nav-button, .sidebar-restore-button { display: none; }
 .view-header, .library-toolbar, .selection-bar {
   position: sticky; z-index: var(--z-sticky); display: flex; align-items: center;
   gap: var(--space-2); min-height: 48px; background: var(--bg);
@@ -324,6 +322,7 @@ a { color: var(--accent-text); }
   display: inline-grid; place-items: center; flex: 0 0 auto; width: 32px; min-width: 32px;
   height: 32px; padding: 0;
 }
+.mobile-nav-button, .sidebar-restore-button { display: none; }
 .toolbar-button, .primary-button, .secondary-button, .text-button, .danger-button,
 .danger-text-button {
   padding: 0 var(--space-3); font: var(--fw-medium) var(--fs-13)/16px var(--font-ui);
@@ -1776,14 +1775,11 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   .view-header #topics-create-button { max-width: 160px; white-space: normal; }
 }
 @media (960px <= width < 1280px) {
-  .app-shell {
+  .app-shell, .app-shell.is-panel-collapsed {
     grid-template-columns: var(--sidebar-width) minmax(0, 1fr); grid-template-areas: "sidebar main";
   }
-  .app-shell.is-sidebar-collapsed {
+  .app-shell.is-sidebar-collapsed, .app-shell.is-sidebar-collapsed.is-panel-collapsed {
     grid-template-areas: "sidebar main"; grid-template-columns: 0 minmax(0, 1fr);
-  }
-  .app-shell.is-panel-collapsed, .app-shell.is-sidebar-collapsed.is-panel-collapsed {
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr); grid-template-areas: "sidebar main";
   }
   .side-panel {
     position: fixed; z-index: 80; inset: 0 0 0 auto; width: 360px; height: 100dvh;
@@ -1867,6 +1863,7 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   .reader-header { gap: var(--space-1); }
 }
 @media (width >= 960px) {
+  .app-shell.is-sidebar-collapsed .sidebar-restore-button { display: inline-grid; }
   .app-shell[data-page="article"]:not(.is-sidebar-collapsed) #back-library { display: none; }
 }
 @media (width < 640px) {

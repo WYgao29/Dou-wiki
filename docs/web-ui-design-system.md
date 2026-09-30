@@ -1,6 +1,6 @@
 # Web UI 设计系统（当前实现）
 
-2026-09-30，Web 0.2.39 已完成 Readwise 重设计的基础批次、应用外壳、资料库、阅读器、AI 对话、操作页面和样式清理（Phase 0–6）。目标规格与实施记录见 [重设计方案](web-ui-redesign-readwise.md)。本文只记录已经实现的行为。
+2026-09-30，Web 0.2.40 已完成 Readwise 重设计的基础批次、应用外壳、资料库、阅读器、AI 对话、操作页面和样式清理（Phase 0–6）。目标规格与实施记录见 [重设计方案](web-ui-redesign-readwise.md)。本文只记录已经实现的行为。
 
 ## 令牌与字体
 
@@ -162,3 +162,11 @@ CSS 从 Phase 5 的 109,731 字节降到 91,874 字节，减少 16.3%；移除�
 浏览器确认 body 14px / 20px、待办 13px 与 accent 圆点 / 右侧链接；键盘 Enter 打开文章后 main 为实际焦点，outline 为 none、box-shadow 为 none。独立新上下文中的资料库、任务、设置、专题列表 / 详情只请求 Inter，文章额外请求 Newsreader 与两个 Doku Serif SC 字重。最新亮暗资料库、文章与待办截图及记录在 `docs/screenshots/redesign/phase-0/`，此目录由脚本生成并被 Git 忽略。
 
 CSS 按 6.0 分成 12 节，媒体查询采用 range 语法；减少动效只有一块。保留 6 项 `!important`，分别用于 hidden、减少动效与打印隐藏，并注明覆盖原因。最终 `app.css` 为 92,996 bytes，`reading.css` 为 788 bytes，合计 93,784 bytes。相对 Phase 5 的 109,731 bytes 已减少，但补齐基础样式、可读性和分段后的体积仍高于 60 KB；该估算目标尚未达到。
+
+## Web 0.2.40 review 验证
+
+修正 CSS 规则顺序：960–1279px 下左右栏同时收起时，主栏从 x=0 占满视口，右栏覆盖层开合不改变主栏宽度。桌面隐藏手机导航入口，左栏恢复按钮仅在 ≥960px 且左栏收起时显示；从收起布局缩到手机时不会残留恢复按钮。
+
+外壳探针新增 960 / 1100 / 1279 / 1280 / 1440px 的四种开合组合，断言实际主栏位置、宽度、inert 与按钮显隐；另覆盖 800 / 390px 抽屉与桌面往返切换。各路由栏头、原有焦点和偏好回归通过，页面脚本错误、服务端失败与外部请求均为 0。1100px 左右栏收起的亮暗截图在 `docs/screenshots/redesign/phase-1/collapsed-sidebar-1100-{light,dark}.png`。
+
+457 项非 live 测试通过（1 项 live 排除），ruff 与构建通过，资料库、阅读器探针通过。当前 `app.css` 为 92,890 bytes，`reading.css` 为 788 bytes，合计 93,678 bytes；相对 0.2.39 减少 106 bytes。

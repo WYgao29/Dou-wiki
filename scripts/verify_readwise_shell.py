@@ -83,7 +83,35 @@ async def verify():
                     await page.wait_for_selector("#library-results:not(.hidden)")
                     await page.evaluate("document.fonts.ready")
 
+                async def assert_header_controls(*, drawer=False, sidebar_open=True):
+                    assert await page.locator("#nav-toggle").is_visible() == drawer
+                    assert await page.locator("#sidebar-restore").is_visible() == (
+                        not drawer and not sidebar_open
+                    )
+                    assert await page.locator("#sidebar-collapse").is_visible() == (
+                        not drawer and sidebar_open
+                    )
+
+                async def assert_shell(width, *, sidebar_open, panel_open):
+                    await assert_header_controls(sidebar_open=sidebar_open)
+                    assert await page.locator("#library-sidebar").evaluate("e => e.inert") == (
+                        not sidebar_open
+                    )
+                    assert await page.locator("#side-panel").evaluate("e => e.inert") == (
+                        not panel_open
+                    )
+                    main = await page.locator("#main-content").bounding_box()
+                    left = 240 if sidebar_open else 0
+                    right = 360 if panel_open and width >= 1280 else 0
+                    assert main and main["x"] == left and main["width"] == width - left - right, (
+                        width,
+                        sidebar_open,
+                        panel_open,
+                        main,
+                    )
+
                 await fresh(1440)
+                await assert_header_controls()
                 widths = await page.evaluate("""() => Object.fromEntries(
                   ['library-sidebar','main-content','side-panel'].map(id =>
                     [id, document.getElementById(id).getBoundingClientRect().width]))""")
@@ -142,6 +170,7 @@ async def verify():
                 ]:
                     await navigate(path)
                     await page.wait_for_selector(f"#{view}-view:not(.hidden) #chat-toggle")
+                    await assert_header_controls()
                 await navigate("/")
                 await page.locator("#main-content").focus()
                 await press("?")
@@ -167,6 +196,7 @@ async def verify():
                     await page.screenshot(path=out / f"library-{theme}.png", animations="disabled")
                 await navigate("/articles/dy-123")
                 await page.wait_for_selector(".article-body h2")
+                await assert_header_controls()
                 assert await page.locator("#panel-tabs [role=tab]").count() == 3
                 await page.click("#panel-tab-inspiration")
                 await press("ArrowRight")
@@ -198,6 +228,7 @@ async def verify():
 
                 for width in [1280, 1100, 800, 390]:
                     await fresh(width)
+                    await assert_header_controls(drawer=width < 960)
                     assert await page.evaluate(
                         "document.documentElement.scrollWidth <= innerWidth"
                     ), width
@@ -279,15 +310,69 @@ async def verify():
                             await page.locator("#panel-tab-chat").get_attribute("aria-selected")
                             == "true"
                         )
+
+                # Check all four collapse states at both sides of the desktop breakpoint.
+                collapse_widths = [1440, 1280, 1279, 1100, 960]
+                for width in collapse_widths:
+                    await fresh(width)
+                    await page.evaluate("window.Douku.panel.close()")
+                    await assert_shell(width, sidebar_open=True, panel_open=False)
+                    await page.click("#chat-toggle")
+                    await assert_shell(width, sidebar_open=True, panel_open=True)
+                    await page.click("#sidebar-collapse")
+                    await assert_shell(width, sidebar_open=False, panel_open=True)
+                    await page.click("#chat-close")
+                    await assert_shell(width, sidebar_open=False, panel_open=False)
+                    # Reopening an overlay must not restore an empty sidebar track.
+                    await page.click("#chat-toggle")
+                    await assert_shell(width, sidebar_open=False, panel_open=True)
+                    await page.click("#chat-close")
+                    await assert_shell(width, sidebar_open=False, panel_open=False)
+                    if width == 1100:
+                        for theme in ["light", "dark"]:
+                            await page.evaluate("theme => window.DoukuTheme.set(theme)", theme)
+                            await page.evaluate("document.activeElement?.blur()")
+                            await page.mouse.move(0, 0)
+                            await page.screenshot(
+                                path=out / f"collapsed-sidebar-1100-{theme}.png",
+                                animations="disabled",
+                            )
+                    if width != collapse_widths[-1]:
+                        await page.click("#sidebar-restore")
+                        await assert_shell(width, sidebar_open=True, panel_open=False)
+
+                # Resize from a collapsed desktop sidebar into a mobile drawer and back.
+                for width in [800, 390]:
+                    await page.set_viewport_size({"width": width, "height": 900})
+                    await page.wait_for_function(
+                        "() => document.querySelector('#nav-toggle').getClientRects().length > 0"
+                    )
+                    await assert_header_controls(drawer=True, sidebar_open=False)
+                    await page.click("#nav-toggle")
+                    assert not await page.locator("#library-sidebar").evaluate("e => e.inert")
+                    assert await page.locator("#main-content").evaluate("e => e.inert")
+                    await press("Escape")
+                    assert await page.evaluate("document.activeElement.id") == "nav-toggle"
+                    await page.set_viewport_size({"width": 1440, "height": 900})
+                    await page.wait_for_function(
+                        "() => document.querySelector('#sidebar-restore')"
+                        ".getClientRects().length > 0"
+                    )
+                    await assert_shell(1440, sidebar_open=False, panel_open=False)
+                await page.click("#sidebar-restore")
+                await assert_shell(1440, sidebar_open=True, panel_open=False)
                 assert not errors, errors
                 assert not failed, failed
                 assert not external, external
                 report = {
                     "desktopWidths": widths,
                     "responsiveWidths": [1280, 1100, 800, 390],
+                    "collapseWidths": collapse_widths,
                     "checks": [
                         "tab preference",
                         "collapse preference",
+                        "four collapse states and overlay geometry",
+                        "header control visibility and mobile resize",
                         "route headers",
                         "shortcuts",
                         "overlay dismissal",
