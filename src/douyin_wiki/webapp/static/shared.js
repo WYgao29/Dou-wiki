@@ -81,6 +81,7 @@
   };
   Douku.setPage = (name) => {
     Douku.$("app-shell")?.setAttribute("data-page", name);
+    window.dispatchEvent(new CustomEvent("douku:page", {detail: {page: name}}));
   };
   Douku.setNav = (id) => {
     Douku.qsa(".nav-item, .settings-nav-link").forEach((node) => node.classList.remove("active"));
@@ -124,10 +125,18 @@
     const routePath = String(path).split("?")[0];
     window.dispatchEvent(new CustomEvent("douku:route", {detail: {path: routePath}}));
   };
-  Douku.emptyState = (title, copy, actionLabel, action) => {
+  Douku.emptyState = (title, copy, actionLabel, action, icon) => {
     const section = Douku.node("section", null, "empty-state");
     const heading = Douku.node("h2", title);
     const text = Douku.node("p", copy);
+    if (icon) {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("aria-hidden", "true");
+      const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+      use.setAttribute("href", `/static/icons.svg#${icon}`);
+      svg.append(use);
+      section.append(svg);
+    }
     section.append(heading, text);
     if (actionLabel && action) {
       const button = Douku.node("button", actionLabel, "secondary-button");
@@ -162,5 +171,37 @@
     };
     dialog.showModal();
   });
+  Douku.icon = (name) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", `/static/icons.svg#${name}`); svg.append(use);
+    return svg;
+  };
+  Douku.bindCheckList = (root) => {
+    if (!root || root.dataset.checkListBound) return;
+    root.dataset.checkListBound = "true";
+    root.addEventListener("click", (event) => {
+      const input = event.target.closest("input[data-work]");
+      if (!input || input.disabled) return;
+      const inputs = [...root.querySelectorAll("input[data-work]")];
+      const at = inputs.indexOf(input);
+      const anchor = inputs.findIndex((node) => node.dataset.work === root.dataset.selectionAnchor);
+      input.selectionWorkIds = (event.shiftKey && anchor >= 0
+        ? inputs.slice(Math.min(at, anchor), Math.max(at, anchor) + 1) : [input])
+        .filter((node) => !node.disabled).map((node) => node.dataset.work);
+      if (!event.shiftKey || anchor < 0) root.dataset.selectionAnchor = input.dataset.work;
+      root.dataset.focusWork = input.dataset.work;
+    });
+    root.addEventListener("keydown", (event) => {
+      if (event.target.closest("a,button,textarea") || !["j", "k", "x"].includes(event.key.toLowerCase())) return;
+      const inputs = [...root.querySelectorAll("input[data-work]:not(:disabled)")];
+      const at = inputs.indexOf(document.activeElement);
+      if (!inputs.length) return;
+      event.preventDefault();
+      if (event.key.toLowerCase() === "x") inputs[Math.max(at, 0)].click();
+      else inputs[Math.max(0, Math.min(inputs.length - 1, at + (event.key.toLowerCase() === "j" ? 1 : -1)))].focus();
+    });
+  };
   window.Douku = Douku;
 })();

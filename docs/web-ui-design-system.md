@@ -1,95 +1,164 @@
-# Web UI 设计系统（Apple 风格重构）
+# Web UI 设计系统（当前实现）
 
-本文档记录 2026-09 Web 界面 Apple 风格视觉重构的设计规范，供后续维护参考。
-实现位于 `src/douyin_wiki/webapp/`（`templates/` + `static/`），无前端框架，
-Jinja2 模板 + 原生 JS + CSS 变量令牌。
+2026-09-30，Web 0.2.39 已完成 Readwise 重设计的基础批次、应用外壳、资料库、阅读器、AI 对话、操作页面和样式清理（Phase 0–6）。目标规格与实施记录见 [重设计方案](web-ui-redesign-readwise.md)。本文只记录已经实现的行为。
 
-## 设计令牌（app.css `:root` / `[data-theme="dark"]`）
+## 令牌与字体
+
+实现仍为 `src/douyin_wiki/webapp/` 下的 Jinja2 单模板、原生 JS 和主样式 `app.css`；阅读字体通过 `reading.css` 按需加载。
 
 | 令牌 | 亮色 | 暗色 |
 |---|---|---|
-| `--color-canvas` | `#f5f5f7`（Apple 标志灰） | `#000000`（纯黑） |
-| `--color-surface` | `#ffffff` | `#1c1c1e` |
-| `--color-text-primary` | `#1d1d1f` | `#f5f5f7` |
-| `--color-text-secondary` | `#6e6e73` | `#a1a1a6` |
-| `--color-primary` | `#0071e3` | `#0a84ff` |
-| `--color-primary-text` | `#0066cc` | `#409cff` |
-| 边框 | `rgba(0,0,0,.06/.12/.22)` | `rgba(255,255,255,.08/.14/.24)` |
+| `--bg` | `#FAF9F7` | `#161615` |
+| `--surface` | `#FFFFFF` | `#1D1D1B` |
+| `--surface-sunken` | `#F4F2EE` | `#232321` |
+| `--surface-hover` | `#F1EFEB` | `#242422` |
+| `--surface-selected` | `#ECEAE5` | `#2A2A27` |
+| `--text` | `#1A1A1A` | `#EDEBE7` |
+| `--text-2` | `#666666` | `#A3A09A` |
+| `--text-3` | `#6C6965` | `#99958D` |
+| `--accent` | `#2F6F4F` | `#6FB38E` |
+| `--accent-text` | `#2F6F4F` | `#7DBE9A` |
+| `--on-accent` | `#FFFFFF` | `#0F1F17` |
+| `--danger` | `#C62828` | `#F07167` |
+| `--border` | `#ECEAE6` | `#2A2926` |
+| `--border-strong` | `#D9D6D0` | `#3B3A36` |
 
-- 圆角：`--radius-xs/sm/md/lg/xl` = 6/9/12/16/22px，胶囊 `--radius-pill`
-- 阴影：`--shadow-card`（柔和静置）、`--shadow-card-lifted`（hover 浮起）、
-  `--shadow-popover`、`--shadow-dialog`
-- 毛玻璃：`--glass-canvas` / `--glass-surface` + `--glass-blur`（
-  `saturate(180%) blur(20px)`），用于侧栏、顶栏、对话面板、Toast
-- 动效：`--duration-fast/normal/panel` = 140/200/280ms，
-  `--ease-out: cubic-bezier(.23,1,.32,1)`（UI 入场），
-  `--ease-standard: cubic-bezier(.32,.72,0,1)`（抽屉），
-  `--ease-hover: ease`（颜色/边框）。命令面板零动画。导航选中不缩放。
-- 导航瓷贴色：`--nav-library/recent/favorite/inspiration/topic/trash/video/image/settings`，
-  亮暗双主题各有色值（iOS 系统色）
+组件直接引用新令牌，已删除 `--color-*`、`--font-size-*`、`--leading-*`、旧间距与 `--tile` 兼容名称。间距令牌只使用 `--space-1/2/3/4/6/8/12/16`，分别为 4/8/12/16/24/32/48/64px；主圆角 `--radius` 为 6px，小圆角 `--radius-sm` 为 4px，圆点使用 50%，平面容器为 0。字号统一使用 `--fs-12/13/14/16/20/28/40/reading`，行内 code 使用 `.875em`。边框、进度条、焦点环、图标与控件尺寸仍使用对应几何值。
 
-## 图标系统
+body 默认 UI 14px / 20px、常规字重，启用抗锯齿和 100% text-size-adjust；选区使用 accent 浅底。UI 使用本地 Inter 与系统中文无衬线字体；只有文章正文使用 Newsreader 与 Doku Serif SC（思源宋体子集），超出子集的字符回落系统宋体。正文 17px、行高 1.75、最大行宽 36em（612px）；h2 为 20px，h3 为 17px，均使用阅读字体。字标、资料库、任务、设置与专题使用 UI 字体；独立浏览器上下文中只有文章页请求 Newsreader / Doku Serif SC。字体生成来源、许可和哈希见 [字体说明](../scripts/fonts/README.md)。
 
-侧栏、顶栏、对话区图标全部为**内联实心 SVG**（SF Symbols 风格），
-不再引用 `icons.svg` 精灵图（精灵图仍服务于 JS 渲染的小型内联图标）。
+状态徽章使用 `--status-*` 令牌，仅限任务列表与详情；授权、设置与系统状态使用中性色。组件内颜色通过令牌或 `color-mix` 引用，直接颜色值集中在亮暗主题令牌块。普通过渡为 100/160ms，抽屉为 240ms；阴影只用于浮层，焦点使用 `--focus-ring`。
 
-约定：
+## 已实现的视觉与布局
 
-- 24×24 viewBox，统一包裹 `<g fill="currentColor" stroke="none">`；
-  `fill/stroke` 属性写在 `<g>` 上，可压过 `app.css` 全局 `svg` 规则的继承值
-- 细节用 `fill-rule="evenodd"` 镂空（如钟表指针、垃圾桶槽、播放三角），
-  镂空处透出瓷贴底色，选中反白时自动反色，无需双套图标
-- 次要层级用 `opacity=".35/.45/.6"` 同色系半透明
+- 主按钮使用纯色 accent；导航取消彩色瓷贴背景；模板与对话欢迎区使用 `icons.svg` 描边图标。
+- UI 字体的文字字标“抖库”替代品牌图片。`brand-mark.png` 保留为未使用资产。
+- 移除渐变、毛玻璃、卡片阴影、按压缩放和卡片阶梯入场；焦点环、浮层阴影与封面视图过渡保留。
+- 设置首页和 404 视图已移入 `<main>`，与其他页面使用同一主内容容器。
+- 桌面 ≥1280px 使用常驻三栏：240px 左栏、自适应中栏、360px 右栏。960–1279px 的右栏默认收起，打开为无背幕覆盖层；<960px 两侧为带背幕的抽屉，<640px 右栏为全屏 sheet。
+- 每个视图有 48px sticky 栏头；资料库控件分两行。共享侧栏按钮移动到当前栏头，只有一组 DOM id。窄中栏搜索可展开，排序收为图标，手机专题多选保留取消与下一步底栏。
+- 资料库右栏为信息 / AI 对话，文章为信息 / 灵感 / AI 对话，专题详情为来源 / AI 对话，其他页面为 AI 对话。每种页面记忆 Tab；操作页默认收起不写入开合偏好。
+- 隐藏区域设 inert；抽屉焦点陷阱覆盖右栏 Tabs 与当前面板，Tab 切换不会留下隐藏焦点，关闭后回到触发按钮。
+- 信息面板随资料库焦点显示完整条目，作者与标签可直接筛选；无结果时显示全库统计。文章灵感可添加并跳转原句 / 时间码；专题来源在详情页右栏，可直接启停。
 
-## 侧栏瓷贴语言
+## 组件尺寸与状态
 
-- 导航图标为 28px 圆角灰底瓷贴；仅当前项用主色实心 + 白图形。Chrome 单色，封面才是彩的。
-- 侧栏分组：资料（资料库/最近/收藏/灵感）→ 已保存视图 → 标签 → 操作（导入/任务/专题/废纸篓）→ 设置。
-- 对话栏默认收起，桌面从右侧 overlay 滑入，不占第三列。
-- hover 不位移导航文字，且包在 `@media (hover: hover) and (pointer: fine)`；可点按元素 `:active` 为 `scale(.97)`。
-- 页面加载：导航不做入场动画。⌘K 命令面板无动画。
+| 组件 | 尺寸与布局 | 状态约定 |
+|---|---|---|
+| 左栏 / 中栏 / 右栏 | 240px / 自适应 / 360px | 1280px 以下右栏覆盖，960px 以下抽屉 |
+| 栏头 / 面板 Tab | 48px | sticky 栏头；当前 Tab 下划线 |
+| 按钮 / 图标按钮 | 32px，紧凑动作 28px | 纯色主按钮，中性 hover；展开 / 选中使用 accent |
+| 资料行 | 桌面 88px，手机 64px | 焦点竖条，hover / 焦点显示动作 |
+| 资料封面 | 桌面 48×64px，手机 36×48px | 3:4；专辑墙列宽至少 160px |
+| 正文 / 文章封面 | 17px / 1.75 / 36em；96×128px | 宋体；手机封面 72×96px |
+| 会话 / 上下文 / 输入区 | 40px / 32px / 1–6 行 | 生成期间保留草稿并锁定会话切换 |
+| 导入方式 / 专题 / 废纸篓 | 56px / 64px / 64px | 行式布局，清单保留真实复选框 |
+| 表单 / 命令面板 / 筛选浮层 | 最大 640px / 560px / 320px | 适应窄屏，输入和弹窗优先处理快捷键 |
 
-## 视图过渡（卡片 → 文章）
+## 资料库
 
-`app.js openArticle()` 使用 `document.startViewTransition`（Safari 18+/Chrome），
-不支持时直接切换，不整页淡入。关键规则（`app.css`）：
+首次打开默认列表；UI 偏好版本迁移到 `3` 时重置旧视图，之后记忆用户选择，URL 的 `view=gallery` 优先。桌面资料行高 88px、封面 48×64px；手机行高 64px、封面 36×48px，隐藏摘要。标题和摘要各单行省略，元信息保留来源、博主、类型、日期、灵感和最多两个标签。
 
-- 专辑墙封面与文章页 `.article-cover` 共享 `viewTransitionName: "active-album-cover"`，
-  两者都是 3:4，组动画 280ms `--ease-standard`，旧/新封面不做交叉淡化
-- 侧栏、顶栏、对话栏有独立 `view-transition-name`，过渡期间保持原地
-- 根图层仅 160ms 淡入淡出（正文区域），`mix-blend-mode: normal`
-- 过渡快照生成前调用 `hideCardOverlays()` 隐藏卡片浮动按钮
-  （收藏/专题指示器），避免其留在根图层形成"残影"；结束恢复 `visibility`
+来源 Tabs 提供全部 / 视频 / 图文，并写入 URL。筛选面板宽 320px；博主超过 8 位时提供搜索，类型和标签使用多选框。最近加入按过去 7 天的采集时间筛选；侧栏显示全库数量，任务数量与待办条使用同一个 overview 结果；待办条为 13px，左侧 6px accent 圆点，右侧文字链接。
 
-## 品牌资产
+焦点行使用墨绿竖条，右栏同步封面、摘要、日期、标签、灵感与媒体状态；行 hover 或包含焦点时显示收藏和更多菜单。只读 Markdown 可以阅读和筛选，不能收藏、删除、重新分析或作为专题来源。专题选择支持跨筛选，提交全部已选来源。
 
-- `static/brand-mark.png`：256×256 TikTok 风 logo（黑底 + 白色音符 +
-  青/品红错位重影），AI 生成后经过去水印与压缩；用于主页面与设置页品牌区
-- AI 相关标识（对话区徽标、折叠入口 FAB）使用紫色渐变
-  `linear-gradient(180deg, #c96ef6, #a83ae6)` + 顶部高光 + 同色投影
+专辑墙使用 3:4 封面、160px 最小列宽和 24px 间距，保留收藏角标，取消入场动画和缩放。列表支持 `j/k/↑/↓`、`Home/End`、`Enter/o`、`f` 收藏、`x` 选择、`v` 切换视图、`Shift+F` 筛选；专辑墙方向键按网格移动。
 
-## 材质与组件
+## 阅读器
 
-- 弹窗：背景 `blur(10px) saturate(160%)` 磨砂，`dialog-enter` 弹性入场
-- 浮层（筛选/对话菜单）：opacity + `scale(.97)` 的 CSS transition，可中断
-- 消息气泡：用户=主色实心，AI=白底 + `--shadow-card`；发送钮为 32px
-  圆形，按下 `scale(.97)`，hover 不覆盖 transform
-- 所有动效受全局 `prefers-reduced-motion` 规则约束
+文章页左栏只有一行栏头：左侧“← 资料库”，右侧折叠按钮，隐藏品牌行；下面目录基于正文 h2 / h3 生成；当前章节随滚动高亮，点击后标题保持在 48px 栏头下方。程序聚焦 main 不显示整栏焦点框，交互控件仍保留键盘焦点环。正文使用宋体 17px / 1.75、最大宽 612px；主标题为宋体 28px，封面 96×128px（手机 72×96px）。章节时间码去除 ▶，保留等宽数字。封面过渡继续使用原有 view transition。
+
+文章操作集中在栏头：上一篇 / 下一篇按当前筛选排序，收藏、原作品与更多菜单保留读写限制。更多菜单提供重新分析、复制文章链接和删除；信息面板不重复封面 / 标题，可复制来源文件路径。顶部 2px 进度条随中栏滚动更新。
+
+段落导航按文档顺序遍历标题、段落、嵌套列表项、引用、表格和代码；引用 / 表格 / 代码内部不重复停留。点击正文或按 `j/k/↑/↓` 移动墨绿竖条；`n/p` 切换相邻资料，`u/Esc` 返回列表并恢复滚动与焦点。控件、输入框、弹窗和菜单优先处理自己的按键。
+
+`Shift+I` 打开信息，`Shift+N` 打开灵感并添加，`Shift+C` 聚焦 AI 输入，`Shift+O` 打开原作品。灵感保留逐字文字、原句和时间范围，点击可定位正文并高亮；只读资料隐藏添加入口。保存后保留阅读滚动和焦点块，窄屏灵感抽屉维持打开。页面切换会断开目录观察器，过时的文章响应不能重新打开已离开的页面。
+
+## AI 对话
+
+会话行高 40px，选择框占满剩余空间，旁边保留新建和菜单；32px 上下文行使用中性文字和线性图标，专题使用 `layers`。空会话按资料库 / 文章 / 专题提供三条示例问题，点击只填入输入框；只读资料沿用全库对话范围。
+
+用户消息为浅灰底、右对齐，最大宽度 85%；助手回答为 14px 无边框正文，段落间距 8px、列表缩进 24px。流式回答末尾显示 8×16px 光标；系统偏好减少动效时保持静态。回答完成后显示墨绿 `[n]` 引用编号、文章标题、位置与原作品链接，以及常显两行证据摘要；点击文章引用定位并高亮正文。
+
+助手回答的保存按钮在 hover / 焦点时显示，最后一条常显；灵感使用 `quote`，专题笔记使用 `layers`。保存仍需逐字确认；导航后更新可用操作，只读文章隐藏保存入口。未配置模型显示中性通知条和“去设置”。
+
+输入框支持 1–6 行，高度最多 160px，Enter 发送、Shift+Enter 换行，并保留中文输入法组合输入；发送按钮为 28px 向上箭头，生成期间使用方形图标并锁定发送和会话切换，未发送草稿保持原样。底部统一显示键盘与文字证据提示。流式失败和连接提前结束保留错误行；历史切换忽略过时响应，避免旧消息覆盖当前会话。
+
+## 操作页面
+
+导入中心提供 56px 方式行、最多 5 条最近任务和本地链接识别；粘贴只选择导入方式并预填表单。单条表单最大宽 640px，保留高级处理选项。博主与收藏清单使用 16px 复选框和紧凑行，底部显示整个清单的已选数量；Shift 点击一次提交当页范围内的可选作品，`j/k` 移动、`x` 勾选，刷新后恢复焦点。不支持的作品、已入库限制、清单不完整的接受条件沿用原有 API。
+
+任务列表取消卡片外框，使用状态 / 标题与消息 / 操作与时间三列；进行中任务显示 2px 进度，详情显示 4px 进度与分区。状态色只用于任务列表和详情的徽章；授权、系统与配置状态使用中性文字和图标，真实错误仍使用 danger。任务支持 `j/k/↑/↓`、Enter 打开和 `r` 重试，事件刷新按任务 id 恢复焦点。
+
+专题列表为 64px 行；详情栏头显示实际专题名，标题和成果使用 UI 字体，超过 12 行的成果可展开全文。来源只放在右栏，启停立即保存并更新专题范围，刷新后保留滚动、来源焦点和手机抽屉。设置首页四行并行读取当前值，失败显示“—”；子页采用无卡片分区，系统统计条桌面四列、960px 以下两列。维护先预览再经既有确认流程执行。
+
+废纸篓为 64px 行，恢复与删除在 hover / 焦点时显示、触屏常显；`j/k` 移动、`x` 选择，连续 Shift+j/k 从同一锚点连选，批量操作保留确认。命令面板宽 560px，输入框隐藏原生搜索清除 ×；`>` 前缀或无匹配文章时显示导入、任务、新对话、主题与快捷键命令，快捷键表补充任务和清单操作。
+
+## 正文与交互契约
+
+`rendering.py` 在 Markdown 转 HTML 前移除封面，并在解析后的 blockquote 中规范化 callout：标题只保留一份加粗的“AI 推断”，多行正文单独成段。只有标题为“与灵感的关系”、内容为空或“无”的提示会省略；普通引用、其他推断正文和代码示例保留，原 Markdown 不改写。前端不得再按首个图片段落隐藏正文图片，也不得假设 HTML 中仍含 `[!note]`。
+
+既有路由、收藏、专题选择、任务与对话 API 保持原有语义。全局支持 `⌘/Ctrl+K` 搜索、`/` 当前搜索、`[` / `]` 开合侧栏、`?` 快捷键表和 `⌘/Ctrl+I` 导入菜单。1 秒内的 `g l/r/f/i/t/j/x/s` 分别进入资料库、最近、收藏、灵感、专题、任务、废纸篓和设置。输入控件内不触发单键快捷键。
+
+Esc 依次关闭当前对话框、菜单、抽屉 / 右侧覆盖层；文章页最后返回资料库。阅读快捷键见上节。
+
+## 快捷键
+
+| 范围 | 按键 | 行为 |
+|---|---|---|
+| 全局 | `⌘/Ctrl+K`、`/`、`?` | 搜索 / 当前搜索 / 快捷键表 |
+| 全局 | `[`、`]`、`⌘/Ctrl+I` | 左栏 / 右栏 / 导入菜单 |
+| 全局 | `g l/r/f/i/t/j/x/s`（1 秒内） | 资料库 / 最近 / 收藏 / 灵感 / 专题 / 任务 / 废纸篓 / 设置 |
+| 列表与专辑墙 | `j/k/↑/↓`、`Home/End`、`Enter/o` | 移动焦点与打开；专辑墙方向键按网格移动 |
+| 资料库 | `f`、`x`、`v`、`Shift+F` | 收藏 / 选择 / 切换视图 / 筛选 |
+| 阅读器 | `j/k/↑/↓`、`n/p`、`u/Esc` | 段落 / 相邻文章 / 返回并恢复位置 |
+| 阅读器 | `Shift+I/N/C/O` | 信息 / 添加灵感 / AI 输入 / 原作品 |
+| 博主、收藏清单 | `j/k`、`x`、Shift 点击 | 移动 / 勾选 / 当页范围选择 |
+| 任务 | `j/k/↑/↓`、Enter、`r` | 移动 / 打开 / 重试 |
+| 废纸篓 | `j/k`、`x`、`Shift+j/k` | 移动 / 选择 / 连续范围选择 |
+| AI 输入 | Enter、Shift+Enter | 发送 / 换行；保留中文输入法组合输入 |
 
 ## 测试契约
 
-`tests/test_web.py` 断言的前端契约（改动时需同步维护）：
+| 契约 | 当前断言与验证 |
+|---|---|
+| 路由与节点 | 保留业务 id、`data-route`、`data-section`、只读与确认流程；settings / 404 位于 main |
+| CSS 令牌 | `test_web.py` 改为断言 `--bg:`；正文 `max-inline-size: var(--measure)`；保留封面比例与 view transition |
+| 浮层层级 | `.library-sidebar`、`.library-main`、`.filter-popover` 的 position / z-index 断言允许空白和换行；验证固定筛选浮层位置 |
+| JS 与偏好 | `UI_PREFERENCE_VERSION = "3"`；保留封面构建、业务管理权限、消息保存与用量契约 |
+| 静态资源 | 字体本地加载，页面不引用 CDN；wheel 包含当前模板、CSS、JS、图标和字体 |
+| 最终样式审计 | 无旧兼容名称、未声明变量、组件内直接颜色、渐变、毛玻璃或缩放；字号、间距、圆角限定在当前集合 |
+| 页面对照 | 102 组清理前后计算样式对照，布局与排版差异为 0；展开按钮与导入提示的颜色归入新令牌 |
 
-- CSS 含 `--color-canvas`、`[data-theme="dark"]`、`.gallery-cover`、
-  `.article-cover`、`aspect-ratio: 3 / 4`、`.article-body { max-inline-size: 40rem`、
-  `::view-transition-group(active-album-cover)`
-- HTML 含各 `aria-label`（资料库导航/抖库 AI 对话/专辑墙视图等）、
-  `data-theme-select`、`id="chat-close"`、`id="applied-filters"`
+## 验证
 
-## 本地预览（隔离运行实例）
-
-```bash
-# 先准备 .test-web/config.toml，使用独立临时 Vault，并将 web.port 设为 8766。
-DOUYIN_WIKI_CONFIG=$PWD/.test-web/config.toml uv run douyin-wiki web run
-uv run pytest tests/test_web.py
+```sh
+uv run ruff check .
+uv run pytest -q -m 'not live'
+uv run python scripts/verify_readwise_foundation.py
+uv run python scripts/verify_readwise_shell.py
+uv run python scripts/verify_readwise_library.py
+uv run python scripts/verify_readwise_reader.py
+uv run python scripts/verify_readwise_chat.py
+uv run python scripts/verify_readwise_operations.py
+uv run python scripts/verify_readwise_cleanup.py
+uv build
 ```
+
+浏览器验证使用临时 Vault 与模拟模型，并拦截全部外部请求；输出正式页面的亮暗主题截图和验证记录到 `docs/screenshots/redesign/phase-0/`；应用外壳验证覆盖五种宽度、路由、Tab/开合偏好、快捷键、焦点陷阱与手机专题选择，输出到 `docs/screenshots/redesign/phase-1/`；资料库验证覆盖默认列表、焦点与信息同步、菜单和筛选、只读限制、跨筛选专题创建、删除与空状态、320–1440px 布局，输出到 `docs/screenshots/redesign/phase-2/`；阅读器验证包含目录、排版、嵌套段落、阅读进度、恢复位置、灵感保存与引用、只读边界、延迟响应、Chromium 封面过渡及窄屏抽屉，输出到 `docs/screenshots/redesign/phase-3/`。AI 对话验证使用真实本地 HTTP/SSE，覆盖四种范围、流式 / 错误 / 重试、保存与引用、历史切换竞态和六种宽度，输出到 `docs/screenshots/redesign/phase-4/`。操作页面验证覆盖 14 个路由、六种宽度、真实批量选择 / 重试 / 恢复 API、任务事件刷新、专题来源与长成果、设置当前值及命令面板，输出到 `docs/screenshots/redesign/phase-5/`。Safari 18 的原生过渡尚未实测。阶段目录表示验证范围，重新运行脚本会用当前版本更新产物。静态原型及其截图另放在 `docs/prototypes/readwise/` 与 `docs/screenshots/redesign/prototype/`，不代表全部功能已实现。
+
+Phase 6 完整回归通过 444 项非 live 测试（1 项 live 未运行），六组既有浏览器探针均通过。最终审计覆盖 18 个路由 × 1440 / 1100 / 390px × 亮暗主题，共 108 组；桌面各页与三个主要手机视图的截图在 `docs/screenshots/redesign/phase-6/`。次级正文 `--text-2` 对 `--bg` 的对比度为亮色 5.065:1、暗色 6.943:1；此段为 Phase 6 历史记录；review 后的辅助正文对比度见下方。页面脚本错误、外部请求与服务端错误均为 0。
+
+CSS 从 Phase 5 的 109,731 字节降到 91,874 字节，减少 16.3%；移除旧选择器、两组未使用动画与 138 项已被覆盖的声明，并合并共享规则。保留仍使用的导入菜单 `.import-choice`、复选框 `.topic-selection-indicator` 和既有业务状态。早期“小于 60 KB”是估算，当前未达到；后续体积优化以此实测值为基线。清理统计、计算样式差异和最终审计分别见 `phase-6/cleanup.json`、`phase-6/comparison.json`、`phase-6/verification.json`。
+
+
+## Web 0.2.39 review 验证
+
+完整非 live 回归 457 项通过、1 项 live 排除，`uv run ruff check .` 与 `uv build` 通过。新增 TestClient 回归覆盖三栏外壳、资料库 / 文章 / 专题的实际右栏 Tabs、settings / 404 的 main 归属以及本地字体与非文章页阅读字体引用。七组浏览器脚本通过，清理审计覆盖 18 个路由、108 组亮暗 / 响应式组合。
+
+`--text-3`：亮色 `#6C6965` 对 `--bg` 为 5.189:1，实际五种背景最低 4.541:1；暗色 `#99958D` 对 `--bg` 为 6.069:1，最低 4.824:1。次级正文亮色也加深到 `#666666`，选中底色达到 4.776:1；暗色保持 `#A3A09A`。placeholder 显式使用 `--text-3` 且 opacity 为 1。
+
+浏览器确认 body 14px / 20px、待办 13px 与 accent 圆点 / 右侧链接；键盘 Enter 打开文章后 main 为实际焦点，outline 为 none、box-shadow 为 none。独立新上下文中的资料库、任务、设置、专题列表 / 详情只请求 Inter，文章额外请求 Newsreader 与两个 Doku Serif SC 字重。最新亮暗资料库、文章与待办截图及记录在 `docs/screenshots/redesign/phase-0/`，此目录由脚本生成并被 Git 忽略。
+
+CSS 按 6.0 分成 12 节，媒体查询采用 range 语法；减少动效只有一块。保留 6 项 `!important`，分别用于 hidden、减少动效与打印隐藏，并注明覆盖原因。最终 `app.css` 为 92,996 bytes，`reading.css` 为 788 bytes，合计 93,784 bytes。相对 Phase 5 的 109,731 bytes 已减少，但补齐基础样式、可读性和分段后的体积仍高于 60 KB；该估算目标尚未达到。

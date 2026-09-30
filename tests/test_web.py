@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -472,7 +473,7 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
         assert "douyin-wiki.theme" in theme.text
         stylesheet = client.get("/static/app.css")
         assert stylesheet.status_code == 200
-        assert "--color-canvas" in stylesheet.text
+        assert "--bg:" in stylesheet.text
         assert 'data-theme="dark"' in stylesheet.text
         assert ".gallery-cover" in stylesheet.text
         assert "aspect-ratio: 3 / 4" in stylesheet.text
@@ -481,14 +482,16 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
         assert ".article-cover-frame" not in stylesheet.text
         assert ".article-cover" in stylesheet.text
         assert "--font-reading:" in stylesheet.text
-        assert ".article-body { max-inline-size: 40rem" in stylesheet.text
+        assert re.search(
+            r"\.article-body\s*\{\s*max-inline-size: var\(--measure\)", stylesheet.text
+        )
         assert "::view-transition-group(active-album-cover)" in stylesheet.text
         assert "view-transition-name: app-sidebar" in stylesheet.text
         assert ".message.is-new" in stylesheet.text
         script = client.get("/static/app.js")
         assert script.status_code == 200
         assert 'uiVersion: "douyin-wiki.ui-version"' in script.text
-        assert 'const UI_PREFERENCE_VERSION = "2"' in script.text
+        assert 'const UI_PREFERENCE_VERSION = "3"' in script.text
         assert 'makeCover(item, "gallery-cover")' in script.text
         assert 'makeCover(item, "article-cover")' in script.text
         assert 'hero.querySelector(".article-cover")' in script.text
@@ -524,11 +527,14 @@ def test_web_filter_popover_can_paint_above_sidebar(tmp_path: Path) -> None:
         script = client.get("/static/app.js")
 
     assert stylesheet.status_code == 200
-    assert ".library-sidebar { position: relative; z-index: 0;" in stylesheet.text
-    assert ".library-main { position: relative; z-index: 1; min-width: 0;" in stylesheet.text
-    assert (
-        ".filter-popover { position: fixed; z-index: 50; top: var(--filter-popover-top"
-    ) in stylesheet.text
+    assert re.search(r"\.library-sidebar\s*\{\s*position: relative;\s*z-index: 0;", stylesheet.text)
+    assert re.search(
+        r"\.library-main\s*\{\s*position: relative;\s*z-index: 1;\s*min-width: 0;", stylesheet.text
+    )
+    assert re.search(
+        r"\.filter-popover\s*\{\s*position: fixed;\s*z-index: 50;\s*top: var\(--filter-popover-top",
+        stylesheet.text,
+    )
 
     assert script.status_code == 200
     assert "function positionFilterPopover()" in script.text
@@ -718,9 +724,7 @@ def test_trash_batch_restore_and_permanent_delete(tmp_path: Path) -> None:
             "/api/trash/batch/restore", json={"confirmed": False, "trash_ids": trash_ids}
         )
         assert rejected.status_code == 400
-        empty = client.post(
-            "/api/trash/batch/restore", json={"confirmed": True, "trash_ids": []}
-        )
+        empty = client.post("/api/trash/batch/restore", json={"confirmed": True, "trash_ids": []})
         assert empty.status_code == 422
 
         restored = client.post(
@@ -1058,16 +1062,22 @@ def test_local_host_and_same_origin_are_enforced(tmp_path: Path) -> None:
         )
         assert blocked_referer.status_code == 403
         # Fetch Metadata also rejects cross-site writes that omit both headers.
-        assert client.post(
-            "/api/chat/sessions",
-            json={"scope": "library"},
-            headers={"sec-fetch-site": "cross-site"},
-        ).status_code == 403
-        assert client.post(
-            "/api/chat/sessions",
-            json={"scope": "library"},
-            headers={"sec-fetch-site": "same-site"},
-        ).status_code == 403
+        assert (
+            client.post(
+                "/api/chat/sessions",
+                json={"scope": "library"},
+                headers={"sec-fetch-site": "cross-site"},
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                "/api/chat/sessions",
+                json={"scope": "library"},
+                headers={"sec-fetch-site": "same-site"},
+            ).status_code
+            == 403
+        )
         # Matching Origin is accepted.
         assert (
             client.post(

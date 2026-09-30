@@ -7,6 +7,8 @@
   let current = null;
   let timer = null;
   let generation = 0;
+  let selectionBusy = false;
+  D.bindCheckList(D.$("creator-items"));
   const settle = new Set([
     "needs_selection", "failed", "completed", "completed_with_warnings",
     "needs_auth", "needs_review", "waiting_confirmation",
@@ -85,12 +87,6 @@
     D.$("creators-list")?.classList.toggle("hidden", focused);
     const bar = D.$("creator-focus-bar");
     if (bar) bar.classList.toggle("hidden", !focused);
-    const lead = D.$("creators-lead");
-    if (lead) {
-      lead.textContent = focused
-        ? "从任务进来后只保留选片。新的清点表单和已同步博主先收起。"
-        : "输入主页或该博主任意作品。清点后才能选择和确认。";
-    }
     if (!focused) return;
     const job = current?.job;
     const name = job?.display_title || job?.result?.creator_name || "这位博主";
@@ -117,7 +113,7 @@
       return;
     }
     root.replaceChildren(...data.items.map((creator) => {
-      const card = D.node("article", null, "status-card");
+      const card = D.node("article", null, "creator-row");
       card.append(
         D.node("h2", creator.nickname),
         D.node("p", `${creator.work_count || 0} 个作品 · 上次同步 ${beijingStamp(creator.last_synced_at)}`),
@@ -176,25 +172,36 @@
       polling ? "正在清点，大约每 2.5 秒自动刷新。" : "",
     ].filter(Boolean).join(" ");
     D.$("creator-partial-row").hidden = !current.partial || status !== "needs_selection";
-    const canSelect = status === "needs_selection";
+    const selected = Number(summary.selected || 0);
+    D.$("creator-selected-count").textContent = `已选 ${selected} / 共 ${Number(summary.total || 0)}`;
+    const canSelect = status === "needs_selection" && !selectionBusy;
     for (const item of current.items || []) {
-      const row = D.node("label", null, "work-row");
+      const row = D.node("label", null, "work-row row--check");
       const input = document.createElement("input");
       input.type = "checkbox";
       const work = item.work || item;
       const inLibrary = Boolean(work.entry_id);
+      input.dataset.work = work.work_id;
+      input.setAttribute("aria-label", `选择 ${work.title || "未命名作品"}`);
       input.checked = !inLibrary && work.decision === "selected";
       input.disabled = !canSelect || inLibrary || work.decision === "imported";
       input.addEventListener("change", async () => {
-        await D.api(`/api/creator-imports/${encodeURIComponent(jobId)}/selection`, {
-          method: "POST",
-          body: JSON.stringify({
-            decision: input.checked ? "selected" : "skipped",
-            work_ids: [work.work_id],
-          }),
-        });
-        await loadInventory();
-        schedule();
+        if (selectionBusy) return;
+        const decision = input.checked ? "selected" : "skipped";
+        selectionBusy = true;
+        root.querySelectorAll("input").forEach((node) => { node.disabled = true; });
+        try {
+          await D.api(`/api/creator-imports/${encodeURIComponent(jobId)}/selection`, {
+            method: "POST", body: JSON.stringify({decision, work_ids: input.selectionWorkIds || [work.work_id]}),
+          });
+        } catch (error) { D.toast(error.message); }
+        finally {
+          selectionBusy = false;
+          try { await loadInventory(); } catch (error) { renderInventory(); D.toast(error.message); }
+          const focused = [...root.querySelectorAll("input[data-work]")].find((node) => node.dataset.work === root.dataset.focusWork);
+          if (document.activeElement === document.body) focused?.focus({preventScroll: true});
+          schedule();
+        }
       });
       const published = work.published_at ? beijingStamp(work.published_at).replace("（北京时间）", "").trim() : "";
       const duration = clockFromSeconds(work.duration_seconds);
@@ -211,7 +218,7 @@
       root.append(D.node("p", polling ? "清点还没写出作品，请稍等自动刷新。" : "当前筛选下没有作品。"));
     }
     D.$("creator-page").textContent = `第 ${current.page || page} 页`;
-    D.$("creator-confirm").disabled = !canSelect;
+    D.$("creator-confirm").disabled = !canSelect || !selected || (current.partial && !D.$("creator-partial").checked);
     D.$("creator-select-all").disabled = !canSelect;
     D.$("creator-exclude-all").disabled = !canSelect;
     applyFocusMode();
@@ -275,6 +282,8 @@
     }
   });
 
+  D.$("creator-partial")?.addEventListener("change", renderInventory);
+  ["creator-select-all", "creator-exclude-all"].forEach((id) => { D.$(id).title = D.$("creator-select-hint").textContent; });
   D.$("creator-form")?.addEventListener("submit", (event) => {
     startInventory(event).catch((error) => D.toast(error.message));
   });

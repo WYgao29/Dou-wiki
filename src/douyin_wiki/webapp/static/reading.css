@@ -1,0 +1,23 @@
+/* Reading fonts: attached only while an article is open. */
+@font-face {
+  font-family: "Newsreader";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("/static/fonts/Newsreader-Variable.woff2") format("woff2");
+  unicode-range: U+0000-02FF, U+2000-206F, U+20AC, U+2122;
+}
+@font-face {
+  font-family: "Doku Serif SC";
+  font-weight: 400;
+  font-display: swap;
+  src: local("Noto Serif SC"), local("Source Han Serif SC"), local("Source Han Serif SC VF"),
+       url("/static/fonts/DokuSerifSC-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Doku Serif SC";
+  font-weight: 600;
+  font-display: swap;
+  src: local("Noto Serif SC SemiBold"), local("Source Han Serif SC SemiBold"),
+       url("/static/fonts/DokuSerifSC-600.woff2") format("woff2");
+}

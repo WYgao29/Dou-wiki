@@ -184,3 +184,61 @@ async def test_wikilink_navigation_keeps_unsafe_paths_blocked(service) -> None:
     assert f'href="/articles/{entry.id}"' in rendered
     assert rendered.count('href="#"') == 4
     assert "javascript:" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected", "labels"),
+    [
+        (
+            "> [!note] AI 推断：与灵感的关系\n> 把问题放回阅读上下文。",
+            "<p><strong>AI 推断</strong> · 与灵感的关系</p>\n<p>把问题放回阅读上下文。</p>",
+            1,
+        ),
+        (
+            "> [!note] **AI 推断** · 有待验证\n> **保留原文**。",
+            "<p><strong>AI 推断</strong> · 有待验证</p>\n<p><strong>保留原文</strong>。</p>",
+            1,
+        ),
+        (
+            "> [!note]\n> 下一行是推断正文。",
+            "<p><strong>AI 推断</strong></p>\n<p>下一行是推断正文。</p>",
+            1,
+        ),
+        (
+            "前文。\n\n> [!note] AI 推断：与灵感的关系\n> 无\n\n后文。",
+            "<p>前文。</p>\n<p>后文。</p>",
+            0,
+        ),
+        (
+            "> [!note] AI 推断：与灵感的关系\n>\n> 无",
+            "",
+            0,
+        ),
+        (
+            "> [!note] AI 推断：与灵感的关系\n>\n> 无\n>\n> 仍需保留的说明。",
+            "<p>仍需保留的说明。</p>",
+            1,
+        ),
+        (
+            "> 普通引用：无\n\n> **AI 推断** · 原有引用标题",
+            "<p>普通引用：无</p>",
+            1,
+        ),
+        (
+            "```markdown\n> [!note] AI 推断：与灵感的关系\n> 无\n```",
+            "&gt; [!note] AI 推断：与灵感的关系\n&gt; 无",
+            0,
+        ),
+    ],
+)
+def test_article_callouts_keep_content_without_duplicate_or_empty_labels(
+    service, markdown, expected, labels
+) -> None:
+    catalog = LibraryCatalog(service.config.vault_path, service.database)
+    rendered = render_article(markdown, source_path="wiki/sources/example.md", catalog=catalog)
+    assert expected in rendered
+    assert rendered.count("<strong>AI 推断</strong>") == labels
+    if not rendered.strip():
+        assert markdown.startswith("> [!note] AI 推断：与灵感的关系")
+    if "后文。" in markdown or expected == "":
+        assert "<blockquote>" not in rendered

@@ -15,7 +15,7 @@
       ["auth-video-card", "视频下载授权"],
       ["auth-douyin-card", "抖音账号授权"],
     ].forEach(([id, title]) => {
-      const card = D.node("article", null, "status-card");
+      const card = D.node("article", null, "operation-section");
       card.append(D.node("h2", title), D.node("p", "正在读取授权状态…", "hint-copy"));
       const pulse = D.node("div", null, "skeleton-row");
       card.append(pulse);
@@ -25,13 +25,14 @@
 
   function renderChannel(container, channel) {
     container.replaceChildren();
-    const card = D.node("article", null, "status-card");
+    const card = D.node("article", null, "operation-section");
     card.append(
       D.node("h2", channel.channel_label),
       D.node("p", channel.purpose),
       D.node("p", channel.user_state_label, "status-pill"),
     );
     card.lastChild.dataset.state = channel.user_state;
+    card.lastChild.prepend(D.icon(["authorized", "available"].includes(channel.user_state) ? "check" : "alert-circle"));
     card.append(D.node("p", `上次检查：${channel.checked_display || "尚未检查"}`));
     if (channel.user_state === "unconfirmed" && channel.message) {
       card.append(D.node("p", channel.message));
@@ -51,7 +52,7 @@
       card.append(folded);
     }
     const actions = D.node("div", null, "operation-actions");
-    const check = D.node("button", "检查", "primary-button");
+    const check = D.node("button", "检查", "secondary-button");
     check.type = "button";
     check.addEventListener("click", async () => {
       check.disabled = true;
@@ -72,7 +73,7 @@
     authorize.addEventListener("click", () => start(channel.channel));
     actions.append(check, authorize);
     if (channel.affected_job_count) {
-      const link = D.node("a", "查看受影响任务", "secondary-button");
+      const link = D.node("a", "查看受影响任务", "ghost-button");
       link.href = "/jobs?requires_user_action=1";
       link.addEventListener("click", (event) => {
         event.preventDefault();
@@ -114,7 +115,7 @@
           stop();
           load(true);
         });
-        session.append(later);
+        session.append(D.node("div", null, "progress-track is-indeterminate"), later);
       }
     } else {
       session.hidden = true;

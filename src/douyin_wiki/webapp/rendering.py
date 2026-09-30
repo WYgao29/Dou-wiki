@@ -101,9 +101,55 @@ def _rewrite_url(url: str, source_path: Path, catalog: LibraryCatalog) -> str:
     return "#"
 
 
+def _render_article_markdown(value: str) -> str:
+    tokens = _MARKDOWN.parse(value)
+    # Work on parsed quotes so examples inside fenced code remain literal.
+    for index in range(len(tokens) - 1, -1, -1):
+        opening = tokens[index]
+        if opening.type != "blockquote_open":
+            continue
+        if [token.type for token in tokens[index + 1 : index + 4]] != [
+            "paragraph_open",
+            "inline",
+            "paragraph_close",
+        ]:
+            continue
+        inline = tokens[index + 2]
+        title, _, body = inline.content.partition("\n")
+        marker = re.fullmatch(r"\[![^]\r\n]+][ \t]*(.*)", title)
+        if not marker:
+            continue
+        caption = re.sub(
+            r"^(?:\*\*)?AI[ \t]*推断(?:\*\*)?(?:[ \t]*[:：·][ \t]*|[ \t]*$)",
+            "",
+            marker.group(1).strip(),
+            count=1,
+        )
+        end = next(
+            cursor
+            for cursor in range(index + 4, len(tokens))
+            if tokens[cursor].type == "blockquote_close" and tokens[cursor].level == opening.level
+        )
+        remaining = tokens[index + 4 : end]
+        plain_paragraphs = all(
+            token.type in {"paragraph_open", "inline", "paragraph_close"} for token in remaining
+        )
+        content = "\n".join(
+            [body, *(token.content for token in remaining if token.type == "inline")]
+        )
+        if caption == "与灵感的关系" and plain_paragraphs and content.strip() in {"", "无"}:
+            del tokens[index : end + 1]
+            continue
+        header = "**AI 推断**" + (f" · {caption}" if caption else "")
+        replacement = _MARKDOWN.parse(header + (f"\n\n{body}" if body else ""))
+        for token in replacement:
+            token.level += tokens[index + 1].level
+        tokens[index + 1 : index + 4] = replacement
+    return _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
+
+
 def render_article(markdown: str, *, source_path: str, catalog: LibraryCatalog) -> str:
     value = _wikilinks(_remove_private_lines(markdown), catalog)
-    value = re.sub(r"(?m)^>\s*\[![^]]+]\s*", "> **AI 推断** · ", value)
     source = (catalog.vault_path / source_path).resolve()
 
     def image(match: re.Match[str]) -> str:
@@ -120,7 +166,7 @@ def render_article(markdown: str, *, source_path: str, catalog: LibraryCatalog) 
 
     value = re.sub(r"!\[([^]]*)]\(([^\s)]+)(?:\s+[\"']([^\"']*)[\"'])?\)", image, value)
     value = re.sub(r"(?<!!)\[([^]]+)]\(([^\s)]+)(?:\s+[\"']([^\"']*)[\"'])?\)", link, value)
-    rendered = _MARKDOWN.render(value)
+    rendered = _render_article_markdown(value)
     return nh3.clean(
         rendered,
         tags=_ALLOWED_TAGS,

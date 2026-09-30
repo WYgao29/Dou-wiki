@@ -26,7 +26,7 @@
     D.$("model-name").value = settings.model || "";
     const label = D.$("analysis-mode-label");
     if (label) label.textContent = settings.analysis_mode_label;
-    D.$("model-status-dot").classList.toggle("ready", settings.configured);
+    D.$("model-status-dot").replaceChildren(D.icon(settings.configured ? "check" : "alert-circle"));
     D.$("model-status-title").textContent = settings.configured ? "模型已配置" : "模型尚未配置";
     D.$("model-status-copy").textContent = settings.configured
       ? `${settings.model} · ${settings.base_url}`

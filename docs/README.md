@@ -9,7 +9,9 @@
 | [收藏批量导入](favorites-import.md) | 网页、CLI/MCP 操作和验证边界 |
 | [授权与任务排障](troubleshooting.md) | 登录、作品类型、待处理任务和失败重试 |
 | [Service 协作 API](service-collaboration-api.md) | Service 与 mixin 的命名、锁和发布约定 |
-| [Web UI 设计系统](web-ui-design-system.md) | 界面令牌、组件和交互约定 |
+| [Web UI 设计系统](web-ui-design-system.md) | 当前实现的界面令牌、组件和交互约定 |
+| [Readwise 重设计方案](web-ui-redesign-readwise.md) | 已修订的目标规格与分阶段实施状态 |
+| [静态原型](prototypes/readwise/README.md) | 三栏布局、列表与阅读页的演示和截图 |
 
 ## 开发中的功能
 
@@ -17,4 +19,4 @@
 
 ## 文件维护
 
-正式测试保存在 `tests/`，按功能命名。已完成的实施计划、逐轮审查、临时脚本、日志和截图不作为当前使用文档长期堆放；重要修复进入更新日志与回归测试。临时验证使用独立 Vault，产物放在被忽略的 `.test-*/`；可重新生成的发行包放在 `dist/`。
+正式测试保存在 `tests/`，按功能命名。已完成的实施计划、逐轮审查、临时脚本、日志和截图不作为当前使用文档长期堆放；重要修复进入更新日志与回归测试。临时验证使用独立 Vault，产物放在被忽略的 `.test-*/`；可重新生成的发行包放在 `dist/`。`docs/screenshots/` 同样被忽略；保留验证脚本供重新生成。静态原型仅保留演示页面、捕获脚本、说明与图标许可，字体复用应用文件。

@@ -44,6 +44,7 @@
   function pill(label, state) {
     const node = D.node("span", label, "status-pill");
     node.dataset.state = state;
+    node.prepend(D.icon(["authorized", "completed"].includes(state) ? "check" : "alert-circle"));
     return node;
   }
 

@@ -50,7 +50,7 @@ from .catalog import CONTENT_TYPE_LABELS, LibraryCatalog
 from .chat import ChatContextBuilder, ChatProvider, OpenAICompatibleChatProvider
 from .rendering import render_article, render_chat
 
-WEB_VERSION = "0.2.30"
+WEB_VERSION = "0.2.39"
 
 ANALYSIS_MODE_INFO = {
     "gateway": {

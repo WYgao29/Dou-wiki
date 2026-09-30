@@ -96,6 +96,7 @@
     if (!action) return null;
     const button = D.node("button", action.label, action.code === "retry" ? "secondary-button" : "primary-button");
     button.type = "button";
+    button.dataset.action = action.code || "";
     button.addEventListener("click", async () => {
       try {
         if (action.endpoint) {
@@ -165,14 +166,18 @@
   function renderRow(job) {
     const row = D.node("article", null, "job-row");
     row.tabIndex = 0;
+    row.dataset.jobId = job.id;
     row.setAttribute("role", "link");
     if (job.requires_user_action) row.dataset.attention = attentionGroup(job);
     const title = D.node("h2", jobTitle(job));
     const message = D.node("p", listMessage(job));
     if (job.status === "completed" || job.status === "completed_with_warnings") message.classList.add("job-oneline");
     const updated = String(job.updated_display || "").replace(/（北京时间）/g, "").trim();
-    const meta = D.node("small", `${job.stage_label} · ${progressLabel(job)}${updated ? ` · ${updated}` : ""}`);
-    row.append(title, statusCluster(job), message, meta);
+    const copy = D.node("div", null, "job-row-copy");
+    const progressing = ["resolving", "inventorying", "dispatching", "monitoring", "downloading", "extracting", "transcribing", "analyzing"].includes(job.status) && job.progress > 0;
+    if (progressing) message.textContent += ` · ${job.stage_label} · ${progressLabel(job)}`;
+    copy.append(title, message);
+    row.append(statusCluster(job), copy);
     const actions = D.node("div", null, "job-row-actions");
     if (job.requires_user_action && job.next_action) {
       const action = actionButton(job.next_action);
@@ -184,21 +189,35 @@
     if (repaste) actions.append(repaste);
     const dismiss = dismissButton(job);
     if (dismiss) actions.append(dismiss);
-    if (actions.childNodes.length) row.append(actions);
+    actions.querySelectorAll("button,a").forEach((node) => node.classList.add("is-sm"));
+    const right = D.node("div", null, "job-row-right");
+    right.append(actions, D.node("time", updated)); row.append(right);
+    if (progressing) {
+      const track = D.node("div", null, "job-row-progress");
+      const fill = D.node("span"); fill.style.width = `${Math.min(100, Math.max(0, job.progress * 100))}%`; track.append(fill); row.append(track);
+    }
     row.addEventListener("click", (event) => {
       if (event.target.closest("button, a")) return;
       D.navigate(`/jobs/${job.id}`);
     });
     row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") D.navigate(`/jobs/${job.id}`);
+      if (event.target.closest("button,a")) return;
+      if (["j", "k", "ArrowDown", "ArrowUp"].includes(event.key)) {
+        event.preventDefault();
+        const rows = [...D.$("jobs-list").querySelectorAll(".job-row")];
+        const delta = ["j", "ArrowDown"].includes(event.key) ? 1 : -1;
+        rows[Math.max(0, Math.min(rows.length - 1, rows.indexOf(row) + delta))]?.focus();
+      } else if (event.key === "r") { event.preventDefault(); row.querySelector("[data-action=retry]")?.click(); }
+      else if (event.key === "Enter") { event.preventDefault(); D.navigate(`/jobs/${job.id}`); }
     });
     return row;
   }
 
   function renderList(data) {
     const root = D.$("jobs-list");
+    const focused = document.activeElement.closest(".job-row")?.dataset.jobId;
     if (!data.items.length) {
-      root.replaceChildren(D.emptyState("没有符合条件的任务", "提交导入或等待后台处理后，任务会出现在这里。"));
+      root.replaceChildren(D.emptyState("没有符合条件的任务", "提交导入后，任务会出现在这里。", null, null, "list-checks"));
       return;
     }
     const items = [...data.items].sort((a, b) => attentionRank(a) - attentionRank(b));
@@ -227,6 +246,9 @@
       nodes.push(...group.items.map(renderRow));
     }
     root.replaceChildren(...nodes);
+    const rows = [...root.querySelectorAll(".job-row")];
+    const active = rows.find((row) => row.dataset.jobId === focused);
+    if (active) active.focus({preventScroll: true});
   }
 
   async function loadList() {
@@ -237,7 +259,7 @@
     if (params.get("requires_user_action") === "1") query.set("requires_user_action", "true");
     const data = await D.api(`/api/jobs?${query}`);
     renderList(data);
-    D.$("jobs-count").textContent = `${data.total} 个任务`;
+    D.$("jobs-count").textContent = String(data.total);
     const kind = D.$("jobs-filter-kind");
     const action = D.$("jobs-filter-action");
     if (kind) kind.value = params.get("kind") || "";
@@ -256,9 +278,10 @@
     const root = D.$("job-detail-content");
     const job = await D.api(`/api/jobs/${encodeURIComponent(jobId)}`);
     document.title = `${jobTitle(job)} · 抖库`;
-    const header = D.node("header", null, "page-heading");
+    const header = D.node("header", null, "job-detail-summary");
+    D.$("job-detail-title").textContent = jobTitle(job);
     const titleBox = document.createElement("div");
-    titleBox.append(D.node("h1", jobTitle(job)), D.node("p", job.message_for_user));
+    titleBox.append(D.node("h2", jobTitle(job)), D.node("p", job.message_for_user));
     header.append(titleBox, statusCluster(job));
     const progress = D.node(
       "p",
@@ -266,6 +289,8 @@
         ? `阶段 ${job.stage_label} · 等待你`
         : `阶段 ${job.stage_label} · 进度 ${Math.round((job.progress || 0) * 100)}%`
     );
+    const track = D.node("div", null, "progress-track");
+    const fill = D.node("span"); fill.style.width = `${Math.min(100, Math.max(0, job.progress * 100))}%`; track.append(fill);
     const modelProgress = D.node("p", "", "hint-copy");
     if (job.analysis_progress && job.status === "analyzing") {
       const state = job.analysis_progress;
@@ -332,7 +357,8 @@
         children.append(D.node("p", `成功 ${stats.completed || 0} · 处理中 ${stats.running || 0} · 等待本人 ${stats.waiting_user || 0} · 失败 ${stats.failed || 0}`));
       }
       for (const child of childList) {
-        const row = D.node("button", `${jobTitle(child)} · ${child.state_label} · ${child.message_for_user}`, "job-child");
+        const row = D.node("button", null, "job-child");
+        row.append(statusCluster(child), D.node("strong", jobTitle(child)), D.node("span", child.message_for_user));
         row.type = "button";
         row.addEventListener("click", () => D.navigate(`/jobs/${child.id}`));
         children.append(row);
@@ -393,7 +419,7 @@
     if (job.status === "awaiting_agent_analysis" || (job.analysis_mode === "gateway" && job.status === "analyzing")) {
       gatewayNote.textContent = "网页不会自动分析。这一步要等外部 Agent 接续，停在「待 AI 处理」不代表已经整理完成。";
     }
-    const parts = [header, progress];
+    const parts = [header, progress, track];
     if (selectionNote.textContent) parts.push(selectionNote);
     if (gatewayNote.textContent) parts.push(gatewayNote);
     if (modelProgress.textContent) parts.push(modelProgress);

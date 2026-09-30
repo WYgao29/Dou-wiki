@@ -143,7 +143,7 @@ def test_auth_and_app_scripts_clarify_channels_and_404(tmp_path) -> None:
         app_js = client.get(f"/static/app.js?v={WEB_VERSION}").text
         shared = client.get(f"/static/shared.js?v={WEB_VERSION}").text
         dead = client.get("/static/favorites.js")
-    assert 'D.node("button", "检查", "primary-button")' in auth_js
+    assert 'D.node("button", "检查", "secondary-button")' in auth_js
     assert 'D.node("button", "重新授权", "secondary-button")' in auth_js
     assert "详情" in auth_js
     assert "联网检查状态" not in auth_js

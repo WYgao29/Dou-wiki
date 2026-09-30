@@ -6,6 +6,7 @@
   const view = D.$("imports-favorites-view");
   if (!view) return;
   const base = "/api/favorites/imports";
+  D.bindCheckList($("items"));
   let jobId = null, page = 1, current = null, busy = false, timer = null, generation = 0;
   const ongoing = new Set(["queued", "inventorying", "dispatching", "monitoring"]);
   const terminal = new Set(["completed", "completed_with_warnings", "failed", "needs_auth"]);
@@ -44,7 +45,12 @@
       if ($("error")) $("error").textContent = message;
       D.toast(message);
     }
-    finally { busy = false; controls(); schedule(); }
+    finally {
+      busy = false; controls();
+      const focused = [...$("items").querySelectorAll("input[data-work]")].find((node) => node.dataset.work === $("items").dataset.focusWork);
+      if (document.activeElement === document.body) focused?.focus({preventScroll: true});
+      schedule();
+    }
   }
   function schedule() {
     stopPolling();
@@ -65,6 +71,8 @@
     current = data;
     $("status").textContent = `${data.nickname || "收藏任务"} · ${data.status_label || data.status}`;
     const summary = data.summary;
+    $("selected-count").textContent = `已选 ${summary.selected || 0} / 共 ${summary.discovered || 0}`;
+    $("status").classList.toggle("is-running", ongoing.has(data.status));
     const waits = {needs_auth: "需要登录", awaiting_agent_analysis: "待外部 Agent（网页不自动分析）",
       waiting_confirmation: "待确认", needs_review: "待复核"};
     $("waits").textContent = Object.entries(waits).filter(([status]) => summary.child_status_counts?.[status])
@@ -94,17 +102,18 @@
     $("filter").value = filter;
     $("items").replaceChildren();
     for (const item of data.items || []) {
-      const row = node("div", null, "favorites-item");
+      const row = node("div", null, "favorites-item row--check");
       const input = node("input"); input.type = "checkbox"; input.checked = item.selected;
       input.dataset.work = item.work_id;
       input.dataset.eligible = String(!["unsupported", "unavailable"].includes(item.disposition) &&
         item.source_kind !== "article" && (item.source_kind !== "image_note" || data.include_images));
+      row.dataset.eligible = input.dataset.eligible;
       input.setAttribute("aria-label", `选择 ${item.title}`);
       input.addEventListener("change", () => {
         const selected = input.checked;
         if (busy) { input.checked = !selected; return; }
         run(async () => {
-          try { await request(`${base}/${encodeURIComponent(jobId)}/selection`, {selected, work_ids: [item.work_id]}); }
+          try { await request(`${base}/${encodeURIComponent(jobId)}/selection`, {selected, work_ids: input.selectionWorkIds || [item.work_id]}); }
           catch (error) { input.checked = !selected; throw error; }
           await load();
         });

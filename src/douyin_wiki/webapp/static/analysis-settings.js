@@ -39,7 +39,7 @@
     });
     const mode = settings.analysis_modes.find((item) => item.value === settings.analysis_mode);
     const ready = Boolean(mode?.web_can_complete);
-    D.$("analysis-status-dot").classList.toggle("ready", ready);
+    D.$("analysis-status-dot").replaceChildren(D.icon(ready ? "check" : "alert-circle"));
     D.$("analysis-status-title").textContent = settings.analysis_mode_label;
     D.$("analysis-status-copy").textContent = mode?.web_copy || "请选择一种分析方式。";
     updateProviderPanel();
