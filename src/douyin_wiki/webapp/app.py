@@ -17,12 +17,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from watchfiles import awatch
 
 from ..adapters.llm import FallbackAnalysisProvider, OpenAICompatibleProvider
-from ..adapters.share import extract_douyin_url
+from ..adapters.share import extract_douyin_url, extract_work_identity
 from ..config import (
     AppConfig,
     LLMSettings,
@@ -44,13 +44,13 @@ from ..models import (
 from ..secrets import get_secret, store_secret
 from ..service import DouyinWikiService
 from ..setup import update_config_values, write_config
-from ..time_utils import beijing_iso, format_beijing
+from ..time_utils import beijing_iso, format_beijing, parse_clock_to_ms
 from ..web_operation import WebOperationService
 from .catalog import CONTENT_TYPE_LABELS, LibraryCatalog
 from .chat import ChatContextBuilder, ChatProvider, OpenAICompatibleChatProvider
 from .rendering import render_article, render_chat
 
-WEB_VERSION = "0.2.41"
+WEB_VERSION = "0.2.42"
 
 ANALYSIS_MODE_INFO = {
     "gateway": {
@@ -80,9 +80,72 @@ ANALYSIS_MODE_INFO = {
 }
 
 
+def _capture_inspirations(items: list[CaptureInspirationBody]) -> list[InspirationInput]:
+    parsed: list[InspirationInput] = []
+    for item in items:
+        try:
+            start = parse_clock_to_ms(item.start_ms)
+            end = parse_clock_to_ms(item.end_ms)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        text = item.text.strip()
+        quote = (item.quote or "").strip() or None
+        if not text and quote is None and start is None and end is None:
+            continue
+        try:
+            parsed.append(
+                InspirationInput(text=text, quote=quote, start_ms=start, end_ms=end)
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="结束时间不能早于开始时间，且填写结束时间时也要填写开始时间",
+            ) from exc
+    return parsed
+
+
+def _existing_capture(core, share_text: str) -> dict[str, Any] | None:
+    identity = extract_work_identity(extract_douyin_url(share_text))
+    if identity is None:
+        return None
+    video_id = identity[0]
+    entry = core.database.find_entry_by_video_id(video_id)
+    if entry is not None:
+        return {
+            "duplicate": True,
+            "in_trash": False,
+            "entry_id": entry.id,
+            "title": entry.title,
+            "href": f"/articles/{entry.id}",
+            "message": "已在资料库",
+        }
+    for item in core.list_trashed_entries():
+        if str(item.get("work_id") or "") == video_id:
+            return {
+                "duplicate": True,
+                "in_trash": True,
+                "trash_id": item.get("trash_id"),
+                "entry_id": item.get("entry_id"),
+                "title": item.get("title") or "",
+                "href": "/trash",
+                "message": "已在废纸篓",
+            }
+    return None
+
+
+class CaptureInspirationBody(BaseModel):
+    """Capture form clocks stay strings so a bad clock can return HTTP 400, not 422."""
+
+    model_config = ConfigDict(extra="ignore")
+    text: str = Field(default="", max_length=4000)
+    quote: str | None = Field(default=None, max_length=4000)
+    start_ms: int | str | None = None
+    end_ms: int | str | None = None
+
+
 class CaptureSubmissionRequest(BaseModel):
     share_text: str = Field(min_length=1, max_length=20_000)
-    inspirations: list[InspirationInput] = Field(default_factory=list)
+    inspirations: list[CaptureInspirationBody] = Field(default_factory=list)
     retention: RetentionPolicy = RetentionPolicy.TEMPORARY
     allow_long: bool = False
     approve_cloud_analysis: bool = False
@@ -459,35 +522,45 @@ def create_app(
             {"page_title": "资料库", "initial_entry_id": "", "web_version": WEB_VERSION},
         )
 
-    @app.get("/articles/{entry_id}", response_class=HTMLResponse)
-    async def article_page(request: Request, entry_id: str):
-        if catalog.get(entry_id) is None:
-            raise HTTPException(status_code=404, detail="文章不存在")
+    def shell_page(
+        request: Request,
+        *,
+        title: str,
+        entry_id: str = "",
+        topic_id: str = "",
+        status_code: int = 200,
+        missing: bool = False,
+    ):
         return templates.TemplateResponse(
             request,
             "app.html",
             {
-                "page_title": catalog.get(entry_id).title,
+                "page_title": title,
                 "initial_entry_id": entry_id,
+                "initial_topic_id": topic_id,
                 "web_version": WEB_VERSION,
+                "missing": missing,
             },
+            status_code=status_code,
         )
+
+    @app.get("/articles/{entry_id}", response_class=HTMLResponse)
+    async def article_page(request: Request, entry_id: str):
+        item = catalog.get(entry_id)
+        if item is None:
+            return shell_page(request, title="页面不存在", status_code=404, missing=True)
+        return shell_page(request, title=item.title, entry_id=entry_id)
 
     @app.get("/topics/{topic_id}", response_class=HTMLResponse)
     async def topic_page(request: Request, topic_id: str):
         try:
             value = core.get_topic(topic_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return templates.TemplateResponse(
+        except KeyError:
+            return shell_page(request, title="页面不存在", status_code=404, missing=True)
+        return shell_page(
             request,
-            "app.html",
-            {
-                "page_title": value["topic"]["title"],
-                "initial_entry_id": "",
-                "initial_topic_id": topic_id,
-                "web_version": WEB_VERSION,
-            },
+            title=value["topic"]["title"],
+            topic_id=topic_id,
         )
 
     @app.get("/topics", response_class=HTMLResponse)
@@ -598,9 +671,13 @@ def create_app(
             extract_douyin_url(payload.share_text)
         except DouyinWikiError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        existing = _existing_capture(core, payload.share_text)
+        if existing:
+            return JSONResponse(existing, status_code=200)
+        inspirations = _capture_inspirations(payload.inspirations)
         job = core.capture_douyin(
             payload.share_text,
-            inspirations=payload.inspirations,
+            inspirations=inspirations,
             options=CaptureOptions(
                 retention=payload.retention,
                 allow_long=payload.allow_long,

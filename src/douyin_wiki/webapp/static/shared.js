@@ -20,7 +20,9 @@
       const detail = Array.isArray(body.detail)
         ? body.detail.map((item) => item.msg || item.detail || "输入内容无效").join("；")
         : body.detail;
-      throw new Error(detail || "请求失败");
+      const error = new Error(detail || "请求失败");
+      error.status = response.status;
+      throw error;
     }
     return body;
   };
@@ -48,6 +50,27 @@
       return;
     }
     scheduleToastHide(duration);
+  };
+  Douku.hideToast = () => {
+    window.clearTimeout(toastState.timer);
+    toastState.remaining = 0;
+    hideToast();
+  };
+  Douku.toastAction = (message, label, onClick, duration = 6000) => {
+    const node = toastNode();
+    if (!node) return;
+    const copy = document.createElement("span");
+    copy.textContent = message;
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "toast-action";
+    action.textContent = label;
+    action.addEventListener("click", () => {
+      Douku.hideToast();
+      Promise.resolve(onClick()).catch((error) => Douku.toast(error.message || "操作失败"));
+    });
+    node.replaceChildren(copy, action);
+    Douku.revealToast(node, {duration});
   };
   Douku.toast = (message, options) => {
     const node = toastNode();
@@ -114,6 +137,46 @@
       seconds = hours * 3600 + minutes * 60 + secs;
     }
     return seconds * 1000;
+  };
+  Douku.showMissing = () => {
+    Douku.hideAllViews();
+    Douku.setPage("not-found");
+    Douku.$("not-found-view")?.classList.remove("hidden");
+    document.title = "页面不存在 · 抖库";
+  };
+  Douku.tagPath = (name) => {
+    const params = new URLSearchParams();
+    params.set("tag", name);
+    let view = "";
+    try { view = localStorage.getItem("douyin-wiki.library-view") || ""; } catch (_error) { view = ""; }
+    if (view && view !== "list") params.set("view", view);
+    return `/?${params}`;
+  };
+  Douku.warnIfWorkerDown = async (viewId) => {
+    const view = Douku.$(viewId);
+    if (!view) return;
+    let health;
+    try { health = await Douku.api("/api/system/health"); }
+    catch (_error) { return; }
+    const existing = view.querySelector("[data-worker-banner]");
+    if (health.worker?.running) {
+      existing?.remove();
+      return;
+    }
+    if (existing) return;
+    const banner = Douku.node("div", null, "alert-banner");
+    banner.dataset.workerBanner = "1";
+    banner.setAttribute("role", "status");
+    const link = Douku.node("a", "打开系统设置");
+    link.href = "/settings/system";
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      Douku.navigate("/settings/system");
+    });
+    banner.append(Douku.node("p", "后台 Worker 没在运行，新任务会一直排队。"), link);
+    const header = view.querySelector(".view-header");
+    if (header?.nextSibling) view.insertBefore(banner, header.nextSibling);
+    else view.prepend(banner);
   };
   Douku.isKnownAppPath = (path) => (
     path === "/" || path === "/topics" || path === "/trash" || path === "/tags"

@@ -168,6 +168,7 @@
     D.setNav("imports-nav");
     view.classList.remove("hidden");
     document.title = "导入抖音收藏 · 抖库";
+    D.warnIfWorkerDown("imports-favorites-view");
     const params = new URLSearchParams(location.search);
     if (params.get("job")) jobId = params.get("job");
     await run(async () => { await history(); if (jobId) await load(); });

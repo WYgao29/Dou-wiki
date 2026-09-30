@@ -187,13 +187,13 @@ async def test_creator_inventory_selection_and_isolated_vault(creator_service) -
     assert completed.status == JobStatus.COMPLETED
     parent = service.get_job(job.id)
     assert parent.status == JobStatus.COMPLETED
-    assert parent.result["selection"] == {
-        "pending": 0,
-        "selected": 0,
-        "skipped": 1,
-        "imported": 1,
-        "total": 2,
-    }
+    selection = parent.result["selection"]
+    assert selection["pending"] == 0
+    assert selection["selected"] == 0
+    assert selection["skipped"] == 1
+    assert selection["imported"] == 1
+    assert selection["total"] == 2
+    assert selection["not_imported"] == 1
 
     entry = service.database.get_entry(completed.result["entry_id"])
     assert entry.source_path.startswith("creators/元气山海FDE学院_")

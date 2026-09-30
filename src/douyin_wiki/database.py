@@ -756,6 +756,63 @@ class Database:
         with self.connect() as conn:
             conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
 
+    def request_cancel(self, job_id: str) -> JobRecord:
+        """Cancel a queued job immediately, or ask a running job to stop at a safe point."""
+        active = {
+            JobStatus.QUEUED.value,
+            JobStatus.RESOLVING.value,
+            JobStatus.INVENTORYING.value,
+            JobStatus.DISPATCHING.value,
+            JobStatus.MONITORING.value,
+            JobStatus.DOWNLOADING.value,
+            JobStatus.EXTRACTING.value,
+            JobStatus.TRANSCRIBING.value,
+            JobStatus.ANALYZING.value,
+        }
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise JobStateError(f"job not found: {job_id}")
+            if row["status"] == JobStatus.CANCELLED.value:
+                return self._job_from_row(row)
+            if row["status"] not in active:
+                raise JobStateError("这个任务不能取消")
+            now = iso_now()
+            if row["status"] == JobStatus.QUEUED.value and row["locked_at"] is None:
+                changed = conn.execute(
+                    """UPDATE jobs
+                       SET status=?, error_message=?, updated_at=?,
+                           locked_at=NULL, lock_owner=NULL, lease_expires_at=NULL
+                       WHERE id=? AND status=? AND locked_at IS NULL""",
+                    (JobStatus.CANCELLED.value, "已取消", now, job_id, JobStatus.QUEUED.value),
+                ).rowcount
+                if changed:
+                    conn.execute(
+                        """INSERT INTO job_events(job_id, status, result_json, created_at)
+                           VALUES (?, ?, '{}', ?)""",
+                        (job_id, JobStatus.CANCELLED.value, now),
+                    )
+                    updated = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+                    return self._job_from_row(updated)
+                row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+                if row["status"] not in active:
+                    raise JobStateError("这个任务不能取消")
+            artifacts = json.loads(row["artifacts_json"] or "{}")
+            artifacts["cancel_requested"] = True
+            conn.execute(
+                "UPDATE jobs SET artifacts_json=?, updated_at=? WHERE id=?",
+                (json.dumps(artifacts, ensure_ascii=False), now, job_id),
+            )
+            updated = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        return self._job_from_row(updated)
+
+    def delete_finished_job(self, job_id: str) -> None:
+        job = self.get_job(job_id)
+        if job.status not in {JobStatus.FAILED, JobStatus.CANCELLED}:
+            raise JobStateError("只能删除失败或已取消的任务")
+        self.delete_job_record(job_id)
+
     def create_auth_session(
         self,
         *,
@@ -982,16 +1039,33 @@ class Database:
         )
         placeholders = ",".join("?" for _ in recoverable)
         with self.connect() as conn:
+            cancelled = conn.execute(
+                f"""UPDATE jobs
+                    SET status=?, locked_at=NULL, lock_owner=NULL, lease_expires_at=NULL,
+                        error_message=?, updated_at=?
+                    WHERE status IN ({placeholders})
+                      AND locked_at IS NOT NULL
+                      AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                      AND json_extract(artifacts_json, '$.cancel_requested') = 1""",
+                (
+                    JobStatus.CANCELLED.value,
+                    "已取消",
+                    iso_now(),
+                    *recoverable,
+                    timestamp,
+                ),
+            )
             result = conn.execute(
                 f"""UPDATE jobs
                     SET status=?, locked_at=NULL, lock_owner=NULL, lease_expires_at=NULL,
                         updated_at=?
                     WHERE status IN ({placeholders})
                       AND locked_at IS NOT NULL
-                      AND (lease_expires_at IS NULL OR lease_expires_at <= ?)""",
+                      AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+                      AND COALESCE(json_extract(artifacts_json, '$.cancel_requested'), 0) != 1""",
                 (JobStatus.QUEUED.value, iso_now(), *recoverable, timestamp),
             )
-        return result.rowcount
+        return cancelled.rowcount + result.rowcount
 
     def unlock_all_jobs(self) -> int:
         """Compatibility escape hatch. Runtime recovery must use recover_expired_jobs()."""
@@ -1091,6 +1165,7 @@ class Database:
                     JobStatus.COMPLETED,
                     JobStatus.COMPLETED_WITH_WARNINGS,
                     JobStatus.FAILED,
+                    JobStatus.CANCELLED,
                 }
             ):
                 event_result = dict(result if result is not None else current.result)
@@ -1719,9 +1794,22 @@ class Database:
                    WHERE r.job_id=? GROUP BY w.decision""",
                 (job_id,),
             ).fetchall()
+            extra = conn.execute(
+                """SELECT
+                     SUM(CASE WHEN NOT EXISTS (
+                       SELECT 1 FROM entries e WHERE e.id = w.entry_id
+                     ) THEN 1 ELSE 0 END) AS not_imported,
+                     SUM(CASE WHEN r.is_new = 1 THEN 1 ELSE 0 END) AS new_count
+                   FROM creator_run_items r
+                   JOIN creator_works w ON w.creator_id=r.creator_id AND w.work_id=r.work_id
+                   WHERE r.job_id=?""",
+                (job_id,),
+            ).fetchone()
         values = {item.value: 0 for item in CreatorWorkDecision}
         values.update({row["decision"]: int(row["count"]) for row in rows})
         values["total"] = sum(int(row["count"]) for row in rows)
+        values["not_imported"] = int(extra["not_imported"] or 0)
+        values["new"] = int(extra["new_count"] or 0)
         return values
 
     def attach_creator_child_job(self, creator_id: str, work_id: str, job_id: str) -> None:

@@ -160,15 +160,18 @@
       ? `${current.job.state_label} · ${current.job.message_for_user}`
       : (current.status || "尚未开始清点");
     const summary = current.summary || {};
-    const pending = Number(summary.pending || 0);
-    const skipped = Number(summary.skipped || 0);
+    const notImported = Number(summary.not_imported ?? 0);
+    const selectedCount = Number(summary.selected || 0);
     const imported = Number(summary.imported || 0);
-    const fresh = (current.items || []).filter((item) => item.is_new === true || item.is_new_label === "新增作品").length;
-    const counts = `本页可见 ${current.items?.length || 0} 条 · 匹配 ${current.total || 0} 条 · 尚未入库 ${pending} · 已跳过 ${skipped} · 已入库 ${imported}`;
+    const pageItems = current.items || [];
+    const fresh = pageItems.filter((item) => item.is_new === true || item.is_new_label === "新增作品").length;
+    const filter = D.$("creator-not-imported");
+    if (filter) filter.disabled = false;
+    const counts = `尚未入库 ${notImported} · 已勾选 ${selectedCount} · 已入库 ${imported}`;
     D.$("creator-summary").textContent = [
       current.partial ? "清单可能不完整，确认前需要额外勾选。" : counts,
-      fresh ? `本页有 ${fresh} 条新作品。` : "",
-      D.$("creator-not-imported")?.checked ? "已入库的作品先隐藏了，取消「只看尚未入库」可看全部。" : "",
+      `本页 ${pageItems.length} 条，其中新作品 ${fresh} 条。`,
+      filter?.checked ? "已入库的作品先隐藏了，取消「只看尚未入库」可看全部。" : "",
       polling ? "正在清点，大约每 2.5 秒自动刷新。" : "",
     ].filter(Boolean).join(" ");
     D.$("creator-partial-row").hidden = !current.partial || status !== "needs_selection";
@@ -268,6 +271,7 @@
     D.setNav("imports-nav");
     D.$("imports-creators-view").classList.remove("hidden");
     document.title = "博主导入 · 抖库";
+    D.warnIfWorkerDown("imports-creators-view");
     const params = new URLSearchParams(location.search);
     jobId = params.get("job");
     page = 1;
@@ -287,6 +291,7 @@
   D.$("creator-form")?.addEventListener("submit", (event) => {
     startInventory(event).catch((error) => D.toast(error.message));
   });
+  D.$("creator-query")?.addEventListener("input", () => { page = 1; });
   D.$("creator-query")?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();

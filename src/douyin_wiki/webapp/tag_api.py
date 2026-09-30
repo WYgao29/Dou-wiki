@@ -13,6 +13,10 @@ class TagChange(BaseModel):
     pinned: bool = True
 
 
+class TagCleanup(BaseModel):
+    confirmed: bool = False
+
+
 def install_tag_api(app, core, catalog, publish_mutation):
     def overview():
         # Serialize against publication, and avoid resurrecting a deleted name from stale items.
@@ -67,5 +71,43 @@ def install_tag_api(app, core, catalog, publish_mutation):
     @app.post("/api/tags/reorder")
     async def reorder(payload: TagChange):
         return await mutate("reorder", payload)
+
+    @app.post("/api/tags/split")
+    async def split(payload: TagChange):
+        def apply():
+            overview()
+            core.tags.split(payload.name)
+            return overview()
+
+        try:
+            result = await asyncio.to_thread(apply)
+        except KeyError as exc:
+            raise HTTPException(404, detail=str(exc).strip("'")) from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+        return await publish_mutation(result, refresh_catalog=False)
+
+    @app.post("/api/tags/cleanup")
+    async def cleanup(payload: TagCleanup):
+        def apply():
+            names = core.tags.unused_names(catalog.list_items())
+            if not payload.confirmed:
+                return {"names": names, "count": len(names), "confirmed": False}
+            if names:
+                core.tags.delete(names)
+            result = overview()
+            result["deleted"] = names
+            result["confirmed"] = True
+            return result
+
+        try:
+            result = await asyncio.to_thread(apply)
+        except KeyError as exc:
+            raise HTTPException(404, detail=str(exc).strip("'")) from exc
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
+        if payload.confirmed:
+            return await publish_mutation(result, refresh_catalog=False)
+        return result
 
     return overview

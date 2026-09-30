@@ -154,6 +154,65 @@
     return button;
   }
 
+  const CANCELLABLE = new Set([
+    "queued", "resolving", "inventorying", "dispatching", "monitoring",
+    "downloading", "extracting", "transcribing", "analyzing",
+  ]);
+
+  function cancelButton(job, {reloadDetail = false} = {}) {
+    if (!CANCELLABLE.has(job.status)) return null;
+    const button = D.node("button", "取消", "secondary-button");
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      const queued = job.status === "queued";
+      const confirmed = await D.confirmDanger({
+        title: "取消这个任务？",
+        description: queued
+          ? "排队中的任务会马上取消，不会开始下载。"
+          : "运行中的任务会在下一个安全检查点停止，不会在下载中途打断。",
+        confirmLabel: "取消任务",
+      });
+      if (!confirmed) return;
+      try {
+        await D.api(`/api/jobs/${encodeURIComponent(job.id)}/cancel`, {method: "POST", body: "{}"});
+        D.toast(queued ? "已取消" : "已请求停止");
+        if (reloadDetail) await loadDetail(job.id);
+        else await loadFromPath(routePath(location.pathname));
+      } catch (error) {
+        D.toast(error.message);
+      }
+    });
+    return button;
+  }
+
+  function deleteJobButton(job) {
+    if (job.status !== "failed" && job.status !== "cancelled") return null;
+    const button = D.node("button", "删除", "danger-text-button");
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      const confirmed = await D.confirmDanger({
+        title: "删除这个任务？",
+        description: "只删除任务记录，已经入库的资料会保留。",
+        confirmLabel: "删除任务",
+      });
+      if (!confirmed) return;
+      try {
+        await D.api(`/api/jobs/${encodeURIComponent(job.id)}`, {method: "DELETE"});
+        D.toast("已删除任务");
+        if (location.pathname === `/jobs/${job.id}`) D.navigate("/jobs");
+        else await loadFromPath(routePath(location.pathname));
+      } catch (error) {
+        D.toast(error.message);
+      }
+    });
+    return button;
+  }
+
+  function selfProgressLink(action) {
+    if (!action || action.endpoint || action.code !== "wait_worker") return false;
+    return action.label === "查看任务进度";
+  }
+
   function statusCluster(job) {
     const cluster = D.node("div", null, "job-status-cluster");
     const status = D.node("span", job.state_label, "status-pill");
@@ -189,6 +248,10 @@
     if (repaste) actions.append(repaste);
     const dismiss = dismissButton(job);
     if (dismiss) actions.append(dismiss);
+    const cancel = cancelButton(job);
+    if (cancel) actions.append(cancel);
+    const remove = deleteJobButton(job);
+    if (remove) actions.append(remove);
     actions.querySelectorAll("button,a").forEach((node) => node.classList.add("is-sm"));
     const right = D.node("div", null, "job-row-right");
     right.append(actions, D.node("time", updated)); row.append(right);
@@ -307,7 +370,7 @@
     }
     const actions = D.node("div", null, "operation-actions");
     const viewingChildren = job.next_action?.code === "view_children";
-    const action = viewingChildren ? null : actionButton(job.next_action);
+    const action = viewingChildren || selfProgressLink(job.next_action) ? null : actionButton(job.next_action);
     if (action) actions.append(action);
     const importedIds = (job.imported_entry_ids || []).filter((entryId) => !(
       job.next_action?.code === "open_entry" && job.entry_id === entryId
@@ -320,6 +383,10 @@
     if (repaste) actions.append(repaste);
     const dismiss = dismissButton(job, {reloadDetail: true});
     if (dismiss) actions.append(dismiss);
+    const cancel = cancelButton(job, {reloadDetail: true});
+    if (cancel) actions.append(cancel);
+    const remove = deleteJobButton(job);
+    if (remove) actions.append(remove);
     const openEntryViaAction = job.next_action?.code === "open_entry";
     if (job.entry_id && !openEntryViaAction) {
       const link = D.node("a", "打开知识资料", "secondary-button");
@@ -450,12 +517,22 @@
     if (match) {
       D.setPage("job-detail");
       D.$("job-detail-view").classList.remove("hidden");
-      await loadDetail(decodeURIComponent(match[1]));
+      try {
+        await loadDetail(decodeURIComponent(match[1]));
+      } catch (error) {
+        if (error.status === 404) {
+          D.showMissing();
+          return;
+        }
+        throw error;
+      }
+      D.warnIfWorkerDown("job-detail-view");
     } else {
       D.setPage("jobs");
       D.$("jobs-view").classList.remove("hidden");
       document.title = "任务中心 · 抖库";
       await loadList();
+      D.warnIfWorkerDown("jobs-view");
     }
   }
 

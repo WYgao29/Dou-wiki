@@ -144,7 +144,11 @@ class WebOperationService:
         if kind:
             jobs = [job for job in jobs if job.kind == kind]
         if in_progress:
-            jobs = [job for job in jobs if job_is_in_progress(job)]
+            jobs = [
+                job
+                for job in jobs
+                if job_is_in_progress(job) and job.status != JobStatus.QUEUED
+            ]
         elif status == JobStatus.COMPLETED.value:
             done = {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}
             jobs = [job for job in jobs if job.status in done]
@@ -282,7 +286,7 @@ class WebOperationService:
         }
 
     async def overview(self) -> dict[str, Any]:
-        auth = await self.auth_status()
+        auth = await self.auth_status(refresh=True)
         counts = self.job_counts()
         counts["requires_user_action"] = self.list_jobs(requires_user_action=True, limit=1)["total"]
         recent = [
@@ -423,11 +427,44 @@ class WebOperationService:
                 return found
         return None
 
+    def _pending_auth_status(self) -> dict[str, Any]:
+        def card(channel: str, label: str) -> dict[str, Any]:
+            return {
+                "channel": channel,
+                "channel_label": label,
+                "purpose": "",
+                "state": "checking",
+                "user_state": "checking",
+                "user_state_label": "正在检查…",
+                "ok": False,
+                "server_verified": False,
+                "cookie_source_label": "",
+                "account_hint": "",
+                "message": "正在检查…",
+                "detail": "",
+                "checked_at": None,
+                "checked_display": "",
+                "affected_job_count": self.auth.affected_count(channel),
+                "session_stage": None,
+                "session_stage_label": "",
+                "pending": True,
+            }
+
+        return {
+            "channels": {"video": card("video", "视频下载"), "douyin": card("douyin", "抖音账号")},
+            "scopes": {},
+            "cookie_values_exposed": False,
+            "pending": True,
+        }
+
     async def auth_status(self, *, refresh: bool = False) -> dict[str, Any]:
         if not refresh:
             cached = self._auth_cache()
             if cached:
-                return self._decorate_auth_status(cached, cached=True)
+                payload = self._decorate_auth_status(cached, cached=True)
+                payload["pending"] = False
+                return payload
+            return self._decorate_auth_status(self._pending_auth_status(), cached=False)
         import asyncio
 
         probe_url = self._video_probe_url() if refresh else None

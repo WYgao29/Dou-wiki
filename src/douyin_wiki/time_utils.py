@@ -22,6 +22,38 @@ def iso_now() -> str:
     return utc_now().isoformat()
 
 
+def parse_clock_to_ms(value: int | str | None) -> int | None:
+    """Parse a reader clock. Empty is unset; digits are milliseconds; m:s or h:m:s."""
+    if value is None or isinstance(value, bool):
+        if isinstance(value, bool):
+            raise ValueError("时间请用分:秒，例如 1:05；只填整数则按毫秒")
+        return None
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError("时间不能为负数")
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    parts = text.split(":")
+    if len(parts) < 2 or len(parts) > 3 or any(not part.isdigit() for part in parts):
+        raise ValueError("时间请用分:秒，例如 1:05；只填整数则按毫秒")
+    nums = [int(part) for part in parts]
+    if len(nums) == 2:
+        minutes, secs = nums
+        if secs >= 60:
+            raise ValueError("秒数要小于 60，例如 1:05")
+        seconds = minutes * 60 + secs
+    else:
+        hours, minutes, secs = nums
+        if minutes >= 60 or secs >= 60:
+            raise ValueError("分和秒都要小于 60，例如 1:02:03")
+        seconds = hours * 3600 + minutes * 60 + secs
+    return seconds * 1000
+
+
 def parse_datetime(value: str | date | datetime | None) -> datetime | None:
     if not value:
         return None

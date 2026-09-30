@@ -59,6 +59,23 @@ def extract_creator_sec_uid(value: str) -> str | None:
     return None
 
 
+def _host(url: str) -> str:
+    return (urlparse(url).hostname or "").lower()
+
+
+def is_douyin_short_link(url: str) -> bool:
+    host = _host(url)
+    return host == "v.douyin.com" or host.endswith(".v.douyin.com")
+
+
+def assert_creator_share(share_text: str) -> str:
+    """Accept a creator home page or a v.douyin.com short link. Reject other links."""
+    url = extract_douyin_url(share_text)
+    if is_douyin_short_link(url) or extract_creator_sec_uid(url):
+        return url
+    raise InvalidShareTextError("请粘贴抖音博主主页链接，或 v.douyin.com 短链")
+
+
 def _resolved(
     original_url: str, identity: tuple[str, SourceKind], chain: list[str]
 ) -> ResolvedShare:
@@ -137,3 +154,49 @@ class DouyinShareResolver:
         raise InvalidShareTextError(
             "短链已解析，但没有得到抖音作品 ID", details={"redirect_chain": chain}
         )
+
+    async def classify(self, share_text: str) -> str:
+        """Return work, creator, or unknown. Canonical links do not touch the network."""
+        original_url = extract_douyin_url(share_text)
+        if extract_creator_sec_uid(original_url):
+            return "creator"
+        if extract_work_identity(original_url):
+            return "work"
+        if not is_douyin_short_link(original_url):
+            return "unknown"
+        chain = [original_url]
+        current = original_url
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 Chrome/124 Safari/537.36"
+            )
+        }
+        async with httpx.AsyncClient(
+            timeout=self.timeout_seconds, headers=headers, transport=self.transport
+        ) as client:
+            for _ in range(8):
+                try:
+                    response = await client.get(current, follow_redirects=False)
+                except httpx.HTTPError as exc:
+                    raise InvalidShareTextError(
+                        "无法解析抖音短链", details={"url": current, "cause": str(exc)}
+                    ) from exc
+                location = response.headers.get("location")
+                candidates = [str(response.url)]
+                if location:
+                    current = urljoin(current, location)
+                    chain.append(current)
+                    candidates.append(current)
+                for candidate in candidates:
+                    if extract_creator_sec_uid(candidate):
+                        return "creator"
+                    if extract_work_identity(candidate):
+                        return "work"
+                if not location:
+                    break
+            else:
+                raise InvalidShareTextError(
+                    "抖音短链重定向次数过多", details={"redirect_chain": chain}
+                )
+        return "unknown"

@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..adapters.share import DouyinShareResolver, assert_creator_share
 from ..errors import DouyinWikiError, EntryNotFoundError, JobStateError
 from ..localization import add_display_labels
 from ..models import (
@@ -75,6 +76,11 @@ class ReanalyzeBody(BaseModel):
     force: bool = False
 
 
+class ClassifyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=20_000)
+
+
 def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, EntryNotFoundError):
         return HTTPException(status_code=404, detail=str(exc))
@@ -99,7 +105,13 @@ def register_operation_routes(
     notifier,
     web_version: str,
 ) -> None:
-    def spa(request: Request, title: str) -> HTMLResponse:
+    def spa(
+        request: Request,
+        title: str,
+        *,
+        status_code: int = 200,
+        missing: bool = False,
+    ) -> HTMLResponse:
         return templates.TemplateResponse(
             request,
             "app.html",
@@ -108,7 +120,9 @@ def register_operation_routes(
                 "initial_entry_id": "",
                 "initial_topic_id": "",
                 "web_version": web_version,
+                "missing": missing,
             },
+            status_code=status_code,
         )
 
     @app.get("/imports", response_class=HTMLResponse)
@@ -145,6 +159,10 @@ def register_operation_routes(
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_page(request: Request, job_id: str):
+        try:
+            operations.get_job(job_id)
+        except JobStateError:
+            return spa(request, "任务不存在", status_code=404, missing=True)
         return spa(request, "任务详情")
 
     @app.get("/settings/auth", response_class=HTMLResponse)
@@ -194,6 +212,32 @@ def register_operation_routes(
             "warnings": warnings,
             "status": job["status"],
         }
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str):
+        try:
+            job = core.cancel_job(job_id)
+        except JobStateError as exc:
+            raise _http_error(exc) from exc
+        await notifier.publish("jobs")
+        return operations.present(job)
+
+    @app.delete("/api/jobs/{job_id}")
+    async def delete_job(job_id: str):
+        try:
+            core.delete_job(job_id)
+        except JobStateError as exc:
+            raise _http_error(exc) from exc
+        await notifier.publish("jobs")
+        return {"deleted": job_id}
+
+    @app.post("/api/imports/classify")
+    async def classify_import(body: ClassifyBody):
+        try:
+            kind = await DouyinShareResolver().classify(body.text)
+        except DouyinWikiError as exc:
+            raise _http_error(exc) from exc
+        return {"kind": kind}
 
     @app.post("/api/jobs/{job_id}/dismiss")
     async def dismiss_job(job_id: str):
@@ -297,6 +341,7 @@ def register_operation_routes(
     @app.post("/api/creators/inventory", status_code=202)
     async def creator_inventory(body: CreatorInventoryBody):
         try:
+            assert_creator_share(body.source_text)
             job = core.capture_douyin_creator(
                 body.source_text,
                 inspirations=body.inspirations,

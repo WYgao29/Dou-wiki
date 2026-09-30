@@ -283,7 +283,7 @@ def test_video_and_douyin_auth_channels_are_isolated(tmp_path) -> None:
     )
     app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
-        status = client.get("/api/auth/status").json()
+        status = client.get("/api/auth/status", params={"refresh": "true"}).json()
         assert status["cookie_values_exposed"] is False
         assert status["channels"]["video"]["user_state"] != "authorized"
         assert status["channels"]["douyin"]["user_state"] == "authorized"
@@ -463,7 +463,10 @@ def test_in_progress_filter_child_warnings_and_settings_aliases(tmp_path) -> Non
         active = client.get("/api/jobs", params={"status": "in_progress"}).json()
         active_ids = {item["id"] for item in active["items"]}
         assert running.id in active_ids
-        assert queued.id in active_ids
+        assert queued.id not in active_ids
+        queued_only = client.get("/api/jobs", params={"status": "queued"}).json()
+        assert queued.id in {item["id"] for item in queued_only["items"]}
+        assert running.id not in {item["id"] for item in queued_only["items"]}
         assert selecting.id not in active_ids
         assert gateway.id not in active_ids
         assert failed.id not in active_ids

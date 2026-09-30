@@ -126,7 +126,7 @@ def test_overview_alerts_unverified_video_channel(tmp_path) -> None:
     app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
         overview = client.get("/api/overview").json()
-        auth = client.get("/api/auth/status").json()
+        auth = client.get("/api/auth/status", params={"refresh": "true"}).json()
     video = auth["channels"]["video"]
     assert video["user_state"] == "unconfirmed"
     assert video["user_state_label"] == "暂时无法确认"

@@ -38,6 +38,7 @@ STATUS_TO_STAGE: dict[JobStatus, str] = {
     JobStatus.COMPLETED: "done",
     JobStatus.COMPLETED_WITH_WARNINGS: "done",
     JobStatus.FAILED: "done",
+    JobStatus.CANCELLED: "done",
 }
 
 USER_ACTION_STATUSES = {
@@ -63,6 +64,7 @@ TERMINAL_STATUSES = {
     JobStatus.COMPLETED,
     JobStatus.COMPLETED_WITH_WARNINGS,
     JobStatus.FAILED,
+    JobStatus.CANCELLED,
 }
 
 AUTH_USER_STATES: dict[str, tuple[str, str]] = {

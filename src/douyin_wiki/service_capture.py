@@ -118,6 +118,9 @@ class CaptureMixin:
             )
         resolved_data = artifacts["resolved"]
         video_id = resolved_data["video_id"]
+        cancelled = self.finish_cancel_if_requested(job)
+        if cancelled is not None:
+            return cancelled
 
         async with self._work_capture_locked(video_id):
             return await self._process_resolved_capture(job, artifacts, resolved_data)

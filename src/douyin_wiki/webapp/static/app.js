@@ -39,6 +39,10 @@ const state = {
   sources: [],
   inspirationOnly: false,
   query: "",
+  commandArticles: [],
+  commandSearch: 0,
+  commandTimer: 0,
+  pendingNewSession: false,
   currentEntry: document.body.dataset.entryId || "",
   currentArticleItem: null,
   currentTopic: document.body.dataset.topicId || "",
@@ -197,9 +201,29 @@ async function api(url, options = {}) {
     const detail = Array.isArray(body.detail)
       ? body.detail.map((item) => item.msg || "输入内容无效").join("；")
       : body.detail;
-    throw new Error(detail || "请求失败");
+    const error = new Error(detail || "请求失败");
+    error.status = response.status;
+    throw error;
   }
   return response.json();
+}
+
+let suppressLibraryToastUntil = 0;
+function markOwnMutation(ms = 6500) {
+  suppressLibraryToastUntil = Date.now() + ms;
+}
+window.Douku.markOwnMutation = markOwnMutation;
+
+function mediaSentence(item) {
+  const retention = item.retention;
+  const status = item.media_status;
+  if (retention === "temporary" && status === "present") return "媒体暂时留在本机，之后可以清理。";
+  if (retention === "temporary" && status === "removed") return "临时媒体已经清理，只保留文字资料。";
+  if (retention === "keep" && status === "present") return "媒体会一直保留在本机。";
+  if (retention === "keep" && status === "removed") return "已设为一直保留，但媒体文件目前不在本机。";
+  if (retention === "discard" && status === "removed") return "处理完成后已清理媒体，只保留文字资料。";
+  if (retention === "discard" && status === "present") return "处理完成后会清理媒体，文件目前还在本机。";
+  return "媒体状态还没有记录。";
 }
 
 function openDestructiveDialog({title, description, confirmLabel, action, onSuccess, successMessage}) {
@@ -226,7 +250,9 @@ async function runDestructiveAction() {
     state.destructiveAction = null;
     $("#destructive-dialog").close();
     const warning = result?.warnings?.[0];
-    toast(warning ? `${pending.successMessage || "操作已完成"}；${warning}` : (pending.successMessage || "操作已完成"));
+    if (pending.successMessage !== false) {
+      toast(warning ? `${pending.successMessage || "操作已完成"}；${warning}` : (pending.successMessage || "操作已完成"));
+    }
     try {
       await pending.onSuccess?.(result);
     } catch (error) {
@@ -475,7 +501,7 @@ function renderSidebarTags() {
     button.classList.toggle("active", selected);
     button.setAttribute("aria-pressed", String(selected));
     button.addEventListener("click", () => {
-      window.Douku.navigate(`/?tag=${encodeURIComponent(tag.name)}&view=list`);
+      window.Douku.navigate(window.Douku.tagPath(tag.name));
     });
     return button;
   }));
@@ -797,22 +823,46 @@ function openFocused() {
 }
 
 async function reanalyzeItem(item, button) {
+  const confirmed = await window.Douku.confirmDanger({
+    title: "重新分析这篇文章？",
+    description: "重新分析会调用模型并消耗 Token。确认后任务进入队列，你仍留在这篇文章。",
+    confirmLabel: "开始重新分析",
+  });
+  if (!confirmed) return;
   button.disabled = true;
+  markOwnMutation(4000);
   try {
     const job = await api(`/api/articles/${encodeURIComponent(item.entry_id)}/reanalyze`, {method: "POST", body: JSON.stringify({force: false})});
-    toast("已提交重新分析"); window.Douku.navigate(`/jobs/${job.id}`);
-  } catch (error) { toast(error.message || "重新分析失败"); button.disabled = false; }
+    const jobId = job.id || job.job_id;
+    window.Douku.toastAction("已排队重新分析", "查看任务", () => window.Douku.navigate(`/jobs/${jobId}`), 6000);
+  } catch (error) { toast(error.message || "重新分析失败"); }
+  button.disabled = false;
 }
 
 function deleteLibraryItem(item) {
   openDestructiveDialog({title: "删除整条资料？", description: `《${item.title}》的文章、原始记录、机器数据、视频、图片和封面将移入抖库废纸篓，并从检索与专题中移除。`, confirmLabel: "移到废纸篓",
-    action: () => api(`/api/articles/${encodeURIComponent(item.entry_id)}`, {method: "DELETE", body: JSON.stringify({confirmed: true})}), successMessage: "资料已移到废纸篓",
-    onSuccess: async () => {
+    action: () => {
+      markOwnMutation();
+      return api(`/api/articles/${encodeURIComponent(item.entry_id)}`, {method: "DELETE", body: JSON.stringify({confirmed: true})});
+    },
+    successMessage: false,
+    onSuccess: async (result) => {
       state.currentEntry = "";
       state.allItems = state.allItems.filter((value) => value.entry_id !== item.entry_id);
       state.selectedEntryIds.delete(item.entry_id);
       await Promise.all([loadLibrary({showLoading: false}), loadTopics(), loadTrash()]);
       showLibrary();
+      const trashId = result?.trash_id;
+      if (!trashId) {
+        toast("已移到废纸篓");
+        return;
+      }
+      window.Douku.toastAction("已移到废纸篓", "撤销", async () => {
+        markOwnMutation(4000);
+        await api("/api/trash/batch/restore", {method: "POST", body: JSON.stringify({confirmed: true, trash_ids: [trashId]})});
+        await Promise.all([loadLibrary({showLoading: false}), loadTopics(), loadTrash()]);
+        toast("已恢复");
+      }, 6000);
     },
   });
 }
@@ -939,6 +989,7 @@ function updateTopicSelectionButton() {
 }
 
 function openTopicDialog() {
+  window.Douku.hideToast?.();
   if (!state.selectedEntryIds.size) {
     toast("请先选择至少一篇文章");
     return;
@@ -1080,7 +1131,23 @@ async function loadTopics() {
   const data = await api("/api/topics");
   state.topics = data.topics || [];
   renderTopicsList();
+  renderSidebarTopics();
   return state.topics;
+}
+
+function renderSidebarTopics() {
+  const root = $("#sidebar-recent-topics");
+  if (!root) return;
+  const recent = [...state.topics].sort((a, b) => String(b.topic?.updated_at || "").localeCompare(String(a.topic?.updated_at || ""))).slice(0, 5);
+  root.replaceChildren(...recent.map((value) => {
+    const topic = value.topic;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "nav-item sidebar-topic";
+    button.append(window.Douku.node("span", topic.title));
+    button.addEventListener("click", () => openTopic(topic.id));
+    return button;
+  }));
 }
 
 function renderTopicsList() {
@@ -1245,6 +1312,7 @@ function renderTrash() {
       description: `将恢复《${item.title}》的文章、原始记录、视频或图片，并重新加入检索和相关专题。`,
       confirmLabel: "确认恢复",
       action: async () => {
+        markOwnMutation();
         return api(`/api/trash/${encodeURIComponent(item.trash_id)}/restore`, {
           method: "POST", body: JSON.stringify({confirmed: true}),
         });
@@ -1292,6 +1360,7 @@ function openTrashBatchDialog(kind) {
       description: "将恢复所选文章、原始记录、视频或图片，并重新加入检索和相关专题。",
       confirmLabel: "确认恢复",
       action: async () => {
+        markOwnMutation();
         return api("/api/trash/batch/restore", {
           method: "POST", body: JSON.stringify({confirmed: true, trash_ids: ids}),
         });
@@ -1510,7 +1579,8 @@ async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
     if (preserve && drawerBefore === "chat") openDrawer("chat");
     if (preserve && focusedSource) $$("#topic-sources-pane input").find((input) => input.dataset.entryId === focusedSource)?.focus({preventScroll: true});
   } catch (error) {
-    toast(error.message);
+    if (error.status === 404) window.Douku.showMissing();
+    else toast(error.message);
   }
 }
 
@@ -1896,7 +1966,10 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
     }
     if (citation) window.setTimeout(() => { if (state.currentEntry === entryId) focusCitation(citation); }, 50);
   } catch (error) {
-    if (requestId === state.readerRequestId) renderArticleError(error);
+    if (requestId === state.readerRequestId) {
+      if (error.status === 404) window.Douku.showMissing();
+      else renderArticleError(error);
+    }
   } finally {
     if (state.pendingArticleRequest === requestId) state.pendingArticleRequest = 0;
     sourceLink?.removeAttribute("aria-busy");
@@ -2059,9 +2132,7 @@ function renderInfoPanel(item, {context = "library"} = {}) {
   });
   if (!tags.childNodes.length) tags.textContent = "—";
   addDetail("标签", tags);
-  addDetail("媒体", isDatabaseManaged(item)
-    ? `${{temporary: "临时保留", keep: "永久保留", discard: "处理后清理"}[item.retention] || item.retention || "—"} · ${{present: "已保留", removed: "已清理"}[item.media_status] || item.media_status || "—"}`
-    : "只读 Markdown");
+  addDetail("媒体", isDatabaseManaged(item) ? mediaSentence(item) : "只读 Markdown，没有随库管理的媒体文件");
   addDetail("状态", item.status || "—");
   const actions = window.Douku.node("div", null, "info-actions");
   if (context === "library") {
@@ -2241,26 +2312,66 @@ function trapDrawerFocus(event) {
 
 window.Douku.panel = {setTabs: renderPanelTabs, select: selectPanelTab, open: () => setChatPanelOpen(true), close: () => setChatPanelOpen(false)};
 
-function commandHaystack(item) {
-  return [item.title, item.author, item.summary, ...(item.tags || []), ...(item.inspirations || []).map((value) => value.text)].join(" ").toLocaleLowerCase("zh-CN");
+function commandQuery() {
+  return $("#command-input").value.trim().replace(/^>/, "").trim().toLocaleLowerCase("zh-CN");
 }
 
-function commandMatches() {
-  const query = $("#command-input").value.trim().toLocaleLowerCase("zh-CN");
-  const articles = (state.allItems.length ? state.allItems : state.items)
-    .filter((item) => !query || commandHaystack(item).includes(query)).slice(0, 12);
-  if (!query.startsWith(">") && articles.length) return articles;
-  const commands = [
+function fuzzyIncludes(text, query) {
+  const hay = String(text || "").toLocaleLowerCase("zh-CN");
+  if (!query) return true;
+  if (hay.includes(query)) return true;
+  let index = 0;
+  for (const char of hay) {
+    if (char === query[index]) index += 1;
+    if (index === query.length) return true;
+  }
+  return false;
+}
+
+function commandCatalog() {
+  return [
     ["single", "导入单条", "plus", "⌘ I", () => window.Douku.navigate("/imports/single")],
     ["creators", "导入博主", "user-round", "", () => window.Douku.navigate("/imports/creators")],
     ["favorites", "导入抖音收藏", "bookmark", "", () => window.Douku.navigate("/imports/favorites")],
     ["jobs", "打开任务中心", "list-checks", "g j", () => window.Douku.navigate("/jobs")],
-    ["chat", "新建 AI 对话", "message-square", "", async () => { selectPanelTab("chat"); setChatPanelOpen(true); await createSession(); $("#chat-input").focus(); }],
+    ["tags", "打开标签", "hash", "g g", () => window.Douku.navigate("/tags")],
+    ["topics", "打开专题", "layers", "g t", () => window.Douku.navigate("/topics")],
+    ["trash", "打开废纸篓", "trash-2", "g x", () => window.Douku.navigate("/trash")],
+    ["settings", "打开设置", "settings", "g s", () => window.Douku.navigate("/settings")],
+    ["chat", "新建 AI 对话", "message-square", "", () => { selectPanelTab("chat"); setChatPanelOpen(true); prepareNewChat(); $("#chat-input").focus(); }],
     ["theme", "切换主题", "sun", "", () => window.DoukuTheme.set(document.documentElement.dataset.theme === "dark" ? "light" : "dark")],
     ["shortcuts", "显示快捷键", "keyboard", "?", () => $("#shortcuts-dialog").showModal()],
   ].map(([commandId, title, icon, shortcut, run]) => ({commandId, title, icon, shortcut, run}));
-  const term = query.startsWith(">") ? query.slice(1).trim() : "";
-  return commands.filter((command) => !term || command.title.includes(term));
+}
+
+function commandMatches() {
+  const query = commandQuery();
+  const commands = commandCatalog().filter((command) => fuzzyIncludes(command.title, query));
+  const articles = query ? state.commandArticles : [];
+  return [...commands, ...articles];
+}
+
+function scheduleCommandSearch() {
+  const query = commandQuery();
+  window.clearTimeout(state.commandTimer);
+  if (!query) {
+    state.commandArticles = [];
+    renderCommandResults();
+    return;
+  }
+  renderCommandResults();
+  state.commandTimer = window.setTimeout(async () => {
+    const token = ++state.commandSearch;
+    try {
+      const data = await api(`/api/library?q=${encodeURIComponent(query)}&limit=8`);
+      if (token !== state.commandSearch || commandQuery() !== query) return;
+      state.commandArticles = data.items || [];
+    } catch (_error) {
+      if (token !== state.commandSearch) return;
+      state.commandArticles = [];
+    }
+    renderCommandResults();
+  }, 180);
 }
 
 function syncCommandActiveState(root) {
@@ -2317,7 +2428,7 @@ function renderCommandResults() {
   if (!items.length) {
     const empty = document.createElement("p");
     empty.className = "command-help";
-    empty.textContent = "没有找到匹配命令";
+    empty.textContent = "无匹配";
     root.append(empty);
   }
 }
@@ -2326,7 +2437,7 @@ async function openCommandMenu() {
   await ensureCommandItems();
   state.commandIndex = 0;
   $("#command-input").value = state.query;
-  renderCommandResults();
+  scheduleCommandSearch();
   $("#command-dialog").showModal();
   $("#command-input").focus();
 }
@@ -2354,6 +2465,23 @@ function showChatNotice(message = "", unconfigured = false) {
   }
 }
 
+function sessionInScope(session) {
+  if (!session) return false;
+  if (state.currentTopic) return session.scope === "topic" && session.context_topic_id === state.currentTopic;
+  const item = currentEntryItem();
+  if (state.currentEntry && isDatabaseManaged(item)) {
+    return session.scope === "entry" && session.context_entry_id === state.currentEntry;
+  }
+  return session.scope === "library";
+}
+
+function prepareNewChat() {
+  state.pendingNewSession = true;
+  state.currentSession = "";
+  renderSessionSelect();
+  $("#chat-messages").replaceChildren(makeWelcome());
+}
+
 async function loadSessions(preferNew = false) {
   try {
     const data = await api("/api/chat/sessions");
@@ -2361,13 +2489,14 @@ async function loadSessions(preferNew = false) {
     $("#model-label").textContent = `模型：${data.configured ? data.model : "未配置"}`;
     state.chatConfigured = data.configured;
     showChatNotice(data.configured ? "" : "尚未配置对话模型。", !data.configured);
-    if (preferNew) {
-      await createSession();
-    } else {
-      if (!state.sessions.some((item) => item.id === state.currentSession)) state.currentSession = state.sessions[0]?.id || "";
-      renderSessionSelect();
-      if (state.currentSession) await loadMessages(); else $("#chat-messages").replaceChildren(makeWelcome());
+    if (preferNew || state.pendingNewSession) {
+      prepareNewChat();
+      return;
     }
+    const current = state.sessions.find((item) => item.id === state.currentSession && sessionInScope(item));
+    state.currentSession = current?.id || state.sessions.find(sessionInScope)?.id || "";
+    renderSessionSelect();
+    if (state.currentSession) await loadMessages(); else $("#chat-messages").replaceChildren(makeWelcome());
   } catch (error) {
     showChatNotice(error.message);
   }
@@ -2381,25 +2510,45 @@ async function createSession() {
       ? {scope: "entry", context_entry_id: state.currentEntry}
       : {scope: "library"};
   const session = await api("/api/chat/sessions", {method: "POST", body: JSON.stringify(payload)});
+  state.pendingNewSession = false;
   state.currentSession = session.id;
   await loadSessions(false);
 }
 
 function renderSessionSelect() {
-  const options = state.sessions.map((session) => {
-    const option = document.createElement("option");
-    option.value = session.id;
-    option.textContent = session.title;
-    option.selected = session.id === state.currentSession;
-    return option;
+  const select = $("#session-select");
+  const groups = [
+    ["当前范围", state.sessions.filter(sessionInScope)],
+    ["其他范围", state.sessions.filter((session) => !sessionInScope(session))],
+  ];
+  const nodes = [];
+  if (state.pendingNewSession || !state.currentSession) {
+    const pending = document.createElement("option");
+    pending.value = "";
+    pending.textContent = "新对话";
+    pending.selected = !state.currentSession;
+    nodes.push(pending);
+  }
+  groups.forEach(([label, sessions]) => {
+    if (!sessions.length) return;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    sessions.forEach((session) => {
+      const option = document.createElement("option");
+      option.value = session.id;
+      option.textContent = session.title;
+      option.selected = session.id === state.currentSession;
+      group.append(option);
+    });
+    nodes.push(group);
   });
-  if (!options.length) {
+  if (!nodes.length) {
     const option = document.createElement("option");
     option.value = "";
     option.textContent = "暂无对话";
-    options.push(option);
+    nodes.push(option);
   }
-  $("#session-select").replaceChildren(...options);
+  select.replaceChildren(...nodes);
   updateChatContext();
 }
 
@@ -2671,7 +2820,7 @@ async function sendChat(text) {
   const box = $("#chat-messages");
   $(".chat-welcome", box)?.remove();
   box.append(makeMessage("user", text, "", [], true));
-  const answer = makeMessage("assistant", "", "", [], true);
+  const answer = makeMessage("assistant", "正在准备检索…", "", [], true);
   answer.classList.add("is-streaming");
   box.append(answer);
   box.scrollTop = box.scrollHeight;
@@ -2701,7 +2850,10 @@ async function sendChat(text) {
     const decoder = new TextDecoder();
     let buffer = "";
     const onEvent = (name, data) => {
-      if (name === "meta") citations = data.citations || [];
+      if (name === "meta") {
+        citations = data.citations || [];
+        if (!raw && !failed) answer.textContent = "";
+      }
       if (name === "delta" && !failed) {
         raw += data.text;
         answer.textContent = raw;
@@ -2843,15 +2995,25 @@ function handleGlobalKeydown(event) {
     }
     return;
   }
-  if (editing || event.metaKey || event.ctrlKey || event.altKey) { state.navigationPrefixAt = 0; return; }
+  if (editing || event.metaKey || event.ctrlKey || event.altKey) {
+    state.navigationPrefixAt = 0;
+    window.Douku.chordPending = false;
+    return;
+  }
   if (state.navigationPrefixAt && Date.now() - state.navigationPrefixAt < 1000) {
     state.navigationPrefixAt = 0;
+    window.Douku.chordPending = false;
     const section = {l: "all", r: "recent", f: "favorite", i: "inspiration"}[key];
-    const path = {t: "/topics", j: "/jobs", x: "/trash", s: "/settings"}[key];
+    const path = {t: "/topics", j: "/jobs", x: "/trash", s: "/settings", g: "/tags"}[key];
     if (section) { event.preventDefault(); $(`.nav-item[data-section='${section}']`).click(); return; }
     if (path) { event.preventDefault(); window.Douku.navigate(path); return; }
   }
-  if (key === "g") { state.navigationPrefixAt = Date.now(); return; }
+  if (key === "g") {
+    state.navigationPrefixAt = Date.now();
+    window.Douku.chordPending = true;
+    return;
+  }
+  window.Douku.chordPending = false;
   state.navigationPrefixAt = 0;
   if (state.panelPage === "article" && !event.target.closest("#entry-menu,#imports-popover,#filter-popover")) {
     const interactive = Boolean(event.target.closest("button,a,[role='tab'],#library-sidebar"));
@@ -2928,18 +3090,30 @@ function handleGlobalKeydown(event) {
   else if (event.key === "?") { event.preventDefault(); $("#shortcuts-dialog").showModal(); }
 }
 
+function authSummaryLabel(value) {
+  if (value?.pending) return "正在检查…";
+  const ready = Object.values(value?.channels || {}).filter((channel) => ["authorized", "available"].includes(channel.user_state)).length;
+  return `已授权 ${ready}/2`;
+}
+
 async function loadSettingsSummary() {
   ["auth", "analysis", "model", "system"].forEach((id) => { $(`#settings-value-${id}`).textContent = "—"; });
   const values = await Promise.allSettled([api("/api/auth/status"), api("/api/system/analysis"), api("/api/settings/model"), api("/api/system/health")]);
   values.forEach((result, index) => {
     if (result.status !== "fulfilled") return;
     const value = result.value; const id = ["auth", "analysis", "model", "system"][index];
-    const label = id === "auth" ? `已授权 ${Object.values(value.channels || {}).filter((channel) => ["authorized", "available"].includes(channel.user_state)).length}/2`
+    const label = id === "auth" ? authSummaryLabel(value)
       : id === "analysis" ? value.label || value.mode_label || value.analysis_mode_label || value.mode
       : id === "model" ? value.configured && value.model ? value.model : "未配置"
       : value.worker?.running ? "运行中" : "未运行";
     $(`#settings-value-${id}`).textContent = label || "—";
   });
+  const auth = values[0].status === "fulfilled" ? values[0].value : null;
+  if (auth?.pending || auth?.cached) {
+    api("/api/auth/status?refresh=true").then((value) => {
+      $("#settings-value-auth").textContent = authSummaryLabel(value);
+    }).catch(() => {});
+  }
 }
 
 async function loadRecentImports() {
@@ -2962,10 +3136,78 @@ function bindEvents() {
     else $("#jobs-view").insertBefore(filters, $("#jobs-list"));
   };
   positionJobFilters(); window.addEventListener("resize", positionJobFilters);
-  $("#import-paste").addEventListener("input", () => { $("#import-paste-kind").textContent = $("#import-paste").value.includes("douyin.com/user/") ? "识别为：博主主页" : "识别为：单条作品"; });
+  let pasteToken = 0;
+  let pasteKind = "";
+  const pasteContinue = $("#import-paste-form button[type='submit']");
+  const classifyPaste = async () => {
+    const value = $("#import-paste").value.trim();
+    const token = ++pasteToken;
+    const kind = $("#import-paste-kind");
+    if (!value) {
+      pasteKind = "";
+      kind.textContent = "粘贴后识别导入方式";
+      if (pasteContinue) pasteContinue.disabled = true;
+      return;
+    }
+    const lower = value.toLowerCase();
+    const douyin = lower.includes("douyin.com") || lower.includes("iesdouyin.com");
+    if (!douyin) {
+      pasteKind = "";
+      kind.textContent = "无法识别";
+      if (pasteContinue) pasteContinue.disabled = true;
+      return;
+    }
+    if (lower.includes("douyin.com/user/") || lower.includes("iesdouyin.com/share/user/")) {
+      pasteKind = "creator";
+      kind.textContent = "识别为：博主主页";
+      if (pasteContinue) pasteContinue.disabled = false;
+      return;
+    }
+    if (/douyin\.com\/(?:share\/)?(?:video|note|gallery)\//.test(lower) || /[?&](?:aweme_id|item_id|modal_id)=\d{10,}/.test(lower)) {
+      pasteKind = "work";
+      kind.textContent = "识别为：单条作品";
+      if (pasteContinue) pasteContinue.disabled = false;
+      return;
+    }
+    if (lower.includes("v.douyin.com")) {
+      pasteKind = "";
+      kind.textContent = "正在识别短链…";
+      if (pasteContinue) pasteContinue.disabled = true;
+      try {
+        const data = await api("/api/imports/classify", {method: "POST", body: JSON.stringify({text: value})});
+        if (token !== pasteToken) return;
+        if (data.kind === "creator" || data.kind === "work") {
+          pasteKind = data.kind;
+          kind.textContent = data.kind === "creator" ? "识别为：博主主页" : "识别为：单条作品";
+          if (pasteContinue) pasteContinue.disabled = false;
+        } else {
+          kind.textContent = "无法识别";
+          if (pasteContinue) pasteContinue.disabled = true;
+        }
+      } catch (_error) {
+        if (token !== pasteToken) return;
+        kind.textContent = "无法识别";
+        if (pasteContinue) pasteContinue.disabled = true;
+      }
+      return;
+    }
+    pasteKind = "";
+    kind.textContent = "无法识别";
+    if (pasteContinue) pasteContinue.disabled = true;
+  };
+  if (pasteContinue) pasteContinue.disabled = true;
+  $("#import-paste").addEventListener("input", () => { classifyPaste(); });
+  $("#import-paste").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      if (pasteContinue && !pasteContinue.disabled) $("#import-paste-form").requestSubmit();
+    }
+  });
   $("#import-paste-form").addEventListener("submit", (event) => {
-    event.preventDefault(); const value = $("#import-paste").value.trim();
-    if (!value) return; const creator = value.includes("douyin.com/user/");
+    event.preventDefault();
+    const value = $("#import-paste").value.trim();
+    if (!value || !pasteKind) return;
+    const creator = pasteKind === "creator";
     window.Douku.navigate(creator ? "/imports/creators" : "/imports/single");
     $(creator ? "#creator-source" : "#single-share").value = value;
   });
@@ -3031,7 +3273,6 @@ function bindEvents() {
       state.selectedEntryIds.clear();
       if (state.currentEntry || state.currentTopic || !$("#topics-view").classList.contains("hidden")) showLibrary();
       renderLibrary();
-      toast("请选择要加入专题的文章");
     } else if (state.selectedEntryIds.size) {
       openTopicDialog();
     } else {
@@ -3046,7 +3287,7 @@ function bindEvents() {
     state.topicSelectionMode = true;
     state.selectedEntryIds.clear();
     showLibrary();
-    toast("已进入资料库多选：请勾选来源文章后点「下一步」创建专题");
+    renderLibrary();
   });
   $("#confirm-topic").addEventListener("click", (event) => {
     event.preventDefault();
@@ -3118,10 +3359,16 @@ function bindEvents() {
     $("#chat-menu").classList.toggle("hidden", !open);
     $("#chat-menu-toggle").setAttribute("aria-expanded", String(open));
   });
-  $("#new-session").addEventListener("click", () => createSession().catch((error) => showChatNotice(error.message)));
+  $("#new-session").addEventListener("click", () => prepareNewChat());
   $("#delete-session").addEventListener("click", async () => {
     closeChatMenu();
-    if (!state.currentSession || !window.confirm("删除当前对话及全部历史消息？此操作无法撤销。")) return;
+    if (!state.currentSession) return;
+    const confirmed = await window.Douku.confirmDanger({
+      title: "删除当前对话？",
+      description: "删除当前对话及全部历史消息。此操作无法撤销。",
+      confirmLabel: "删除对话",
+    });
+    if (!confirmed) return;
     try {
       await api(`/api/chat/sessions/${state.currentSession}`, {method: "DELETE"});
       state.currentSession = "";
@@ -3132,8 +3379,10 @@ function bindEvents() {
     }
   });
   $("#session-select").addEventListener("change", async (event) => {
+    state.pendingNewSession = false;
     state.currentSession = event.target.value;
     if (state.currentSession) await loadMessages();
+    else $("#chat-messages").replaceChildren(makeWelcome());
     updateChatContext();
   });
   $("#chat-form").addEventListener("submit", (event) => {
@@ -3166,7 +3415,7 @@ function bindEvents() {
     if ($("#destructive-dialog").returnValue === "cancel") state.destructiveAction = null;
   });
   $("#inspiration-dialog").addEventListener("close", () => state.lastDialogTrigger?.focus());
-  $("#command-input").addEventListener("input", () => { state.commandIndex = 0; renderCommandResults(); });
+  $("#command-input").addEventListener("input", () => { state.commandIndex = 0; scheduleCommandSearch(); });
   $("#command-input").addEventListener("keydown", (event) => {
     const length = commandMatches().length;
     if (event.key === "ArrowDown" && length) { event.preventDefault(); state.commandIndex = (state.commandIndex + 1) % length; renderCommandResults(); }
@@ -3191,6 +3440,7 @@ function bindEvents() {
       document.title = "导入内容 · 抖库";
       loadRecentImports();
       refreshAuthChannelBanners();
+      window.Douku?.warnIfWorkerDown("imports-view");
       return;
     }
     if (path === "/settings") {
@@ -3262,6 +3512,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
   renderPanelTabs(state.currentEntry ? "article" : state.currentTopic ? "topic" : "library");
   renderToolbarState();
+  if (document.body.dataset.missing === "1") {
+    window.Douku.showMissing();
+  } else {
   await loadLibrary();
   await loadTopics();
   if (state.currentTopic) await openTopic(state.currentTopic, false);
@@ -3277,6 +3530,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     $("#not-found-view")?.classList.remove("hidden");
     document.title = "页面不存在 · 抖库";
   }
+  }
   refreshAuthChannelBanners();
   await loadSessions();
   const events = new EventSource("/api/library/events");
@@ -3288,7 +3542,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (state.panelPage === "tags") await window.Douku.tags.load();
     if (state.currentEntry) await openArticle(state.currentEntry, false);
     if (state.currentTopic) await openTopic(state.currentTopic, false);
-    toast("资料库已更新");
+    if (Date.now() >= suppressLibraryToastUntil) toast("资料库已更新");
   });
   events.addEventListener("error", () => {
     // Native EventSource reconnects automatically; browsing remains available.

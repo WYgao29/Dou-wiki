@@ -400,7 +400,29 @@ class DouyinWikiService(
 
 
 
+    def cancel_job(self, job_id: str) -> JobRecord:
+        return self.database.request_cancel(job_id)
+
+    def delete_job(self, job_id: str) -> None:
+        self.database.delete_finished_job(job_id)
+
+    def finish_cancel_if_requested(self, job: JobRecord) -> JobRecord | None:
+        current = self.database.get_job(job.id)
+        if current.status == JobStatus.CANCELLED:
+            return current
+        if not current.artifacts.get("cancel_requested"):
+            return None
+        return self.database.update_job(
+            current.id,
+            status=JobStatus.CANCELLED,
+            error_message="已取消",
+            unlock=True,
+        )
+
     async def process_claimed_job(self, job: JobRecord) -> JobRecord:
+        cancelled = self.finish_cancel_if_requested(job)
+        if cancelled is not None:
+            return cancelled
         try:
             if job.kind == "favorites_import":
                 outcome = await self.favorites.process(job)

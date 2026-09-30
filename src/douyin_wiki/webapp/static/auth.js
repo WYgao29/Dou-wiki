@@ -38,7 +38,7 @@
       card.append(D.node("p", channel.message));
     }
     const technical = [];
-    if (channel.user_state !== "unconfirmed" && channel.message) technical.push(channel.message);
+    if (channel.user_state !== "unconfirmed" && channel.user_state !== "checking" && channel.message) technical.push(channel.message);
     if (channel.detail) technical.push(channel.detail);
     if (channel.cookie_source_label) technical.push(channel.cookie_source_label);
     if (channel.account_hint) technical.push(`账号：${channel.account_hint}`);
@@ -150,13 +150,13 @@
     D.$("auth-view").classList.remove("hidden");
     document.title = "授权状态 · 抖库";
     renderSkeleton();
-    try {
-      const data = await load(false);
+    load(false).then((data) => {
       const video = data.channels?.video;
-      const needsVerify = data.cached || video?.user_state === "unconfirmed" || video?.user_state === "unverified";
+      const needsVerify = Boolean(data.pending || data.cached)
+        || video?.user_state === "checking"
+        || video?.user_state === "unconfirmed"
+        || video?.user_state === "unverified";
       if (needsVerify) load(true).catch((error) => D.toast(error.message));
-    } catch (error) {
-      D.toast(error.message);
-    }
+    }).catch((error) => D.toast(error.message));
   });
 })();

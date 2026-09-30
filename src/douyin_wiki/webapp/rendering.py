@@ -148,8 +148,29 @@ def _render_article_markdown(value: str) -> str:
     return _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
 
 
+_INSPIRATION_SECTION = re.compile(r"(?ms)^## 灵感[^\n]*\n+(?P<body>.*?)(?=^## |\Z)")
+_RELEVANCE_CALLOUT = re.compile(r"(?m)^> \[!note\] AI 推断：与灵感的关系\n(?:^>.*(?:\n|$))*\n?")
+
+
+def _strip_empty_inspiration(markdown: str) -> str:
+    """Drop an empty 灵感 block and its AI-inference callout from the reader view."""
+    match = _INSPIRATION_SECTION.search(markdown)
+    if match is None:
+        return markdown
+    lines = []
+    for line in match.group("body").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(">"):
+            continue
+        lines.append(stripped)
+    if lines and any(line not in {"- 未填写", "未填写"} for line in lines):
+        return markdown
+    stripped = markdown[: match.start()] + markdown[match.end() :]
+    return _RELEVANCE_CALLOUT.sub("", stripped)
+
+
 def render_article(markdown: str, *, source_path: str, catalog: LibraryCatalog) -> str:
-    value = _wikilinks(_remove_private_lines(markdown), catalog)
+    value = _wikilinks(_remove_private_lines(_strip_empty_inspiration(markdown)), catalog)
     source = (catalog.vault_path / source_path).resolve()
 
     def image(match: re.Match[str]) -> str:

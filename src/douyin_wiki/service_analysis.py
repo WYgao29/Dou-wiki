@@ -348,6 +348,9 @@ class AnalysisMixin:
         return {"queued_job_ids": queued, "skipped_entry_ids": skipped, "force": force}
 
     async def process_reanalysis(self, job: JobRecord) -> JobRecord:
+        cancelled = self.finish_cancel_if_requested(job)
+        if cancelled is not None:
+            return cancelled
         entry_id = str(job.artifacts.get("reanalyze_entry_id", ""))
         entry = self.database.get_entry(entry_id)
         current_data = self.database.get_entry_data(entry_id)

@@ -26,6 +26,7 @@ JOB_STATUS_LABELS = {
     "completed": "已完成",
     "completed_with_warnings": "已完成（有提示）",
     "failed": "失败",
+    "cancelled": "已取消",
 }
 
 CREATOR_DECISION_LABELS = {

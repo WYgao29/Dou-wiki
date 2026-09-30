@@ -16,6 +16,8 @@ from .database import Database, lexical_document
 from .time_utils import iso_now
 from .vault import VaultWriter
 
+PIN_LIMIT = 8
+
 TAG_SCHEMA = """
 CREATE TABLE IF NOT EXISTS tags (
     name TEXT PRIMARY KEY,
@@ -213,6 +215,11 @@ class TagManager:
             if row is None:
                 raise KeyError("标签不存在")
             if pinned and not row["pinned_at"]:
+                pinned_count = conn.execute(
+                    "SELECT COUNT(*) FROM tags WHERE pinned_at IS NOT NULL"
+                ).fetchone()[0]
+                if pinned_count >= PIN_LIMIT:
+                    raise ValueError("最多固定 8 个")
                 position = conn.execute("SELECT COALESCE(MAX(position), 0)+1 FROM tags").fetchone()[
                     0
                 ]
@@ -398,3 +405,26 @@ class TagManager:
                 raise
             if (self.vault.vault_path / ".git").exists():
                 self.vault.commit(list(changed), "tags: update vocabulary")
+
+    def split(self, alias: str) -> None:
+        """Turn an alias back into an independent tag. Articles stay on the canonical name."""
+        alias = alias.strip()
+        if not alias:
+            raise ValueError("请指定要拆开的别名")
+        with self.vault.entry_operations_locked(), self.database.connect() as conn:
+            row = conn.execute(
+                "SELECT canonical FROM tag_aliases WHERE alias=?", (alias,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("别名不存在")
+            if conn.execute("SELECT 1 FROM tags WHERE name=?", (alias,)).fetchone():
+                raise ValueError("同名标签已存在")
+            conn.execute("DELETE FROM tag_aliases WHERE alias=?", (alias,))
+            conn.execute(
+                "INSERT INTO tags(name, created_at) VALUES (?, ?)",
+                (alias, iso_now()),
+            )
+
+    def unused_names(self, items) -> list[str]:
+        overview = self.overview(items)
+        return [row["name"] for row in overview["tags"] if row["count"] == 0]

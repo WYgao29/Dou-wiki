@@ -56,6 +56,7 @@ class JobStatus(StrEnum):
     COMPLETED = "completed"
     COMPLETED_WITH_WARNINGS = "completed_with_warnings"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 AuthState = Literal[
@@ -85,7 +86,7 @@ class AuthCheckResult(BaseModel):
 
 
 class InspirationInput(BaseModel):
-    text: str = Field(min_length=1, max_length=4000)
+    text: str = Field(default="", max_length=4000)
     quote: str | None = Field(default=None, max_length=4000)
     start_ms: int | None = Field(default=None, ge=0)
     end_ms: int | None = Field(default=None, ge=0)

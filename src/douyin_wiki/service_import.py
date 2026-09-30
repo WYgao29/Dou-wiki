@@ -249,6 +249,9 @@ class ImportMixin:
         ]
 
     async def process_creator_import(self, job: JobRecord) -> JobRecord:
+        cancelled = self.finish_cancel_if_requested(job)
+        if cancelled is not None:
+            return cancelled
         artifacts = dict(job.artifacts)
         action = str(artifacts.get("creator_action") or "initial")
         self.database.update_job(job.id, status=JobStatus.RESOLVING, progress=0.05)

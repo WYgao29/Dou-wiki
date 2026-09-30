@@ -3,7 +3,9 @@
   const D = window.Douku;
   const $ = D.$;
   const node = D.node;
-  const state = {rows: [], duplicates: [], selected: new Set(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
+  const state = {rows: [], duplicates: [], aliases: {}, selected: new Set(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
+  const PIN_LIMIT = 8;
+  const narrowTags = () => window.matchMedia("(width < 480px)").matches;
   const active = () => $("app-shell").dataset.page === "tags";
   const date = (value) => value ? new Date(value).toLocaleString("zh-CN", {year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : "—";
   const pinned = () => state.rows.filter(row => row.pinned_at).sort((a, b) => a.position - b.position || a.pinned_at.localeCompare(b.pinned_at));
@@ -21,17 +23,44 @@
       return state.direction * compare || a.name.localeCompare(b.name, "zh-CN");
     });
   }
+  function applyOverview(data) {
+    state.rows = data.tags || [];
+    state.duplicates = data.duplicates || [];
+    state.aliases = data.aliases || {};
+  }
+  function actionMessage(action, payload) {
+    if (action === "rename") return `已重命名为 ${payload.target}`;
+    if (action === "merge") return `已合并到 ${payload.target}`;
+    if (action === "delete") return "已删除标签";
+    if (action === "pin") return payload.pinned ? "已固定" : "已取消固定";
+    if (action === "reorder") return "已调整固定顺序";
+    if (action === "split") return "已拆回独立标签";
+    return "标签已更新";
+  }
   async function change(action, payload, selection = null) {
     if (state.busy) return false;
     state.busy = true; render();
     try {
+      D.markOwnMutation?.();
       const data = await D.api(`/api/tags/${action}`, {method: "POST", body: JSON.stringify(payload)});
       state.request += 1;
-      state.rows = data.tags; state.duplicates = data.duplicates;
+      applyOverview(data);
       if (selection) { state.selected = new Set(selection); state.focus = selection[0] || ""; }
       $("tags-error").classList.add("hidden");
       await D.refreshLibrary();
-      D.toast(data.warnings?.length ? data.warnings.join("；") : "标签已更新");
+      const text = data.warnings?.length ? `${actionMessage(action, payload)}；${data.warnings.join("；")}` : actionMessage(action, payload);
+      if (action === "merge") {
+        const sources = [...new Set(payload.names || [])].filter((name) => name && name !== payload.target);
+        D.toastAction(text, "撤销", async () => {
+          D.markOwnMutation?.();
+          for (const name of sources) {
+            await D.api("/api/tags/split", {method: "POST", body: JSON.stringify({name})});
+          }
+          await load();
+          await D.refreshLibrary();
+          D.toast("已拆回独立标签");
+        });
+      } else D.toast(text);
       return true;
     } catch (error) {
       $("tags-error").textContent = error.message;
@@ -44,7 +73,7 @@
     try {
       const data = await D.api("/api/tags");
       if (request !== state.request) return;
-      state.rows = data.tags; state.duplicates = data.duplicates;
+      applyOverview(data);
       $("tags-error").classList.add("hidden"); render();
     } catch (error) {
       if (request !== state.request) return;
@@ -115,6 +144,45 @@
     });
     info.replaceChildren(node("h2", `# ${row.name}`), details, node("h3", "最近加入"), list);
   }
+  function makePin(row) {
+    const pinFull = pinned().length >= PIN_LIMIT && !row.pinned_at;
+    const pin = button("", () => change("pin", {name: row.name, pinned: !row.pinned_at}), "icon-button tag-pin");
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const use = document.createElementNS(svg.namespaceURI, "use");
+    use.setAttribute("href", "/static/icons.svg#pin");
+    svg.setAttribute("aria-hidden", "true");
+    svg.append(use);
+    pin.append(svg);
+    pin.dataset.tagAction = "pin";
+    pin.disabled = state.busy || pinFull;
+    pin.setAttribute("aria-pressed", String(Boolean(row.pinned_at)));
+    pin.setAttribute("aria-label", pinFull ? `最多固定 ${PIN_LIMIT} 个` : `${row.pinned_at ? "取消固定" : "固定到侧栏"} ${row.name}`);
+    if (pinFull) pin.title = `最多固定 ${PIN_LIMIT} 个`;
+    return pin;
+  }
+  function tagLink(row) {
+    const link = node("a", row.name);
+    const href = D.tagPath(row.name);
+    link.href = href;
+    link.dataset.tagAction = "name";
+    link.addEventListener("click", (event) => { event.preventDefault(); D.navigate(href); });
+    return link;
+  }
+  function renderAliases() {
+    const root = $("tag-aliases");
+    const entries = Object.entries(state.aliases);
+    root.classList.toggle("hidden", !entries.length);
+    if (!entries.length) { root.replaceChildren(); return; }
+    root.replaceChildren(
+      node("h2", "别名"),
+      node("p", "别名会解析成标准标签。撤销只拆回独立标签，文章仍留在标准标签上。", "hint-copy"),
+      ...entries.map(([alias, canonical]) => {
+        const row = node("div", null, "tag-alias-row");
+        row.append(node("span", `${alias} → ${canonical}`), button("撤销", () => change("split", {name: alias}), "text-button"));
+        return row;
+      }),
+    );
+  }
   function render() {
     const known = new Set(state.rows.map(row => row.name));
     state.selected = new Set([...state.selected].filter(name => known.has(name)));
@@ -124,7 +192,7 @@
     const focusName = focused?.closest("[data-tag-name]")?.dataset.tagName;
     const focusAction = focused?.dataset.tagAction;
     $("tags-rows").replaceChildren(...rows.map(row => {
-      const tr = node("tr"); tr.dataset.tagName = row.name;
+      const tr = node("tr"); tr.dataset.tagName = row.name; tr.tabIndex = -1;
       tr.classList.toggle("selected", state.selected.has(row.name));
       tr.addEventListener("focusin", () => { state.focus = row.name; renderPanel(); });
       const check = node("input"); check.type = "checkbox"; check.checked = state.selected.has(row.name);
@@ -133,15 +201,8 @@
         if (check.checked) state.selected.add(row.name); else state.selected.delete(row.name);
         state.focus = row.name; render();
       });
-      const link = node("a", row.name); link.href = `/?tag=${encodeURIComponent(row.name)}&view=list`;
-      link.dataset.tagAction = "name";
-      link.addEventListener("click", event => { event.preventDefault(); D.navigate(link.getAttribute("href")); });
-      const pin = button("", () => change("pin", {name: row.name, pinned: !row.pinned_at}), "icon-button tag-pin");
-      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      const use = document.createElementNS(svg.namespaceURI, "use"); use.setAttribute("href", "/static/icons.svg#pin"); svg.setAttribute("aria-hidden", "true"); svg.append(use); pin.append(svg);
-      pin.dataset.tagAction = "pin";
-      pin.setAttribute("aria-pressed", String(Boolean(row.pinned_at)));
-      pin.setAttribute("aria-label", `${row.pinned_at ? "取消固定" : "固定到侧栏"} ${row.name}`);
+      const link = tagLink(row);
+      const pin = makePin(row);
       const controls = node("div", null, "tag-pin-controls"); controls.append(pin);
       if (row.pinned_at) {
         [-1, 1].forEach(delta => {
@@ -162,10 +223,35 @@
       });
       return tr;
     }));
+    $("tags-cards").replaceChildren(...rows.map((row) => {
+      const card = node("article", null, "tag-card");
+      card.dataset.tagName = row.name;
+      card.tabIndex = -1;
+      card.classList.toggle("selected", state.selected.has(row.name));
+      card.addEventListener("focusin", () => { state.focus = row.name; renderPanel(); });
+      const check = node("input");
+      check.type = "checkbox";
+      check.checked = state.selected.has(row.name);
+      check.setAttribute("aria-label", `选择 ${row.name}`);
+      check.dataset.tagAction = "select";
+      check.disabled = state.busy;
+      check.addEventListener("change", () => {
+        if (check.checked) state.selected.add(row.name); else state.selected.delete(row.name);
+        state.focus = row.name; render();
+      });
+      const copy = node("div", null, "tag-card-copy");
+      copy.append(tagLink(row), node("span", `${row.count} 条`, "tag-count"));
+      const actions = node("div", null, "tag-card-actions");
+      actions.append(makePin(row));
+      card.append(check, copy, actions);
+      return card;
+    }));
     if (focusName && focusAction) {
-      [...$("tags-rows").rows].find(row => row.dataset.tagName === focusName)?.querySelector(`[data-tag-action='${focusAction}']`)?.focus({preventScroll: true});
+      const scope = narrowTags() ? $("tags-cards") : $("tags-rows");
+      [...scope.querySelectorAll("[data-tag-name]")].find((row) => row.dataset.tagName === focusName)?.querySelector(`[data-tag-action='${focusAction}']`)?.focus({preventScroll: true});
     }
-    $("tags-count").textContent = `${rows.length} / ${state.rows.length} 个标签`;
+    const pinNote = pinned().length >= PIN_LIMIT ? ` · 最多固定 ${PIN_LIMIT} 个` : "";
+    $("tags-count").textContent = `${rows.length} / ${state.rows.length} 个标签${pinNote}`;
     $("tags-selected").textContent = state.selected.size ? `已选 ${state.selected.size} 个` : "";
     $("tags-rename").disabled = state.busy || state.selected.size !== 1;
     $("tags-merge").disabled = state.busy || state.selected.size < 2;
@@ -189,6 +275,7 @@
       group.append(node("span", names.join(" · ")), select, button("合并", () => change("merge", {names, target: select.value}, [select.value]), "secondary-button"));
       return group;
     }));
+    renderAliases();
     renderPanel();
   }
   async function open() {
@@ -209,6 +296,46 @@
     $("tags-rename").addEventListener("click", () => edit("rename"));
     $("tags-merge").addEventListener("click", () => edit("merge"));
     $("tags-delete").addEventListener("click", () => remove());
+    $("tags-cleanup").addEventListener("click", async () => {
+      if (state.busy) return;
+      try {
+        const preview = await D.api("/api/tags/cleanup", {method: "POST", body: JSON.stringify({confirmed: false})});
+        if (!preview.count) { D.toast("没有未使用的标签"); return; }
+        const names = preview.names || [];
+        const shown = names.slice(0, 8).join("、");
+        const extra = names.length > 8 ? ` 等 ${names.length} 个` : "";
+        const confirmed = await D.confirmDanger({
+          title: "清理未使用标签",
+          description: `将删除 ${preview.count} 个没有文章的标签：${shown}${extra}。资料会保留。`,
+          confirmLabel: "确认清理",
+        });
+        if (!confirmed) return;
+        D.markOwnMutation?.();
+        const data = await D.api("/api/tags/cleanup", {method: "POST", body: JSON.stringify({confirmed: true})});
+        applyOverview(data);
+        await D.refreshLibrary();
+        D.toast(`已清理 ${data.deleted?.length || preview.count} 个未使用标签`);
+        render();
+      } catch (error) {
+        $("tags-error").textContent = error.message;
+        $("tags-error").classList.remove("hidden");
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (!active() || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
+      if (D.chordPending || event.key === "g") return;
+      if (document.querySelector("dialog[open]")) return;
+      if (event.target.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key !== "j" && event.key !== "k") return;
+      const rows = [...(narrowTags() ? $("tags-cards") : $("tags-rows")).querySelectorAll("[data-tag-name]")];
+      if (!rows.length) return;
+      event.preventDefault();
+      const current = rows.findIndex((row) => row.dataset.tagName === state.focus);
+      const next = rows[Math.max(0, Math.min(rows.length - 1, (current < 0 ? 0 : current) + (event.key === "j" ? 1 : -1)))];
+      state.focus = next.dataset.tagName;
+      next.focus({preventScroll: false});
+      renderPanel();
+    });
     $("tag-edit-form").addEventListener("submit", async event => {
       if (event.submitter?.value === "cancel") return;
       event.preventDefault();
