@@ -55,12 +55,14 @@ class CaptureMixin:
         assets_dir = self.config.vault_path / raw_root / "assets" / entry.video_id
         self.database.update_job(job.id, status=JobStatus.DOWNLOADING, progress=0.2)
         async with self.download_semaphore:
+            self.check_job_cancelled(job)
             metadata = await self.downloader.download(
                 entry.canonical_url,
                 entry.video_id,
                 assets_dir,
             )
         with self.vault.entry_operations_locked():
+            self.check_job_cancelled(job)
             current = self.database.get_entry(entry.id)
             data = self.database.get_entry_data(entry.id)
             downloaded = metadata.model_dump(mode="json")
@@ -91,13 +93,13 @@ class CaptureMixin:
                 log_summary="恢复收藏视频媒体",
                 commit_message=f"media: restore {current.video_id} {current.title}",
             )
-        return self.database.update_job(
-            job.id,
-            status=JobStatus.COMPLETED,
-            progress=1,
-            result={"entry_id": entry.id, "media_restored": True},
-            unlock=True,
-        )
+            return self.database.update_job(
+                job.id,
+                status=JobStatus.COMPLETED,
+                progress=1,
+                result={"entry_id": entry.id, "media_restored": True},
+                unlock=True,
+            )
 
     async def process_capture(self, job: JobRecord) -> JobRecord:
         request = job.request
@@ -181,6 +183,7 @@ class CaptureMixin:
             return await self._process_image_note_capture(job, artifacts, resolved_data)
 
         with self.vault.entry_operations_locked():
+            self.check_job_cancelled(job)
             # Re-read after the work lock so a preceding capture can win the
             # first-write race and its user data is never lost.
             existing = self.database.find_entry_by_video_id(video_id)
@@ -222,6 +225,7 @@ class CaptureMixin:
         if "metadata" not in artifacts or not video_checkpoint_valid:
             self.database.update_job(job.id, status=JobStatus.DOWNLOADING, progress=0.12)
             async with self.download_semaphore:
+                self.check_job_cancelled(job)
                 metadata = await self.downloader.download(
                     resolved_data["canonical_url"], video_id, assets_dir
                 )
@@ -313,6 +317,7 @@ class CaptureMixin:
             audio_path = assets_dir / "audio.wav"
             frames_dir = assets_dir / "frames"
             async with self.media_semaphore:
+                self.check_job_cancelled(job)
                 # Prefer audio.mp4; also accept other retained audio.* from CDN merge.
                 retained_audio = [
                     path
@@ -518,6 +523,7 @@ class CaptureMixin:
                     artifacts={"analysis_progress": waiting_detail},
                 )
             async with self.analysis_semaphore:
+                self.check_job_cancelled(job)
                 if isinstance(self.analysis, OpenAICompatibleProvider):
                     artifacts["analysis_progress"]["waiting_for_resource"] = False
                     self.database.update_job(
@@ -626,6 +632,7 @@ class CaptureMixin:
                 )
                 analysis_metadata["existing_tags"] = self.tags.standard_names()
                 async with self.analysis_semaphore:
+                    self.check_job_cancelled(job)
                     analysis_kwargs = (
                         {
                             "checkpoints": checkpoints,
@@ -784,48 +791,52 @@ class CaptureMixin:
         reminders = [
             ReminderCandidate.model_validate(item) for item in analysis_data.get("reminders", [])
         ]
-        if request.options.retention == RetentionPolicy.DISCARD:
-            self.trash_assets(entry, mark_database=False)
-            entry = entry.model_copy(update={"media_status": "removed"})
-        chunks, relations, reminders = self.prepare_entry_bundle(entry, data, reminders=reminders)
-        self.persist_entry_documents_and_bundle(
-            entry,
-            data,
-            chunks,
-            relations,
-            reminders,
-            action="ingest",
-            log_summary=entry.summary,
-            commit_message=f"ingest: {video_id} {entry.title}",
-        )
+        with self.vault.entry_operations_locked():
+            self.check_job_cancelled(job)
+            if request.options.retention == RetentionPolicy.DISCARD:
+                self.trash_assets(entry, mark_database=False)
+                entry = entry.model_copy(update={"media_status": "removed"})
+            chunks, relations, reminders = self.prepare_entry_bundle(
+                entry, data, reminders=reminders
+            )
+            self.persist_entry_documents_and_bundle(
+                entry,
+                data,
+                chunks,
+                relations,
+                reminders,
+                action="ingest",
+                log_summary=entry.summary,
+                commit_message=f"ingest: {video_id} {entry.title}",
+            )
 
-        warnings = []
-        if artifacts.get("ocr_warning"):
-            warnings.append(f"OCR 未完成：{artifacts['ocr_warning']}")
-        if artifacts.get("transcript_skipped") == "no_audio_available":
-            warnings.append("视频无音轨，未生成逐字稿；分析仅依据画面文字和作品信息")
-        if self.config.analysis_mode != AnalysisMode.GATEWAY and not self.analysis.configured:
-            warnings.append("模型未配置，使用本地降级分析")
-        if artifacts.get("analysis_evidence_warning"):
-            warnings.append(artifacts["analysis_evidence_warning"])
-        status = JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED
-        return self.database.update_job(
-            job.id,
-            status=status,
-            progress=1,
-            result={
-                "entry_id": entry.id,
-                "source_path": entry.source_path,
-                "raw_path": entry.raw_path,
-                "summary": entry.summary,
-                "ai_judgment": analysis_data.get("ai_judgment", ""),
-                "reminder_candidates": analysis_data.get("reminders", []),
-                "warnings": warnings,
-                "media_provenance": artifacts.get("media_provenance", {}),
-                "reacquired": bool(existing),
-            },
-            unlock=True,
-        )
+            warnings = []
+            if artifacts.get("ocr_warning"):
+                warnings.append(f"OCR 未完成：{artifacts['ocr_warning']}")
+            if artifacts.get("transcript_skipped") == "no_audio_available":
+                warnings.append("视频无音轨，未生成逐字稿；分析仅依据画面文字和作品信息")
+            if self.config.analysis_mode != AnalysisMode.GATEWAY and not self.analysis.configured:
+                warnings.append("模型未配置，使用本地降级分析")
+            if artifacts.get("analysis_evidence_warning"):
+                warnings.append(artifacts["analysis_evidence_warning"])
+            status = JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED
+            return self.database.update_job(
+                job.id,
+                status=status,
+                progress=1,
+                result={
+                    "entry_id": entry.id,
+                    "source_path": entry.source_path,
+                    "raw_path": entry.raw_path,
+                    "summary": entry.summary,
+                    "ai_judgment": analysis_data.get("ai_judgment", ""),
+                    "reminder_candidates": analysis_data.get("reminders", []),
+                    "warnings": warnings,
+                    "media_provenance": artifacts.get("media_provenance", {}),
+                    "reacquired": bool(existing),
+                },
+                unlock=True,
+            )
 
     async def _process_image_note_capture(
         self,
@@ -837,6 +848,7 @@ class CaptureMixin:
         request = job.request
         work_id = str(resolved_data["video_id"])
         with self.vault.entry_operations_locked():
+            self.check_job_cancelled(job)
             # The work lock makes this re-read authoritative for a waiter.
             existing = self.database.find_entry_by_video_id(work_id)
             if existing:
@@ -874,6 +886,7 @@ class CaptureMixin:
         if metadata is None:
             self.database.update_job(job.id, status=JobStatus.DOWNLOADING, progress=0.15)
             async with self.download_semaphore:
+                self.check_job_cancelled(job)
                 metadata = await self.image_note_downloader.download(
                     resolved_data["canonical_url"], work_id, images_dir
                 )
@@ -916,6 +929,7 @@ class CaptureMixin:
         if "ocr" not in artifacts:
             self.database.update_job(job.id, status=JobStatus.EXTRACTING, progress=0.48)
             async with self.media_semaphore:
+                self.check_job_cancelled(job)
                 try:
                     raw_ocr = await self.ocr.recognize(
                         [(index, path) for index, path in enumerate(absolute_images, start=1)]
@@ -1015,19 +1029,26 @@ class CaptureMixin:
                 self.database.update_job(
                     job.id,
                     progress=max(current.progress, 0.70 + 0.1 * completed / max(total, 1)),
-                    artifacts={"analysis_progress": {
-                        "phase": phase,
-                        "completed_chunks": completed,
-                        "total_chunks": total,
-                        "waiting_for_resource": False,
-                    }},
+                    artifacts={
+                        "analysis_progress": {
+                            "phase": phase,
+                            "completed_chunks": completed,
+                            "total_chunks": total,
+                            "waiting_for_resource": False,
+                        }
+                    },
                 )
 
             async with self.analysis_semaphore:
+                self.check_job_cancelled(job)
                 kwargs = (
-                    {"checkpoints": checkpoints, "on_checkpoint": save_checkpoint,
-                     "on_progress": model_progress}
-                    if isinstance(self.analysis, OpenAICompatibleProvider) else {}
+                    {
+                        "checkpoints": checkpoints,
+                        "on_checkpoint": save_checkpoint,
+                        "on_progress": model_progress,
+                    }
+                    if isinstance(self.analysis, OpenAICompatibleProvider)
+                    else {}
                 )
                 analysis = await self.analysis.analyze(
                     [], ocr_models, effective_inspirations, analysis_metadata, **kwargs
@@ -1142,42 +1163,46 @@ class CaptureMixin:
         reminders = [
             ReminderCandidate.model_validate(item) for item in analysis_data.get("reminders", [])
         ]
-        chunks, relations, reminders = self.prepare_entry_bundle(entry, data, reminders=reminders)
-        self.persist_entry_documents_and_bundle(
-            entry,
-            data,
-            chunks,
-            relations,
-            reminders,
-            action="ingest",
-            log_summary=entry.summary,
-            commit_message=f"ingest-image-note: {work_id} {entry.title}",
-        )
-        warnings: list[str] = []
-        if artifacts.get("ocr_warning"):
-            warnings.append(f"OCR 未完成：{artifacts['ocr_warning']}")
-        if self.config.analysis_mode != AnalysisMode.GATEWAY and not self.analysis.configured:
-            warnings.append("模型未配置，使用本地降级分析")
-        status = JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED
-        return self.database.update_job(
-            job.id,
-            status=status,
-            progress=1,
-            artifacts={"llm_checkpoints": {}},
-            result={
-                "entry_id": entry.id,
-                "source_kind": SourceKind.IMAGE_NOTE.value,
-                "source_path": entry.source_path,
-                "raw_path": entry.raw_path,
-                "image_count": len(relative_images),
-                "summary": entry.summary,
-                "reminder_candidates": analysis_data.get("reminders", []),
-                "warnings": warnings,
-                "media_provenance": artifacts.get("media_provenance", {}),
-                "reacquired": bool(existing),
-            },
-            unlock=True,
-        )
+        with self.vault.entry_operations_locked():
+            self.check_job_cancelled(job)
+            chunks, relations, reminders = self.prepare_entry_bundle(
+                entry, data, reminders=reminders
+            )
+            self.persist_entry_documents_and_bundle(
+                entry,
+                data,
+                chunks,
+                relations,
+                reminders,
+                action="ingest",
+                log_summary=entry.summary,
+                commit_message=f"ingest-image-note: {work_id} {entry.title}",
+            )
+            warnings: list[str] = []
+            if artifacts.get("ocr_warning"):
+                warnings.append(f"OCR 未完成：{artifacts['ocr_warning']}")
+            if self.config.analysis_mode != AnalysisMode.GATEWAY and not self.analysis.configured:
+                warnings.append("模型未配置，使用本地降级分析")
+            status = JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED
+            return self.database.update_job(
+                job.id,
+                status=status,
+                progress=1,
+                artifacts={"llm_checkpoints": {}},
+                result={
+                    "entry_id": entry.id,
+                    "source_kind": SourceKind.IMAGE_NOTE.value,
+                    "source_path": entry.source_path,
+                    "raw_path": entry.raw_path,
+                    "image_count": len(relative_images),
+                    "summary": entry.summary,
+                    "reminder_candidates": analysis_data.get("reminders", []),
+                    "warnings": warnings,
+                    "media_provenance": artifacts.get("media_provenance", {}),
+                    "reacquired": bool(existing),
+                },
+                unlock=True,
+            )
 
     def persist_video_cover(
         self,

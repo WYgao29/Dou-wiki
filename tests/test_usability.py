@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import httpx
+
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.webapp.catalog import LibraryCatalog
 from douyin_wiki.webapp.rendering import render_article
@@ -105,9 +107,16 @@ def test_trashed_duplicate_import_does_not_create_job(tmp_path) -> None:
 
 
 def test_creator_import_rejects_non_creator_links(tmp_path) -> None:
-    _config, _service, app = _client(tmp_path)
+    _config, service, app = _client(tmp_path)
+    service.resolver.transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            302, headers={"location": "https://www.douyin.com/user/MS4wLjABAAAAcreator"}
+        )
+    )
     with local_client(app) as client:
-        foreign = client.post("/api/creators/inventory", json={"source_text": "https://example.com/user/abc"})
+        foreign = client.post(
+            "/api/creators/inventory", json={"source_text": "https://example.com/user/abc"}
+        )
         assert foreign.status_code == 400
         video = client.post(
             "/api/creators/inventory",
@@ -120,7 +129,9 @@ def test_creator_import_rejects_non_creator_links(tmp_path) -> None:
             json={"source_text": "https://www.douyin.com/user/MS4wLjABAAAAabcdefgh"},
         )
         assert home.status_code == 202
-        short = client.post("/api/creators/inventory", json={"source_text": "https://v.douyin.com/abc/"})
+        short = client.post(
+            "/api/creators/inventory", json={"source_text": "https://v.douyin.com/abc/"}
+        )
         assert short.status_code == 202
 
 

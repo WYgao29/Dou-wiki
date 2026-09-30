@@ -35,7 +35,12 @@ CREATE TABLE IF NOT EXISTS favorites_items (
 CREATE INDEX IF NOT EXISTS idx_favorites_items_child ON favorites_items(child_id);
 """
 
-TERMINAL = {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS, JobStatus.FAILED}
+TERMINAL = {
+    JobStatus.COMPLETED,
+    JobStatus.COMPLETED_WITH_WARNINGS,
+    JobStatus.FAILED,
+    JobStatus.CANCELLED,
+}
 
 
 def eligible(work: dict, options: dict) -> bool:
@@ -353,10 +358,11 @@ class FavoritesStore:
                 if needs_refresh:
                     sql += (
                         " WHERE f.confirmed=1 AND (j.status NOT IN "
-                        "('completed','completed_with_warnings','failed') OR EXISTS ("
+                        "('completed','completed_with_warnings','failed','cancelled') OR EXISTS ("
                         "SELECT 1 FROM favorites_items i JOIN jobs c ON c.id=i.child_id "
                         "WHERE i.parent_id=f.parent_id AND (c.updated_at>j.updated_at "
-                        "OR c.status NOT IN ('completed','completed_with_warnings','failed'))))"
+                        "OR c.status NOT IN "
+                        "('completed','completed_with_warnings','failed','cancelled'))))"
                     )
                 sql += " ORDER BY j.created_at DESC"
                 rows = conn.execute(

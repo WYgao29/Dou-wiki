@@ -6,7 +6,7 @@ import asyncio
 from collections import Counter
 from typing import TYPE_CHECKING
 
-from .errors import JobStateError
+from .errors import JobCancelledError, JobStateError
 from .favorites_store import TERMINAL, FavoritesStore, capture_keys, eligible
 from .models import CaptureRequest, JobStatus
 
@@ -142,7 +142,7 @@ class FavoritesService:
             elif not work.get("available", True):
                 state = "unavailable"
             elif child is not None:
-                if child.status == JobStatus.FAILED:
+                if child.status in {JobStatus.FAILED, JobStatus.CANCELLED}:
                     state = "failed"
                 elif child.status in TERMINAL:
                     state = "completed"
@@ -166,6 +166,13 @@ class FavoritesService:
                 "error_message": child.error_message if child else None,
                 "job_status": child.status.value if child else None,
                 "job_updated_at": child.updated_at.isoformat() if child else None,
+                "can_retry": bool(
+                    child
+                    and child.status == JobStatus.FAILED
+                    and not child.artifacts.get("user_deleted")
+                    and row["selected"]
+                    and can_import
+                ),
             }
             items.append(item)
         return items
@@ -196,6 +203,7 @@ class FavoritesService:
         result["child_status_counts"] = dict(
             Counter(i["job_status"] for i in items if i["job_id"] and i["selected"])
         )
+        result["retryable_failed"] = sum(i["can_retry"] for i in items)
         return result
 
     def get(self, job_id: str, *, page=1, limit=50, folder_id=None, query="", only_new=False):
@@ -242,24 +250,46 @@ class FavoritesService:
             "error_code": job.error_code,
             "auth_scope": job.result.get("auth_scope"),
             "confirmed": run["confirmed"],
+            "can_retry": bool(
+                job.status != JobStatus.CANCELLED
+                and not job.artifacts.get("cancel_requested")
+                and not job.artifacts.get("user_deleted")
+                and (
+                    summary["retryable_failed"]
+                    if run["confirmed"]
+                    else job.status in {JobStatus.FAILED, JobStatus.NEEDS_AUTH}
+                )
+            ),
         }
 
     def history(self, *, limit=50):
         if not 1 <= limit <= 1000:
             raise ValueError("limit 必须在 1 到 1000 之间")
-        return [self.get(job_id, limit=1) for job_id in self.store.parent_ids(limit=limit)]
+        return [
+            self.get(job_id, limit=1)
+            for job_id in self.store.parent_ids(limit=limit)
+            if not self.database.get_job(job_id).artifacts.get("user_deleted")
+        ]
 
     def select(self, job_id: str, *, selected: bool, work_ids=None, folder_id=None):
         self.store.select(job_id, selected=selected, work_ids=work_ids, folder_id=folder_id)
         return self.get(job_id)
 
     def confirm(self, job_id: str, *, accept_partial=False):
-        self.store.confirm(job_id, accept_partial=accept_partial, entry_intact=self._entry_intact)
-        return self.refresh(job_id)
+        with self.core.vault.entry_operations_locked():
+            self.store.confirm(
+                job_id, accept_partial=accept_partial, entry_intact=self._entry_intact
+            )
+            return self.refresh(job_id)
 
     def _refresh_with(self, job_id, run, items, summary):
         current = self.database.get_job(job_id)
-        if not run["confirmed"]:
+        if (
+            not run["confirmed"]
+            or current.status == JobStatus.CANCELLED
+            or current.artifacts.get("cancel_requested")
+            or current.artifacts.get("user_deleted")
+        ):
             return current
         children = [i for i in items if i["job_id"] and i["selected"]]
         finished = sum(i["disposition"] in {"failed", "completed"} for i in children)
@@ -286,14 +316,23 @@ class FavoritesService:
         }
         if current.status == status and current.result == result and current.progress == progress:
             return current
-        return self.database.update_job(
-            job_id,
-            status=status,
-            progress=progress,
-            result=result,
-            unlock=True,
-            expected_child_updates={i["job_id"]: i["job_updated_at"] for i in children},
-        )
+        try:
+            return self.database.update_job(
+                job_id,
+                status=status,
+                progress=progress,
+                result=result,
+                unlock=True,
+                expected_updated_at=current.updated_at,
+                expected_child_updates={i["job_id"]: i["job_updated_at"] for i in children},
+            )
+        except JobStateError:
+            # Cancellation, deletion or another refresh can invalidate this snapshot.
+            # Preserve the newer parent instead of failing the worker's polling loop.
+            latest = self.database.get_job(job_id)
+            if latest.updated_at != current.updated_at:
+                return latest
+            raise
 
     def refresh(self, job_id: str):
         run = self.store.load(job_id)
@@ -309,17 +348,25 @@ class FavoritesService:
             self.refresh(job_id)
 
     def retry_failed(self, job_id: str):
-        run = self.store.load(job_id)
-        if not run["confirmed"]:
-            return self.core.retry_job(job_id)
-        for row in self.store.rows(job_id):
-            if (
-                row["child_id"]
-                and self.database.get_job(row["child_id"]).status == JobStatus.FAILED
-            ):
+        with self.core.vault.entry_operations_locked():
+            parent = self.database.get_job(job_id)
+            if parent.artifacts.get("user_deleted"):
+                raise JobStateError("任务已删除")
+            if parent.status == JobStatus.CANCELLED or parent.artifacts.get("cancel_requested"):
+                raise JobCancelledError("任务已取消或已请求取消，不能重试")
+            run = self.store.load(job_id)
+            if not run["confirmed"]:
+                return self.core.retry_job(job_id)
+            for item in self._items(job_id, run):
+                if not item["can_retry"]:
+                    continue
                 try:
-                    self.core.retry_job(row["child_id"])
+                    self.core.retry_job(item["job_id"])
                 except JobStateError:
-                    if self.database.get_job(row["child_id"]).status == JobStatus.FAILED:
+                    latest = self.database.get_job(item["job_id"])
+                    if (
+                        latest.status == JobStatus.FAILED
+                        and not latest.artifacts.get("user_deleted")
+                    ):
                         raise
-        return self.refresh(job_id)
+            return self.refresh(job_id)

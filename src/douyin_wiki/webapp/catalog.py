@@ -155,6 +155,9 @@ class LibraryCatalog:
         creators = self.vault_path / "creators"
         if creators.is_dir():
             paths.extend(creators.glob("*/sources/*.md"))
+        topics = self.vault_path / "topics"
+        if topics.is_dir():
+            paths.extend(topics.rglob("*.md"))
         values: list[tuple[str, int, int]] = []
         for path in paths:
             try:
@@ -182,6 +185,7 @@ class LibraryCatalog:
         self,
         *,
         query: str = "",
+        fuzzy: bool = False,
         author: str = "",
         content_type: str = "",
         tag: str = "",
@@ -201,7 +205,9 @@ class LibraryCatalog:
                 ]
             ).casefold()
             if needle and needle not in haystack:
-                continue
+                letters = iter(haystack)
+                if not fuzzy or not all(char in letters for char in needle):
+                    continue
             if author and item.author != author:
                 continue
             if content_type and item.content_type != content_type:
@@ -269,11 +275,7 @@ class LibraryCatalog:
             status=str(frontmatter.get("status") or "已入库"),
             favorite=entry.favorite if entry else bool(frontmatter.get("favorite", False)),
             media_status=entry.media_status if entry else "present",
-            retention=(
-                entry.retention
-                if entry
-                else "temporary"
-            ),
+            retention=(entry.retention if entry else "temporary"),
             source_kind=source_kind,
             source_path=str(path.relative_to(self.vault_path)),
             original_url=original_url,

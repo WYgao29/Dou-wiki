@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic, sleep
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -508,7 +509,7 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
         assert "if (state.topicSelectionMode && isDatabaseManaged(item))" in script.text
         assert "if (!isDatabaseManaged(findLibraryItem(entryId))) return;" in script.text
         assert ".filter(isDatabaseManaged)" in script.text
-        assert "const articleChatEnabled = isDatabaseManaged(articleItem);" in script.text
+        assert 'state.panelPage === "article" && isDatabaseManaged(item)' in script.text
         assert "只读 Markdown，发送时使用全库对话" in script.text
         assert "只读 Markdown 文章不能保存灵感" in script.text
         assert "currentArticleItem: null" in script.text
@@ -549,6 +550,15 @@ def test_web_filter_popover_can_paint_above_sidebar(tmp_path: Path) -> None:
 )
 def test_web_capture_queues_link_or_share_text(tmp_path: Path, share_text: str) -> None:
     config, service = _web_fixture(tmp_path)
+    service.resolver.transport = httpx.MockTransport(
+        lambda request: (
+            httpx.Response(
+                302, headers={"location": "https://www.douyin.com/video/7659645255277039717"}
+            )
+            if request.url.host == "v.douyin.com"
+            else httpx.Response(200)
+        )
+    )
     app = create_app(config, service=service, start_watcher=False)
 
     with local_client(app) as client:

@@ -30,6 +30,7 @@ from .errors import (
     CookieRequiredError,
     DouyinWikiError,
     EntryNotFoundError,
+    JobCancelledError,
     JobLeaseLostError,
     JobStateError,
 )
@@ -248,15 +249,6 @@ class DouyinWikiService(
         )
         return self.database.create_job(request)
 
-
-
-
-
-
-
-
-
-
     def get_job(self, job_id: str) -> JobRecord:
         job = self.database.get_job(job_id)
         self._apply_live_creator_selection(job)
@@ -301,13 +293,11 @@ class DouyinWikiService(
     def acknowledge_job_event(self, event_id: int) -> JobEvent:
         return self.database.acknowledge_job_event(event_id)
 
-
-
-
-
     def retry_job(self, job_id: str) -> JobRecord:
         """Retry a failed job or explicitly reprocess a legacy review job."""
         job = self.database.get_job(job_id)
+        if job.artifacts.get("user_deleted"):
+            raise JobStateError("任务已删除")
         if job.kind == "media_restore":
             updated = self.database.requeue_job_deduplicated(job_id, match_artifact="entry_id")
             if updated.id == job_id and updated.artifacts.get("user_dismissed"):
@@ -328,9 +318,15 @@ class DouyinWikiService(
                 job_id,
                 artifacts={"previous_review_attempts": archived, "review_issues": []},
                 remove_artifacts={
-                    "transcript_corrected", "transcript_edits", "correction_notes",
-                    "review_resolved", "analysis", "analysis_candidate", "llm_checkpoints",
+                    "transcript_corrected",
+                    "transcript_edits",
+                    "correction_notes",
+                    "review_resolved",
+                    "analysis",
+                    "analysis_candidate",
+                    "llm_checkpoints",
                     "user_dismissed",
+                    "cancel_requested",
                 },
                 clear_review_issues=True,
                 expected_updated_at=job.updated_at,
@@ -342,69 +338,50 @@ class DouyinWikiService(
         # previously failed candidate forever — clear it on ordinary retries.
         updated = self.database.requeue_job(
             job_id,
-            remove_artifacts={"analysis_candidate", "user_dismissed"},
+            remove_artifacts={"analysis_candidate", "user_dismissed", "cancel_requested"},
             expected_updated_at=job.updated_at,
         )
         creator_context = updated.artifacts.get("creator_context") or {}
         self.refresh_creator_parent(str(creator_context.get("parent_job_id") or ""))
         return updated
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def cancel_job(self, job_id: str) -> JobRecord:
-        return self.database.request_cancel(job_id)
+        with self.vault.entry_operations_locked():
+            return self._cancel_job_locked(job_id)
+
+    def _cancel_job_locked(self, job_id: str) -> JobRecord:
+        job = self.database.request_cancel(job_id)
+        if job.kind in {"creator_import", "favorites_import"}:
+            others = [
+                value
+                for value in self.database.list_jobs(limit=None)
+                if value.id != job_id
+                and value.status
+                not in {
+                    JobStatus.COMPLETED,
+                    JobStatus.COMPLETED_WITH_WARNINGS,
+                    JobStatus.CANCELLED,
+                    JobStatus.FAILED,
+                }
+            ]
+            shared = {child for value in others for child in value.result.get("child_job_ids", [])}
+            for child_id in job.result.get("child_job_ids", []):
+                if child_id not in shared:
+                    with suppress(JobStateError):
+                        self.database.request_cancel(child_id)
+        self.favorites.refresh_for_child(job_id)
+        for parent in self.database.list_jobs(limit=None):
+            if parent.kind == "creator_import" and job_id in parent.result.get("child_job_ids", []):
+                self.refresh_creator_parent(parent.id)
+        return job
 
     def delete_job(self, job_id: str) -> None:
         self.database.delete_finished_job(job_id)
+
+    def check_job_cancelled(self, job: JobRecord) -> None:
+        current = self.database.get_job(job.id)
+        if current.status == JobStatus.CANCELLED or current.artifacts.get("cancel_requested"):
+            raise JobCancelledError("任务已请求取消")
 
     def finish_cancel_if_requested(self, job: JobRecord) -> JobRecord | None:
         current = self.database.get_job(job.id)
@@ -419,9 +396,21 @@ class DouyinWikiService(
             unlock=True,
         )
 
+    def record_job_outcome(self, job: JobRecord, **changes) -> JobRecord:
+        try:
+            return self.database.update_job(job.id, **changes)
+        except JobCancelledError:
+            cancelled = self.finish_cancel_if_requested(job)
+            if cancelled is None:
+                raise
+            return cancelled
+
     async def process_claimed_job(self, job: JobRecord) -> JobRecord:
         cancelled = self.finish_cancel_if_requested(job)
         if cancelled is not None:
+            self.favorites.refresh_for_child(cancelled.id)
+            context = cancelled.artifacts.get("creator_context") or {}
+            self.refresh_creator_parent(str(context.get("parent_job_id") or ""))
             return cancelled
         try:
             if job.kind == "favorites_import":
@@ -434,6 +423,8 @@ class DouyinWikiService(
                 outcome = await self.process_media_restore(job)
             else:
                 outcome = await self.process_capture(job)
+        except JobCancelledError:
+            outcome = self.finish_cancel_if_requested(job)
         except JobLeaseLostError:
             raise
         except (BrowserAuthRequiredError, CookieRequiredError) as exc:
@@ -443,8 +434,8 @@ class DouyinWikiService(
             auth_scope = "video" if is_video else ("creator" if is_creator else "image_note")
             if job.kind == "favorites_import":
                 auth_scope = "favorites"
-            outcome = self.database.update_job(
-                job.id,
+            outcome = self.record_job_outcome(
+                job,
                 status=JobStatus.NEEDS_AUTH,
                 error_code=exc.code,
                 error_message=str(exc),
@@ -457,14 +448,15 @@ class DouyinWikiService(
                 },
                 unlock=True,
             )
-            with suppress(Exception):
-                self.auth_guidance_launcher.launch(
-                    scope=auth_scope,
-                    trigger_job_id=job.id,
-                )
+            if outcome.status == JobStatus.NEEDS_AUTH:
+                with suppress(Exception):
+                    self.auth_guidance_launcher.launch(
+                        scope=auth_scope,
+                        trigger_job_id=job.id,
+                    )
         except DouyinWikiError as exc:
-            outcome = self.database.update_job(
-                job.id,
+            outcome = self.record_job_outcome(
+                job,
                 status=JobStatus.FAILED,
                 error_code=exc.code,
                 error_message=str(exc),
@@ -472,8 +464,8 @@ class DouyinWikiService(
                 unlock=True,
             )
         except Exception as exc:  # noqa: BLE001 - worker must persist unexpected failures
-            outcome = self.database.update_job(
-                job.id,
+            outcome = self.record_job_outcome(
+                job,
                 status=JobStatus.FAILED,
                 error_code="internal_error",
                 error_message=str(exc),
@@ -495,15 +487,6 @@ class DouyinWikiService(
                     )
             self.refresh_creator_parent(str(creator_context.get("parent_job_id") or ""))
         return outcome
-
-
-
-
-
-
-
-
-
 
     def prepare_entry_bundle(
         self,
@@ -597,7 +580,11 @@ class DouyinWikiService(
         for chunk in chunks:
             chunk["tags_text"] = " ".join(tags)
         return self.database.persist_entry_bundle(
-            entry, data, chunks, relations, reminders,
+            entry,
+            data,
+            chunks,
+            relations,
+            reminders,
             publish_documents=lambda: self.write_entry_documents(
                 entry,
                 data,
@@ -606,12 +593,6 @@ class DouyinWikiService(
                 commit_message=commit_message,
             ),
         )
-
-
-
-
-
-
 
     def commit_vault(self, changed: list[Path], message: str) -> bool:
         if not (self.config.vault_path / ".git").exists():
@@ -625,29 +606,12 @@ class DouyinWikiService(
             )
         return committed
 
-
-
-
-
-
-
-
-
-
     def vault_path(self, value: str | Path) -> Path:
         path = Path(value)
         return path if path.is_absolute() else self.config.vault_path / path
 
     def vault_relative(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.config.vault_path.resolve()))
-
-
-
-
-
-
-
-
 
     @staticmethod
     def ocr_model(value: dict[str, Any]):

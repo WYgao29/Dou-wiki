@@ -148,7 +148,7 @@ def _render_article_markdown(value: str) -> str:
     return _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
 
 
-_INSPIRATION_SECTION = re.compile(r"(?ms)^## 灵感[^\n]*\n+(?P<body>.*?)(?=^## |\Z)")
+_INSPIRATION_SECTION = re.compile(r"(?ms)^## 灵感[ \t]*\n+(?P<body>.*?)(?=^## |\Z)")
 _RELEVANCE_CALLOUT = re.compile(r"(?m)^> \[!note\] AI 推断：与灵感的关系\n(?:^>.*(?:\n|$))*\n?")
 
 
@@ -158,9 +158,9 @@ def _strip_empty_inspiration(markdown: str) -> str:
     if match is None:
         return markdown
     lines = []
-    for line in match.group("body").splitlines():
+    for line in _RELEVANCE_CALLOUT.sub("", match.group("body")).splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith(">"):
+        if not stripped:
             continue
         lines.append(stripped)
     if lines and any(line not in {"- 未填写", "未填写"} for line in lines):

@@ -597,6 +597,7 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
         assert "授权状态页" not in scripts["app.js"]
         assert "请到「共用模型」" not in scripts["app.js"]
         assert "设置 › 共用模型" in scripts["analysis-settings.js"]
+        client.get("/api/auth/status", params={"refresh": "true"})
         overview = client.get("/api/overview").json()
         unverified = next(
             item for item in overview["alerts"] if item["code"] == "video_auth_unverified"

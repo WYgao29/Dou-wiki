@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
+from contextvars import ContextVar
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Literal
@@ -22,7 +25,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from watchfiles import awatch
 
 from ..adapters.llm import FallbackAnalysisProvider, OpenAICompatibleProvider
-from ..adapters.share import extract_douyin_url, extract_work_identity
+from ..adapters.share import extract_douyin_url
 from ..config import (
     AppConfig,
     LLMSettings,
@@ -36,6 +39,7 @@ from ..localization import add_display_labels, label_entry_status
 from ..models import (
     AnalysisMode,
     CaptureOptions,
+    CaptureRequest,
     InspirationDraft,
     InspirationInput,
     RetentionPolicy,
@@ -45,12 +49,13 @@ from ..secrets import get_secret, store_secret
 from ..service import DouyinWikiService
 from ..setup import update_config_values, write_config
 from ..time_utils import beijing_iso, format_beijing, parse_clock_to_ms
+from ..vault import entry_operation_observer
 from ..web_operation import WebOperationService
 from .catalog import CONTENT_TYPE_LABELS, LibraryCatalog
 from .chat import ChatContextBuilder, ChatProvider, OpenAICompatibleChatProvider
 from .rendering import render_article, render_chat
 
-WEB_VERSION = "0.2.42"
+WEB_VERSION = "0.2.43"
 
 ANALYSIS_MODE_INFO = {
     "gateway": {
@@ -93,9 +98,7 @@ def _capture_inspirations(items: list[CaptureInspirationBody]) -> list[Inspirati
         if not text and quote is None and start is None and end is None:
             continue
         try:
-            parsed.append(
-                InspirationInput(text=text, quote=quote, start_ms=start, end_ms=end)
-            )
+            parsed.append(InspirationInput(text=text, quote=quote, start_ms=start, end_ms=end))
         except ValidationError as exc:
             raise HTTPException(
                 status_code=400,
@@ -104,11 +107,7 @@ def _capture_inspirations(items: list[CaptureInspirationBody]) -> list[Inspirati
     return parsed
 
 
-def _existing_capture(core, share_text: str) -> dict[str, Any] | None:
-    identity = extract_work_identity(extract_douyin_url(share_text))
-    if identity is None:
-        return None
-    video_id = identity[0]
+def _existing_capture(core, video_id: str) -> dict[str, Any] | None:
     entry = core.database.find_entry_by_video_id(video_id)
     if entry is not None:
         return {
@@ -233,19 +232,56 @@ class ModelSettingsRequest(BaseModel):
         return normalized or None
 
 
+_change_origin: ContextVar[str | None] = ContextVar("change_origin", default=None)
+_change_base: ContextVar[tuple | None] = ContextVar("change_base", default=None)
+_change_spans: ContextVar[list | None] = ContextVar("change_spans", default=None)
+
+
 class ChangeNotifier:
-    def __init__(self) -> None:
+    def __init__(self, fingerprint_provider: Callable | None = None) -> None:
         self.version = 0
         self.last_name = "library"
         self.last_payload: dict[str, Any] = {"version": 0}
         self._condition = asyncio.Condition()
+        self._events = deque(maxlen=256)
+        self._fingerprint_provider = fingerprint_provider
+        self._acknowledged = {}
 
     async def publish(self, name: str = "library", payload: dict[str, Any] | None = None) -> None:
         async with self._condition:
             self.version += 1
             self.last_name = name
             self.last_payload = payload or {"version": self.version}
+            self._events.append((self.version, name, _change_origin.get()))
+            if name == "library" and _change_origin.get():
+                spans = _change_spans.get()
+                if spans is None and self._fingerprint_provider and _change_base.get() is not None:
+                    spans = [(_change_base.get(), self._fingerprint_provider())]
+                for base, current in spans or []:
+                    if base != current:
+                        self._acknowledged[current] = base
+                while len(self._acknowledged) > 256:
+                    del self._acknowledged[next(iter(self._acknowledged))]
             self._condition.notify_all()
+
+    def already_published(self, before: tuple, after: tuple) -> bool:
+        seen = set()
+        while after != before:
+            if after in seen or after not in self._acknowledged:
+                return False
+            seen.add(after)
+            after = self._acknowledged[after]
+        return True
+
+    def library_payload(self, since: int) -> dict[str, Any]:
+        origins = {
+            origin
+            for version, name, origin in self._events
+            if version > since and name == "library"
+        }
+        if self._events and since < self._events[0][0] - 1:
+            origins.add(None)  # Missing history must not suppress a background update.
+        return {"version": self.version, "origins": list(origins)}
 
     async def wait(self, last_version: int) -> int:
         async with self._condition:
@@ -325,31 +361,20 @@ async def _watch_catalog(
     if not roots:
         roots = [catalog.vault_path]
     known_fingerprint = catalog.fingerprint
-    async for changes in awatch(
+    async for _changes in awatch(
         *roots,
         stop_event=stop_event,
         rust_timeout=500,
         yield_on_timeout=True,
     ):
-        relevant = False
-        for _, raw_path in changes:
-            path = Path(raw_path)
-            try:
-                relative = path.resolve().relative_to(catalog.vault_path)
-            except ValueError:
+        with catalog.tags.vault.entry_operations_locked():
+            current = catalog.compute_fingerprint()
+            if current == known_fingerprint:
                 continue
-            parts = relative.parts
-            if path.suffix.lower() == ".md" and (
-                parts[:2] == ("wiki", "sources")
-                or (len(parts) >= 3 and parts[0] == "creators" and parts[2] == "sources")
-                or (parts and parts[0] == "topics")
-            ):
-                relevant = True
-                break
-        current_fingerprint = catalog.compute_fingerprint()
-        if relevant or current_fingerprint != known_fingerprint:
             catalog.refresh()
-            known_fingerprint = catalog.fingerprint
+        published = notifier.already_published(known_fingerprint, current)
+        known_fingerprint = current
+        if not published:
             await notifier.publish()
 
 
@@ -392,7 +417,7 @@ def create_app(
         core.recover_entry_trash_operations()
     catalog = LibraryCatalog(cfg.vault_path, core.database)
     catalog.refresh()
-    notifier = ChangeNotifier()
+    notifier = ChangeNotifier(catalog.compute_fingerprint)
     operations = WebOperationService(core)
     provider_factory = chat_provider_factory or OpenAICompatibleChatProvider
     provider = chat_provider or provider_factory(cfg.llm)
@@ -504,7 +529,24 @@ def create_app(
             request
         ):
             return JSONResponse({"detail": "拒绝跨来源请求"}, status_code=403)
-        response = await call_next(request)
+        origin = request.headers.get("X-Douku-Client", "")[:80]
+        token = _change_origin.set(origin or None)
+        spans = []
+        span_token = _change_spans.set(spans)
+
+        def observe_entry_write():
+            before = catalog.compute_fingerprint()
+            return lambda: spans.append((before, catalog.compute_fingerprint()))
+
+        observer_token = entry_operation_observer.set(
+            observe_entry_write if request.method in {"POST", "PUT", "PATCH", "DELETE"} else None
+        )
+        try:
+            response = await call_next(request)
+        finally:
+            _change_origin.reset(token)
+            _change_spans.reset(span_token)
+            entry_operation_observer.reset(observer_token)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
@@ -578,9 +620,15 @@ def create_app(
 
     @app.get("/tags", response_class=HTMLResponse)
     async def tags_page(request: Request):
-        return templates.TemplateResponse(request, "app.html", {
-            "page_title": "标签管理", "initial_entry_id": "", "web_version": WEB_VERSION,
-        })
+        return templates.TemplateResponse(
+            request,
+            "app.html",
+            {
+                "page_title": "标签管理",
+                "initial_entry_id": "",
+                "web_version": WEB_VERSION,
+            },
+        )
 
     @app.get("/trash", response_class=HTMLResponse)
     async def trash_page(request: Request):
@@ -629,6 +677,7 @@ def create_app(
         tag: str = "",
         inspiration_only: bool = False,
         recent: bool = False,
+        fuzzy: bool = False,
         limit: int | None = Query(None, ge=1, le=500),
     ):
         tags = await asyncio.to_thread(tag_overview)
@@ -636,6 +685,7 @@ def create_app(
         tag = resolved_tags[0] if resolved_tags else ""
         items = catalog.filter(
             query=q,
+            fuzzy=fuzzy,
             author=author,
             content_type=content_type,
             tag=tag,
@@ -671,19 +721,67 @@ def create_app(
             extract_douyin_url(payload.share_text)
         except DouyinWikiError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        existing = _existing_capture(core, payload.share_text)
-        if existing:
-            return JSONResponse(existing, status_code=200)
         inspirations = _capture_inspirations(payload.inspirations)
-        job = core.capture_douyin(
-            payload.share_text,
-            inspirations=inspirations,
-            options=CaptureOptions(
-                retention=payload.retention,
-                allow_long=payload.allow_long,
-                approve_cloud_analysis=payload.approve_cloud_analysis,
-            ),
-        )
+        try:
+            resolved = await core.resolver.resolve(payload.share_text)
+        except DouyinWikiError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+        with core.vault.entry_operations_locked():
+            existing = _existing_capture(core, resolved.video_id)
+            if existing:
+                return JSONResponse(existing, status_code=200)
+            if catalog.compute_fingerprint() != catalog.fingerprint:
+                catalog.refresh()
+            item = next(
+                (item for item in catalog.list_items() if item.work_id == resolved.video_id), None
+            )
+            if item:
+                return JSONResponse(
+                    {
+                        "duplicate": True,
+                        "in_trash": False,
+                        "entry_id": item.entry_id,
+                        "href": f"/articles/{item.entry_id}",
+                        "title": item.title,
+                        "message": "已在资料库",
+                    }
+                )
+            new_job_id = uuid.uuid4().hex
+            job = core.database.get_or_create_active_job(
+                CaptureRequest(
+                    share_text=payload.share_text,
+                    inspirations=inspirations,
+                    options=CaptureOptions(
+                        retention=payload.retention,
+                        allow_long=payload.allow_long,
+                        approve_cloud_analysis=payload.approve_cloud_analysis,
+                    ),
+                ),
+                kind="capture",
+                new_job_id=new_job_id,
+                match_artifact="work_id",
+                artifacts={
+                    "work_id": resolved.video_id,
+                    "resolved": {
+                        "original_url": resolved.original_url,
+                        "canonical_url": resolved.canonical_url,
+                        "video_id": resolved.video_id,
+                        "source_kind": resolved.source_kind.value,
+                        "redirect_chain": list(resolved.redirect_chain),
+                    },
+                },
+            )
+        if job.id != new_job_id:
+            return JSONResponse(
+                {
+                    "duplicate": True,
+                    "active": True,
+                    "in_trash": False,
+                    "job_id": job.id,
+                    "href": f"/jobs/{job.id}",
+                    "message": "同作品已有采集任务；新填写的灵感与处理选项尚未保存",
+                }
+            )
         presented = operations.present(job)
         return {"job_id": job.id, **presented}
 
@@ -825,6 +923,7 @@ def create_app(
             )
         except (ValueError, EntryNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        catalog.refresh()
         await notifier.publish()
         return _topic_payload(value)
 
@@ -846,6 +945,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (ValueError, EntryNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        catalog.refresh()
         await notifier.publish()
         return _topic_payload(value)
 
@@ -861,6 +961,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (ValueError, DouyinWikiError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        catalog.refresh()
         await notifier.publish()
         result = {"topic": core.get_topic(topic_id)["topic"], "artifacts": [artifact]}
         return _topic_payload(result)["artifacts"][0]
@@ -878,6 +979,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        catalog.refresh()
         await notifier.publish()
         result = {"topic": core.get_topic(topic_id)["topic"], "artifacts": [artifact]}
         return _topic_payload(result)["artifacts"][0]
@@ -889,8 +991,12 @@ def create_app(
             yield _event("ready", {"version": version})
             while not await request.is_disconnected():
                 try:
-                    version = await asyncio.wait_for(notifier.wait(version), timeout=20)
-                    yield _event("library", {"version": version})
+                    since = version
+                    await asyncio.wait_for(notifier.wait(version), timeout=20)
+                    payload = notifier.library_payload(since)
+                    version = payload["version"]
+                    if payload["origins"]:
+                        yield _event("library", payload)
                 except TimeoutError:
                     yield ": keep-alive\n\n"
 

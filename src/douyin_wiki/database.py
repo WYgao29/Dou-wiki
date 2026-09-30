@@ -12,8 +12,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .errors import EntryNotFoundError, JobLeaseLostError, JobStateError
+from .errors import EntryNotFoundError, JobCancelledError, JobLeaseLostError, JobStateError
 from .models import (
+    CANCELLABLE_JOB_STATUSES,
     CaptureRequest,
     ChatMessage,
     ChatSession,
@@ -378,7 +379,8 @@ class Database:
         if active and active[0] == job_id:
             row = conn.execute(
                 "SELECT 1 FROM jobs WHERE id=? AND lock_owner=? AND locked_at IS NOT NULL "
-                "AND lease_expires_at>?", (job_id, active[1], utc_now().isoformat())
+                "AND lease_expires_at>?",
+                (job_id, active[1], utc_now().isoformat()),
             ).fetchone()
             if row is None:
                 raise JobLeaseLostError("任务的 Worker 租约已失效")
@@ -423,7 +425,7 @@ class Database:
             if previous_version < 9:
                 self._rebuild_fts_conn(conn)
             self._retire_undeliverable_events_conn(conn)
-            conn.execute("PRAGMA user_version=12")
+            conn.execute("PRAGMA user_version=13")
 
     @staticmethod
     def _rebuild_fts_conn(conn: sqlite3.Connection) -> None:
@@ -452,8 +454,7 @@ class Database:
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='web_chat_sessions'"
         ).fetchone()
         columns = {
-            item["name"]
-            for item in conn.execute("PRAGMA table_info(web_chat_sessions)").fetchall()
+            item["name"] for item in conn.execute("PRAGMA table_info(web_chat_sessions)").fetchall()
         }
         table_sql = str(row["sql"] or "") if row else ""
         if (
@@ -568,6 +569,7 @@ class Database:
         kind: str,
         artifacts: dict[str, Any],
         match_artifact: str,
+        new_job_id: str | None = None,
     ) -> JobRecord:
         """Atomically reuse a matching unfinished job or create it."""
         terminal_statuses = (
@@ -575,7 +577,7 @@ class Database:
             JobStatus.COMPLETED_WITH_WARNINGS.value,
             JobStatus.FAILED.value,
         )
-        job_id = uuid.uuid4().hex
+        job_id = new_job_id or uuid.uuid4().hex
         now = iso_now()
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -587,7 +589,20 @@ class Database:
             ).fetchall()
             expected = artifacts.get(match_artifact)
             for row in rows:
+                if row["status"] == JobStatus.CANCELLED.value:
+                    continue
                 existing_artifacts = json.loads(row["artifacts_json"])
+                if (
+                    kind == "capture"
+                    and match_artifact == "work_id"
+                    and not existing_artifacts.get("work_id")
+                ):
+                    from .adapters.share import extract_work_identity
+
+                    identity = extract_work_identity(json.loads(row["request_json"])["share_text"])
+                    existing_artifacts["work_id"] = (existing_artifacts.get("resolved") or {}).get(
+                        "video_id"
+                    ) or (identity[0] if identity else None)
                 if existing_artifacts.get(match_artifact) == expected:
                     return self._job_from_row(row)
             conn.execute(
@@ -723,7 +738,9 @@ class Database:
     def job_status_counts(self) -> dict[str, int]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT status, COUNT(*) AS total FROM jobs GROUP BY status"
+                "SELECT status, COUNT(*) AS total FROM jobs "
+                "WHERE COALESCE(json_extract(artifacts_json, '$.user_deleted'), 0)=0 "
+                "GROUP BY status"
             ).fetchall()
         return {str(row["status"]): int(row["total"]) for row in rows}
 
@@ -758,17 +775,7 @@ class Database:
 
     def request_cancel(self, job_id: str) -> JobRecord:
         """Cancel a queued job immediately, or ask a running job to stop at a safe point."""
-        active = {
-            JobStatus.QUEUED.value,
-            JobStatus.RESOLVING.value,
-            JobStatus.INVENTORYING.value,
-            JobStatus.DISPATCHING.value,
-            JobStatus.MONITORING.value,
-            JobStatus.DOWNLOADING.value,
-            JobStatus.EXTRACTING.value,
-            JobStatus.TRANSCRIBING.value,
-            JobStatus.ANALYZING.value,
-        }
+        active = CANCELLABLE_JOB_STATUSES
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -779,13 +786,13 @@ class Database:
             if row["status"] not in active:
                 raise JobStateError("这个任务不能取消")
             now = iso_now()
-            if row["status"] == JobStatus.QUEUED.value and row["locked_at"] is None:
+            if row["locked_at"] is None:
                 changed = conn.execute(
                     """UPDATE jobs
                        SET status=?, error_message=?, updated_at=?,
                            locked_at=NULL, lock_owner=NULL, lease_expires_at=NULL
                        WHERE id=? AND status=? AND locked_at IS NULL""",
-                    (JobStatus.CANCELLED.value, "已取消", now, job_id, JobStatus.QUEUED.value),
+                    (JobStatus.CANCELLED.value, "已取消", now, job_id, row["status"]),
                 ).rowcount
                 if changed:
                     conn.execute(
@@ -808,10 +815,24 @@ class Database:
         return self._job_from_row(updated)
 
     def delete_finished_job(self, job_id: str) -> None:
-        job = self.get_job(job_id)
-        if job.status not in {JobStatus.FAILED, JobStatus.CANCELLED}:
-            raise JobStateError("只能删除失败或已取消的任务")
-        self.delete_job_record(job_id)
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise JobStateError("任务不存在")
+            if row["status"] not in {JobStatus.FAILED.value, JobStatus.CANCELLED.value}:
+                raise JobStateError("只能删除失败或已取消的任务")
+            # Retain terminal records for aggregation and foreign-key references.
+            artifacts = json.loads(row["artifacts_json"])
+            artifacts["user_deleted"] = True
+            conn.execute(
+                "UPDATE jobs SET artifacts_json=?, updated_at=? WHERE id=?",
+                (
+                    json.dumps(artifacts, ensure_ascii=False),
+                    iso_now(),
+                    job_id,
+                ),
+            )
 
     def create_auth_session(
         self,
@@ -850,9 +871,7 @@ class Database:
 
     def get_auth_session(self, session_id: str) -> dict[str, Any]:
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM auth_sessions WHERE id=?", (session_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM auth_sessions WHERE id=?", (session_id,)).fetchone()
         if row is None:
             raise JobStateError(f"auth session not found: {session_id}")
         return self._auth_session_from_row(row)
@@ -863,9 +882,7 @@ class Database:
         query = "SELECT * FROM auth_sessions WHERE channel=?"
         params: list[Any] = [channel]
         if active_only:
-            query += (
-                " AND stage IN ('queued','launching','waiting_login','verifying')"
-            )
+            query += " AND stage IN ('queued','launching','waiting_login','verifying')"
         query += " ORDER BY created_at DESC LIMIT 1"
         with self.connect() as conn:
             row = conn.execute(query, params).fetchone()
@@ -1101,6 +1118,20 @@ class Database:
             if current_row is None:
                 raise JobStateError(f"job not found: {job_id}")
             current = self._job_from_row(current_row)
+            if current.artifacts.get("user_deleted") and status not in {None, current.status}:
+                raise JobStateError("任务已删除")
+            if (
+                status is not None
+                and status != JobStatus.CANCELLED
+                and (
+                    current.status == JobStatus.CANCELLED
+                    or (
+                        current.artifacts.get("cancel_requested")
+                        and "cancel_requested" not in (remove_artifacts or set())
+                    )
+                )
+            ):
+                raise JobCancelledError("任务已请求取消")
             if expected_statuses is not None and current.status not in expected_statuses:
                 raise JobStateError("任务状态已改变，请重新读取后再操作")
             if expected_updated_at is not None and current.updated_at != expected_updated_at:
@@ -1212,18 +1243,19 @@ class Database:
             clear_review_issues=clear_review_issues,
             expected_updated_at=observed,
             expected_statuses={
-                JobStatus.AWAITING_AGENT_ANALYSIS, JobStatus.NEEDS_AUTH,
-                JobStatus.NEEDS_REVIEW, JobStatus.NEEDS_SELECTION,
-                JobStatus.WAITING_CONFIRMATION, JobStatus.FAILED,
+                JobStatus.AWAITING_AGENT_ANALYSIS,
+                JobStatus.NEEDS_AUTH,
+                JobStatus.NEEDS_REVIEW,
+                JobStatus.NEEDS_SELECTION,
+                JobStatus.WAITING_CONFIRMATION,
+                JobStatus.FAILED,
             },
             error_code="",
             error_message="",
             unlock=True,
         )
 
-    def requeue_job_deduplicated(
-        self, job_id: str, *, match_artifact: str
-    ) -> JobRecord:
+    def requeue_job_deduplicated(self, job_id: str, *, match_artifact: str) -> JobRecord:
         """Atomically retry a job unless an equivalent active job already exists."""
         terminal_statuses = {
             JobStatus.COMPLETED,
@@ -1237,6 +1269,8 @@ class Database:
             if current_row is None:
                 raise JobStateError(f"job not found: {job_id}")
             current = self._job_from_row(current_row)
+            if current.artifacts.get("user_deleted"):
+                raise JobStateError("任务已删除")
             if current.status not in retryable_statuses:
                 if current.status not in terminal_statuses:
                     return current
@@ -1255,12 +1289,15 @@ class Database:
                 ),
             ).fetchall()
             for row in rows:
+                if row["status"] == JobStatus.CANCELLED.value:
+                    continue
                 if json.loads(row["artifacts_json"]).get(match_artifact) == expected:
                     return self._job_from_row(row)
             conn.execute(
                 """UPDATE jobs
                    SET status=?, error_code='', error_message='', locked_at=NULL,
-                       lock_owner=NULL, lease_expires_at=NULL, updated_at=?
+                       lock_owner=NULL, lease_expires_at=NULL, updated_at=?,
+                       artifacts_json=json_remove(artifacts_json, '$.cancel_requested')
                    WHERE id=?""",
                 (JobStatus.QUEUED.value, iso_now(), job_id),
             )
@@ -1691,9 +1728,7 @@ class Database:
             clauses.append("w.decision=?")
             params.append(decision.value)
         if not_imported:
-            clauses.append(
-                "NOT EXISTS (SELECT 1 FROM entries e WHERE e.id = w.entry_id)"
-            )
+            clauses.append("NOT EXISTS (SELECT 1 FROM entries e WHERE e.id = w.entry_id)")
         if source_kind:
             clauses.append("w.source_kind=?")
             params.append(source_kind.value)
@@ -2372,9 +2407,7 @@ class Database:
             ]
             self._clear_knowledge_cache_conn(conn, include_creators=True)
             for entry, data, chunks, relations, reminders in entries:
-                self._persist_entry_bundle_conn(
-                    conn, entry, data, chunks, relations, reminders
-                )
+                self._persist_entry_bundle_conn(conn, entry, data, chunks, relations, reminders)
             for creator, works in creators:
                 self._restore_creator_bundle_conn(conn, creator, works)
             for topic, artifacts in topics:
@@ -2404,9 +2437,7 @@ class Database:
                 )
             for item in last_job_links:
                 if (
-                    conn.execute(
-                        "SELECT 1 FROM jobs WHERE id=?", (item["last_job_id"],)
-                    ).fetchone()
+                    conn.execute("SELECT 1 FROM jobs WHERE id=?", (item["last_job_id"],)).fetchone()
                     is None
                 ):
                     continue
@@ -2452,9 +2483,7 @@ class Database:
             self._set_index_metadata_conn(conn, key, value)
 
     @staticmethod
-    def _set_index_metadata_conn(
-        conn: sqlite3.Connection, key: str, value: str
-    ) -> None:
+    def _set_index_metadata_conn(conn: sqlite3.Connection, key: str, value: str) -> None:
         conn.execute(
             """INSERT INTO index_metadata(key, value, updated_at) VALUES (?, ?, ?)
                ON CONFLICT(key) DO UPDATE SET value=excluded.value,
@@ -2886,6 +2915,7 @@ class Database:
         filter_clause = "" if not conditions else "AND " + " AND ".join(conditions)
         rows: list[dict[str, Any]] = []
         with self.connect() as conn:
+
             def append_fts(match_query: str, match_kind: str, quality: float) -> None:
                 try:
                     matched = conn.execute(
@@ -2922,7 +2952,7 @@ class Database:
                     like_conditions.append(f"c.entry_id IN ({placeholders})")
                 like_rows = conn.execute(
                     f"""SELECT c.* FROM chunks c
-                        WHERE {' AND '.join(like_conditions)} LIMIT ?""",
+                        WHERE {" AND ".join(like_conditions)} LIMIT ?""",
                     (f"%{escaped}%", f"%{escaped}%", *filter_values, limit),
                 ).fetchall()
                 seen = {row["id"] for row in rows}
@@ -2991,9 +3021,7 @@ class Database:
 
     def get_topic(self, topic_id: str) -> ResearchTopic:
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM research_topics WHERE id=?", (topic_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM research_topics WHERE id=?", (topic_id,)).fetchone()
             sources = conn.execute(
                 """SELECT s.*, e.title
                    FROM topic_sources s JOIN entries e ON e.id=s.entry_id
@@ -3006,9 +3034,7 @@ class Database:
 
     def list_topics(self) -> list[ResearchTopic]:
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM research_topics ORDER BY updated_at DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM research_topics ORDER BY updated_at DESC").fetchall()
         return [self.get_topic(row["id"]) for row in rows]
 
     def set_topic_sources(
@@ -3088,9 +3114,7 @@ class Database:
         return self.get_topic_artifact(artifact.id)
 
     @staticmethod
-    def _save_topic_artifact_conn(
-        conn: sqlite3.Connection, artifact: TopicArtifact
-    ) -> None:
+    def _save_topic_artifact_conn(conn: sqlite3.Connection, artifact: TopicArtifact) -> None:
         conn.execute(
             """INSERT INTO topic_artifacts
                (id, topic_id, kind, title, content_markdown, source_revision,
@@ -3166,9 +3190,7 @@ class Database:
         valid_sources = [
             source
             for source in topic.sources
-            if conn.execute(
-                "SELECT 1 FROM entries WHERE id=?", (source.entry_id,)
-            ).fetchone()
+            if conn.execute("SELECT 1 FROM entries WHERE id=?", (source.entry_id,)).fetchone()
         ]
         conn.executemany(
             """INSERT INTO topic_sources
@@ -3497,9 +3519,7 @@ class Database:
         )
 
     @staticmethod
-    def _topic_from_rows(
-        row: sqlite3.Row, source_rows: Iterable[sqlite3.Row]
-    ) -> ResearchTopic:
+    def _topic_from_rows(row: sqlite3.Row, source_rows: Iterable[sqlite3.Row]) -> ResearchTopic:
         return ResearchTopic(
             id=row["id"],
             title=row["title"],

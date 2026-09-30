@@ -72,7 +72,6 @@ const state = {
   libraryLoaded: false,
   catalogHasItems: false,
   animatedEntryIds: new Set(),
-  destructiveAction: null,
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -191,28 +190,7 @@ function showRestoreRetry(jobId, message) {
   window.Douku.revealToast(node, {sticky: true});
 }
 
-async function api(url, options = {}) {
-  const response = await fetch(url, {
-    headers: {"Content-Type": "application/json", ...(options.headers || {})},
-    ...options,
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    const detail = Array.isArray(body.detail)
-      ? body.detail.map((item) => item.msg || "输入内容无效").join("；")
-      : body.detail;
-    const error = new Error(detail || "请求失败");
-    error.status = response.status;
-    throw error;
-  }
-  return response.json();
-}
-
-let suppressLibraryToastUntil = 0;
-function markOwnMutation(ms = 6500) {
-  suppressLibraryToastUntil = Date.now() + ms;
-}
-window.Douku.markOwnMutation = markOwnMutation;
+const api = (...args) => window.Douku.api(...args);
 
 function mediaSentence(item) {
   const retention = item.retention;
@@ -226,44 +204,16 @@ function mediaSentence(item) {
   return "媒体状态还没有记录。";
 }
 
-function openDestructiveDialog({title, description, confirmLabel, action, onSuccess, successMessage}) {
-  state.destructiveAction = {action, onSuccess, successMessage};
-  $("#destructive-title").textContent = title;
-  $("#destructive-description").textContent = description;
-  $("#confirm-destructive").textContent = confirmLabel;
-  $("#confirm-destructive").disabled = false;
-  $("#destructive-error").classList.add("hidden");
-  $("#destructive-dialog").showModal();
-  $("#confirm-destructive").focus();
-}
-
-async function runDestructiveAction() {
-  if (!state.destructiveAction) return;
-  const button = $("#confirm-destructive");
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.textContent = "处理中…";
-  $("#destructive-error").classList.add("hidden");
-  try {
-    const pending = state.destructiveAction;
-    const result = await pending.action();
-    state.destructiveAction = null;
-    $("#destructive-dialog").close();
-    const warning = result?.warnings?.[0];
-    if (pending.successMessage !== false) {
-      toast(warning ? `${pending.successMessage || "操作已完成"}；${warning}` : (pending.successMessage || "操作已完成"));
-    }
-    try {
-      await pending.onSuccess?.(result);
-    } catch (error) {
-      toast(`操作已完成，但页面刷新失败：${error.message}`);
-    }
-  } catch (error) {
-    $("#destructive-error").textContent = error.message;
-    $("#destructive-error").classList.remove("hidden");
-    button.disabled = false;
-    button.textContent = originalLabel;
+async function openDestructiveDialog(options) {
+  const result = await window.Douku.confirmDanger(options);
+  if (result === false) return;
+  const warning = result?.warnings?.[0];
+  if (options.successMessage !== false) {
+    const message = options.successMessage || "操作已完成";
+    toast(warning ? `${message}；${warning}` : message);
   }
+  try { await options.onSuccess?.(result); }
+  catch (error) { toast(`操作已完成，但页面刷新失败：${error.message}`); }
 }
 
 function formatBytes(value) {
@@ -376,7 +326,7 @@ async function refreshAuthChannelBanners() {
       item.code === "video_auth_unverified" || item.code === "video_auth"
     );
     const show = Boolean(
-      alert || (video && !["authorized", "authorizing"].includes(video.user_state))
+      alert || (video && !data.auth?.pending && !["authorized", "authorizing"].includes(video.user_state))
     );
     for (const node of targets) {
       if (!show) {
@@ -830,7 +780,7 @@ async function reanalyzeItem(item, button) {
   });
   if (!confirmed) return;
   button.disabled = true;
-  markOwnMutation(4000);
+
   try {
     const job = await api(`/api/articles/${encodeURIComponent(item.entry_id)}/reanalyze`, {method: "POST", body: JSON.stringify({force: false})});
     const jobId = job.id || job.job_id;
@@ -842,7 +792,6 @@ async function reanalyzeItem(item, button) {
 function deleteLibraryItem(item) {
   openDestructiveDialog({title: "删除整条资料？", description: `《${item.title}》的文章、原始记录、机器数据、视频、图片和封面将移入抖库废纸篓，并从检索与专题中移除。`, confirmLabel: "移到废纸篓",
     action: () => {
-      markOwnMutation();
       return api(`/api/articles/${encodeURIComponent(item.entry_id)}`, {method: "DELETE", body: JSON.stringify({confirmed: true})});
     },
     successMessage: false,
@@ -858,7 +807,6 @@ function deleteLibraryItem(item) {
         return;
       }
       window.Douku.toastAction("已移到废纸篓", "撤销", async () => {
-        markOwnMutation(4000);
         await api("/api/trash/batch/restore", {method: "POST", body: JSON.stringify({confirmed: true, trash_ids: [trashId]})});
         await Promise.all([loadLibrary({showLoading: false}), loadTopics(), loadTrash()]);
         toast("已恢复");
@@ -1312,7 +1260,6 @@ function renderTrash() {
       description: `将恢复《${item.title}》的文章、原始记录、视频或图片，并重新加入检索和相关专题。`,
       confirmLabel: "确认恢复",
       action: async () => {
-        markOwnMutation();
         return api(`/api/trash/${encodeURIComponent(item.trash_id)}/restore`, {
           method: "POST", body: JSON.stringify({confirmed: true}),
         });
@@ -1360,7 +1307,6 @@ function openTrashBatchDialog(kind) {
       description: "将恢复所选文章、原始记录、视频或图片，并重新加入检索和相关专题。",
       confirmLabel: "确认恢复",
       action: async () => {
-        markOwnMutation();
         return api("/api/trash/batch/restore", {
           method: "POST", body: JSON.stringify({confirmed: true, trash_ids: ids}),
         });
@@ -2354,6 +2300,8 @@ function commandMatches() {
 function scheduleCommandSearch() {
   const query = commandQuery();
   window.clearTimeout(state.commandTimer);
+  const token = ++state.commandSearch;
+  state.commandArticles = [];
   if (!query) {
     state.commandArticles = [];
     renderCommandResults();
@@ -2361,9 +2309,8 @@ function scheduleCommandSearch() {
   }
   renderCommandResults();
   state.commandTimer = window.setTimeout(async () => {
-    const token = ++state.commandSearch;
     try {
-      const data = await api(`/api/library?q=${encodeURIComponent(query)}&limit=8`);
+      const data = await api(`/api/library?q=${encodeURIComponent(query)}&limit=8&fuzzy=true`);
       if (token !== state.commandSearch || commandQuery() !== query) return;
       state.commandArticles = data.items || [];
     } catch (_error) {
@@ -2467,9 +2414,9 @@ function showChatNotice(message = "", unconfigured = false) {
 
 function sessionInScope(session) {
   if (!session) return false;
-  if (state.currentTopic) return session.scope === "topic" && session.context_topic_id === state.currentTopic;
+  if (state.panelPage === "topic" && state.currentTopic) return session.scope === "topic" && session.context_topic_id === state.currentTopic;
   const item = currentEntryItem();
-  if (state.currentEntry && isDatabaseManaged(item)) {
+  if (state.panelPage === "article" && state.currentEntry && isDatabaseManaged(item)) {
     return session.scope === "entry" && session.context_entry_id === state.currentEntry;
   }
   return session.scope === "library";
@@ -2504,9 +2451,9 @@ async function loadSessions(preferNew = false) {
 
 async function createSession() {
   const item = currentEntryItem();
-  const payload = state.currentTopic
+  const payload = state.panelPage === "topic" && state.currentTopic
     ? {scope: "topic", context_topic_id: state.currentTopic}
-    : isDatabaseManaged(item)
+    : state.panelPage === "article" && isDatabaseManaged(item)
       ? {scope: "entry", context_entry_id: state.currentEntry}
       : {scope: "library"};
   const session = await api("/api/chat/sessions", {method: "POST", body: JSON.stringify(payload)});
@@ -2515,12 +2462,20 @@ async function createSession() {
   await loadSessions(false);
 }
 
+function syncSessionScope() {
+  if (state.sending) return;
+  if (state.currentSession && !state.sessions.some(session => session.id === state.currentSession && sessionInScope(session))) {
+    state.currentSession = state.sessions.find(sessionInScope)?.id || "";
+    state.pendingNewSession = !state.currentSession;
+    if (state.currentSession) loadMessages().catch(error => showChatNotice(error.message));
+    else $("#chat-messages").replaceChildren(makeWelcome());
+  }
+  renderSessionSelect();
+}
+
 function renderSessionSelect() {
   const select = $("#session-select");
-  const groups = [
-    ["当前范围", state.sessions.filter(sessionInScope)],
-    ["其他范围", state.sessions.filter((session) => !sessionInScope(session))],
-  ];
+  const groups = [["当前范围", state.sessions.filter(sessionInScope)]];
   const nodes = [];
   if (state.pendingNewSession || !state.currentSession) {
     const pending = document.createElement("option");
@@ -2747,7 +2702,7 @@ function refreshMessageActions(node) {
     note.addEventListener("click", async () => {
       const topicId = state.currentTopic;
       if (!topicId) return;
-      if (!window.confirm("将这段内容逐字保存为当前专题笔记？")) return;
+      if (!await window.Douku.confirmDanger({title: "保存专题笔记", description: "将这段内容逐字保存为当前专题笔记？", confirmLabel: "保存笔记"})) return;
       try {
         await api(`/api/topics/${encodeURIComponent(topicId)}/notes`, {
           method: "POST",
@@ -2786,6 +2741,7 @@ function parseSSEChunk(buffer, onEvent) {
 
 function setSending(sending) {
   state.sending = sending;
+  if (!sending) syncSessionScope();
   const button = $("#send-button");
   button.disabled = sending;
   button.setAttribute("aria-label", sending ? "正在生成回答" : "发送消息");
@@ -2799,14 +2755,8 @@ async function sendChat(text) {
   if (state.sending) return;
   setSending(true);
   const current = state.sessions.find((item) => item.id === state.currentSession);
-  const articleItem = currentEntryItem();
-  const articleChatEnabled = isDatabaseManaged(articleItem);
-  const needsArticle = articleChatEnabled
-    && (current?.scope !== "entry" || current?.context_entry_id !== state.currentEntry);
-  const needsTopic = state.currentTopic && (current?.scope !== "topic" || current?.context_topic_id !== state.currentTopic);
-  const needsLibrary = !state.currentTopic && !articleChatEnabled && current?.scope !== "library";
   try {
-    if (!state.currentSession || needsArticle || needsTopic || needsLibrary) await createSession();
+    if (!state.currentSession || !sessionInScope(current)) await createSession();
   } catch (error) {
     showChatNotice(error.message);
     $("#chat-input").value = text;
@@ -3236,6 +3186,7 @@ function bindEvents() {
   $("#library-selection-next").addEventListener("click", openTopicDialog);
   window.addEventListener("douku:page", (event) => {
     renderPanelTabs(event.detail.page);
+    syncSessionScope();
     renderSidebarTags();
   });
   $("#imports-popover").addEventListener("keydown", (event) => {
@@ -3407,20 +3358,13 @@ function bindEvents() {
     if (!$("#inspiration-form").reportValidity()) return;
     saveInspiration();
   });
-  $("#confirm-destructive").addEventListener("click", (event) => {
-    event.preventDefault();
-    runDestructiveAction();
-  });
-  $("#destructive-dialog").addEventListener("close", () => {
-    if ($("#destructive-dialog").returnValue === "cancel") state.destructiveAction = null;
-  });
   $("#inspiration-dialog").addEventListener("close", () => state.lastDialogTrigger?.focus());
   $("#command-input").addEventListener("input", () => { state.commandIndex = 0; scheduleCommandSearch(); });
   $("#command-input").addEventListener("keydown", (event) => {
     const length = commandMatches().length;
     if (event.key === "ArrowDown" && length) { event.preventDefault(); state.commandIndex = (state.commandIndex + 1) % length; renderCommandResults(); }
     if (event.key === "ArrowUp" && length) { event.preventDefault(); state.commandIndex = (state.commandIndex - 1 + length) % length; renderCommandResults(); }
-    if (event.key === "Enter" && length) { event.preventDefault(); $("#command-results .command-result.active")?.click(); }
+    if (event.key === "Enter") { event.preventDefault(); if (length) $("#command-results .command-result.active")?.click(); }
   });
   window.addEventListener("douku:route", (event) => {
     const path = event.detail.path.split("?")[0];
@@ -3534,15 +3478,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   refreshAuthChannelBanners();
   await loadSessions();
   const events = new EventSource("/api/library/events");
-  events.addEventListener("library", async () => {
+  events.addEventListener("library", async (event) => {
+    let origins = [null];
+    try { origins = JSON.parse(event.data).origins || [null]; } catch (_error) {}
     state.allItems = [];
     await loadLibrary({showLoading: false});
     await loadTopics();
     if (!$("#trash-view").classList.contains("hidden")) await loadTrash();
     if (state.panelPage === "tags") await window.Douku.tags.load();
-    if (state.currentEntry) await openArticle(state.currentEntry, false);
-    if (state.currentTopic) await openTopic(state.currentTopic, false);
-    if (Date.now() >= suppressLibraryToastUntil) toast("资料库已更新");
+    if (state.panelPage === "article" && state.currentEntry) await openArticle(state.currentEntry, false);
+    if (state.panelPage === "topic" && state.currentTopic) await openTopic(state.currentTopic, false);
+    if (origins.some(origin => origin !== window.Douku.clientId)) toast("资料库已更新");
   });
   events.addEventListener("error", () => {
     // Native EventSource reconnects automatically; browsing remains available.

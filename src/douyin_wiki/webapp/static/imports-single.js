@@ -23,8 +23,8 @@
     error.classList.remove("hidden");
     error.replaceChildren();
     const inTrash = Boolean(job.in_trash);
-    error.append(document.createTextNode(inTrash ? "已在废纸篓 · " : "已在资料库 · "));
-    const open = D.node("a", "打开");
+    error.append(document.createTextNode(job.active ? `${job.message} · ` : inTrash ? "已在废纸篓 · " : "已在资料库 · "));
+    const open = D.node("a", job.active ? "查看任务" : "打开");
     open.href = job.href || (job.entry_id ? `/articles/${encodeURIComponent(job.entry_id)}` : "/");
     open.addEventListener("click", (event) => {
       event.preventDefault();
@@ -43,7 +43,7 @@
         });
         if (!confirmed) return;
         try {
-          D.markOwnMutation?.(4000);
+
           const created = await D.api(`/api/articles/${encodeURIComponent(job.entry_id)}/reanalyze`, {
             method: "POST",
             body: JSON.stringify({force: false}),
@@ -69,6 +69,8 @@
     try {
       start = D.parseClockToMs(D.$("single-start").value);
       end = D.parseClockToMs(D.$("single-end").value);
+      if (end != null && start == null) throw new Error("填写结束时间时，也要填写开始时间");
+      if (end != null && end < start) throw new Error("结束时间不能早于开始时间");
     } catch (err) {
       showInline(err.message);
       return;
@@ -78,7 +80,7 @@
       inspirations.push({text, quote: quote || null, start_ms: start, end_ms: end});
     }
     try {
-      D.markOwnMutation?.();
+
       const job = await D.api("/api/captures", {
         method: "POST",
         body: JSON.stringify({

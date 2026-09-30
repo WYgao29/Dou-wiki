@@ -6,8 +6,10 @@ import os
 import re
 import subprocess
 import tempfile
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -94,6 +96,13 @@ def encode_markdown_path(value: str) -> str:
     return quote(Path(value).as_posix(), safe="/.-_~")
 
 
+_entry_locks = threading.local()
+entry_operation_observer: ContextVar[Callable[[], Callable[[], None]] | None] = ContextVar(
+    "entry_operation_observer",
+    default=None,
+)
+
+
 class VaultWriter:
     def __init__(self, vault_path: Path) -> None:
         self.vault_path = vault_path
@@ -122,13 +131,30 @@ class VaultWriter:
         one logical entry mutation cover its SQLite and filesystem changes.
         """
         lock_path = self.vault_path / ".douyin-wiki" / "entry-operations.lock"
+        key = (os.getpid(), str(lock_path.resolve()))
+        held = getattr(_entry_locks, "held", None)
+        if held is None:
+            held = _entry_locks.held = set()
+        if key in held:
+            yield
+            return
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            held.add(key)
+            finished = None
             try:
+                observer = entry_operation_observer.get()
+                if observer is not None:
+                    finished = observer()
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                try:
+                    if finished is not None:
+                        finished()
+                finally:
+                    held.remove(key)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     @contextmanager
     def work_capture_locked(self, work_id: str) -> Iterator[None]:
@@ -999,8 +1025,13 @@ class VaultWriter:
         if not isinstance(metadata, dict):
             raise ValueError("metadata 必须是对象")
         for field in (
-            "ocr", "review_issues", "transcript_edits", "correction_notes",
-            "ocr_quality_notes", "relations", "reminder_states",
+            "ocr",
+            "review_issues",
+            "transcript_edits",
+            "correction_notes",
+            "ocr_quality_notes",
+            "relations",
+            "reminder_states",
         ):
             if not isinstance(payload.get(field, []), list):
                 raise ValueError(f"{field} 必须是数组")

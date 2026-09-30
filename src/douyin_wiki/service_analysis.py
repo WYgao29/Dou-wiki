@@ -117,9 +117,10 @@ class AnalysisMixin:
         job = self.database.get_job(job_id)
         if job.status != JobStatus.AWAITING_AGENT_ANALYSIS:
             raise JobStateError("只有处于“待 AI 处理”状态的任务可提交逐字稿校正")
-        if "transcript_corrected" in job.artifacts or job.artifacts.get(
-            "metadata", {}
-        ).get("source_kind") == SourceKind.IMAGE_NOTE.value:
+        if (
+            "transcript_corrected" in job.artifacts
+            or job.artifacts.get("metadata", {}).get("source_kind") == SourceKind.IMAGE_NOTE.value
+        ):
             raise JobStateError("当前任务已进入分析阶段，不可再次提交逐字稿校正")
         raw = [
             TranscriptSegment.model_validate(item)
@@ -139,10 +140,7 @@ class AnalysisMixin:
         if set(by_id) != known_ids:
             missing_ids = sorted(known_ids - set(by_id))
             raise JobStateError(f"校正结果必须覆盖全部片段，缺少 ID: {missing_ids}")
-        corrected = [
-            segment.model_copy(update={"text": by_id[segment.id]})
-            for segment in raw
-        ]
+        corrected = [segment.model_copy(update={"text": by_id[segment.id]}) for segment in raw]
         notes = deduplicate_review_issues([*detect_review_issues(raw), *(review_issues or [])])
         artifact_update = {
             "transcript_corrected": [item.model_dump(mode="json") for item in corrected],
@@ -403,19 +401,26 @@ class AnalysisMixin:
                 self.database.update_job(
                     job.id,
                     progress=max(current.progress, 0.72 + 0.1 * completed / max(total, 1)),
-                    artifacts={"analysis_progress": {
-                        "phase": phase,
-                        "completed_chunks": completed,
-                        "total_chunks": total,
-                        "waiting_for_resource": False,
-                    }},
+                    artifacts={
+                        "analysis_progress": {
+                            "phase": phase,
+                            "completed_chunks": completed,
+                            "total_chunks": total,
+                            "waiting_for_resource": False,
+                        }
+                    },
                 )
 
             async with self.analysis_semaphore:
+                self.check_job_cancelled(job)
                 kwargs = (
-                    {"checkpoints": checkpoints, "on_checkpoint": save_checkpoint,
-                     "on_progress": model_progress}
-                    if isinstance(self.analysis, OpenAICompatibleProvider) else {}
+                    {
+                        "checkpoints": checkpoints,
+                        "on_checkpoint": save_checkpoint,
+                        "on_progress": model_progress,
+                    }
+                    if isinstance(self.analysis, OpenAICompatibleProvider)
+                    else {}
                 )
                 result = await self.analysis.analyze(
                     segments, ocr_items, entry.inspirations, metadata, **kwargs
@@ -437,6 +442,7 @@ class AnalysisMixin:
         )
         validated = AnalysisResult.model_validate(normalized)
         with self.vault.entry_operations_locked():
+            self.check_job_cancelled(job)
             # The model call intentionally happens before this lock. Reload both
             # projections so concurrent user mutations are merged into the
             # final analysis write instead of being overwritten by the snapshot
@@ -480,25 +486,25 @@ class AnalysisMixin:
             )
             source_kind = latest_data.get("metadata", {}).get("source_kind", SourceKind.VIDEO.value)
             creator_folder = str(latest_data.get("creator", {}).get("folder_path") or "")
-        return self.database.update_job(
-            job.id,
-            status=JobStatus.COMPLETED,
-            progress=1,
-            artifacts={"llm_checkpoints": {}},
-            result={
-                "entry_id": updated.id,
-                "source_path": updated.source_path,
-                "machine_data_path": str(
-                    Path(creator_folder) / ".data" / "sources" / f"{updated.video_id}.md"
-                    if creator_folder
-                    else Path("wiki") / ".data" / "sources" / f"{updated.video_id}.md"
-                ),
-                "summary": updated.summary,
-                "reused_transcript": source_kind == SourceKind.VIDEO.value,
-                "reused_ocr": True,
-            },
-            unlock=True,
-        )
+            return self.database.update_job(
+                job.id,
+                status=JobStatus.COMPLETED,
+                progress=1,
+                artifacts={"llm_checkpoints": {}},
+                result={
+                    "entry_id": updated.id,
+                    "source_path": updated.source_path,
+                    "machine_data_path": str(
+                        Path(creator_folder) / ".data" / "sources" / f"{updated.video_id}.md"
+                        if creator_folder
+                        else Path("wiki") / ".data" / "sources" / f"{updated.video_id}.md"
+                    ),
+                    "summary": updated.summary,
+                    "reused_transcript": source_kind == SourceKind.VIDEO.value,
+                    "reused_ocr": True,
+                },
+                unlock=True,
+            )
 
     @staticmethod
     def detect_image_review_issues(
@@ -702,9 +708,7 @@ class AnalysisMixin:
         self.validate_analysis_evidence(cleaned, context)
         return cleaned, removed
 
-    def validate_analysis_evidence(
-        self, analysis: AnalysisResult, context: dict[str, Any]
-    ) -> None:
+    def validate_analysis_evidence(self, analysis: AnalysisResult, context: dict[str, Any]) -> None:
         """Reject source claims whose locator or quote cannot be traced to captured evidence."""
         metadata = context.get("metadata", {}) or {}
         source_kind = metadata.get("source_kind", SourceKind.VIDEO.value)

@@ -59,6 +59,26 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+CANCELLABLE_JOB_STATUSES = frozenset(
+    {
+        JobStatus.QUEUED,
+        JobStatus.RESOLVING,
+        JobStatus.INVENTORYING,
+        JobStatus.DISPATCHING,
+        JobStatus.MONITORING,
+        JobStatus.DOWNLOADING,
+        JobStatus.EXTRACTING,
+        JobStatus.TRANSCRIBING,
+        JobStatus.ANALYZING,
+        JobStatus.NEEDS_AUTH,
+        JobStatus.NEEDS_REVIEW,
+        JobStatus.NEEDS_SELECTION,
+        JobStatus.WAITING_CONFIRMATION,
+        JobStatus.AWAITING_AGENT_ANALYSIS,
+    }
+)
+
+
 AuthState = Literal[
     "ready",
     "available",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+import uuid
 from collections import defaultdict
 from datetime import UTC
 from pathlib import Path
@@ -30,7 +31,23 @@ CREATE TABLE IF NOT EXISTS tag_aliases (
     alias TEXT PRIMARY KEY,
     canonical TEXT NOT NULL REFERENCES tags(name) ON UPDATE CASCADE ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS tag_undo (
+    id TEXT PRIMARY KEY,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    undone_at TEXT
+);
+CREATE TABLE IF NOT EXISTS tag_undo_aliases (
+    operation_id TEXT NOT NULL REFERENCES tag_undo(id) ON DELETE CASCADE,
+    alias TEXT NOT NULL,
+    canonical TEXT NOT NULL,
+    PRIMARY KEY(operation_id, alias)
+);
 """
+
+
+class TagUndoConflict(ValueError):
+    pass
 
 
 def tag_key(name: str) -> str:
@@ -160,6 +177,15 @@ class TagManager:
                     )
             records = conn.execute("SELECT * FROM tags").fetchall()
             aliases = dict(conn.execute("SELECT alias, canonical FROM tag_aliases").fetchall())
+            undo_by_alias = {}
+            for row in conn.execute(
+                "SELECT a.alias, a.operation_id FROM tag_undo_aliases a "
+                "JOIN tag_undo u ON u.id=a.operation_id "
+                "JOIN tag_aliases t ON t.alias=a.alias AND t.canonical=a.canonical "
+                "WHERE u.undone_at IS NULL ORDER BY u.created_at DESC"
+            ):
+                undo_by_alias.setdefault(row["alias"], row["operation_id"])
+
         rows = []
         for record in records:
             name = record["name"]
@@ -207,6 +233,7 @@ class TagManager:
             "sidebar": sidebar,
             "duplicates": duplicate_groups(rows),
             "aliases": aliases,
+            "undo_by_alias": undo_by_alias,
         }
 
     def pin(self, name: str, pinned: bool) -> None:
@@ -239,25 +266,27 @@ class TagManager:
                 raise ValueError("排序须包含全部固定标签各一次")
             conn.executemany("UPDATE tags SET position=? WHERE name=?", enumerate(names, 1))
 
-    def rename(self, name: str, target: str) -> None:
+    def rename(self, name: str, target: str) -> str | None:
         target = valid_name(target)
         if name == target:
             return
-        self._mutate([name], target=target, rename=True)
+        return self._mutate([name], target=target, rename=True)
 
-    def merge(self, names: list[str], target: str) -> None:
+    def merge(self, names: list[str], target: str) -> str:
         target = valid_name(target)
         names = list(dict.fromkeys(names))
         if len(names) < 2:
             raise ValueError("合并须选择至少两个标签")
-        self._mutate([name for name in names if name != target], target=target)
+        return self._mutate([name for name in names if name != target], target=target)
 
-    def delete(self, names: list[str]) -> None:
+    def delete(self, names: list[str]) -> str:
         if not names:
             raise ValueError("请先选择标签")
-        self._mutate(list(dict.fromkeys(names)), target=None)
+        return self._mutate(list(dict.fromkeys(names)), target=None)
 
-    def _mutate(self, sources: list[str], *, target: str | None, rename=False) -> None:
+    def _mutate(self, sources: list[str], *, target: str | None, rename=False) -> str:
+        operation_id = uuid.uuid4().hex
+        entries = {}
         previous: dict[Path, str | None] = {}
         changed: dict[Path, str] = {}
         with self.vault.entry_operations_locked(), self.vault.locked():
@@ -340,6 +369,26 @@ class TagManager:
                         )
                         if old == tags:
                             continue
+                        entries[row["id"]] = {
+                            "before": {
+                                "tags_json": row["tags_json"],
+                                "data_json": row["data_json"],
+                            },
+                            "chunks": [
+                                dict(chunk)
+                                for chunk in conn.execute(
+                                    "SELECT id, tags_text FROM chunks WHERE entry_id=?",
+                                    (row["id"],),
+                                )
+                            ],
+                            "fts": [
+                                dict(chunk)
+                                for chunk in conn.execute(
+                                    "SELECT chunk_id, tags FROM chunks_fts WHERE entry_id=?",
+                                    (row["id"],),
+                                )
+                            ],
+                        }
                         data = json.loads(row["data_json"])
                         data.setdefault("analysis", {})["tags"] = tags
                         conn.execute(
@@ -396,6 +445,55 @@ class TagManager:
                     for path, content in changed.items():
                         previous[path] = path.read_text(encoding="utf-8") if path.exists() else None
                         self.vault._atomic_write(path, content)
+                    affected = set(sources) | ({target} if target else set())
+                    after_records = {
+                        row["name"]: dict(row) for row in conn.execute("SELECT * FROM tags")
+                    }
+                    after_aliases = dict(conn.execute("SELECT alias, canonical FROM tag_aliases"))
+                    changed_aliases = {
+                        key
+                        for key in aliases.keys() | after_aliases.keys()
+                        if aliases.get(key) != after_aliases.get(key)
+                    }
+                    for entry_id, snapshot in entries.items():
+                        row = conn.execute(
+                            "SELECT tags_json, data_json FROM entries WHERE id=?", (entry_id,)
+                        ).fetchone()
+                        snapshot["after"] = dict(row)
+                    snapshot = {
+                        "files": {
+                            str(path.relative_to(self.vault.vault_path)): {
+                                "before": previous[path],
+                                "after": content,
+                            }
+                            for path, content in changed.items()
+                        },
+                        "entries": entries,
+                        "tags": {
+                            name: {"before": records.get(name), "after": after_records.get(name)}
+                            for name in affected
+                        },
+                        "aliases": {
+                            name: {"before": aliases.get(name), "after": after_aliases.get(name)}
+                            for name in changed_aliases
+                        },
+                    }
+                    conn.execute(
+                        "INSERT INTO tag_undo VALUES (?, ?, ?, NULL)",
+                        (
+                            operation_id,
+                            json.dumps(snapshot, ensure_ascii=False),
+                            iso_now(),
+                        ),
+                    )
+                    conn.executemany(
+                        "INSERT INTO tag_undo_aliases VALUES (?, ?, ?)",
+                        [
+                            (operation_id, name, after_aliases[name])
+                            for name in changed_aliases
+                            if name in after_aliases
+                        ],
+                    )
             except Exception:
                 for path, content in previous.items():
                     if content is None:
@@ -405,6 +503,192 @@ class TagManager:
                 raise
             if (self.vault.vault_path / ".git").exists():
                 self.vault.commit(list(changed), "tags: update vocabulary")
+        return operation_id
+
+    def undo(self, operation_id: str) -> None:
+        rollback = {}
+        with self.vault.entry_operations_locked(), self.vault.locked():
+            try:
+                with self.database.connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    row = conn.execute(
+                        "SELECT * FROM tag_undo WHERE id=?", (operation_id,)
+                    ).fetchone()
+                    if row is None:
+                        raise KeyError("撤销记录不存在")
+                    if row["undone_at"]:
+                        return
+                    snapshot = json.loads(row["snapshot_json"])
+                    conflict = "操作后资料或标签已变化，无法撤销；后续修改已保留"
+                    paths = {}
+                    for relative, values in snapshot["files"].items():
+                        path = self.vault.vault_path / relative
+                        self.vault._reject_vault_symlinks(path, field="tag undo")
+                        current = path.read_text(encoding="utf-8") if path.exists() else None
+                        if current != values["after"]:
+                            raise TagUndoConflict(conflict)
+                        paths[path] = values
+                    for entry_id, values in snapshot["entries"].items():
+                        current = conn.execute(
+                            "SELECT tags_json, data_json FROM entries WHERE id=?", (entry_id,)
+                        ).fetchone()
+                        chunks = {
+                            r["id"]
+                            for r in conn.execute(
+                                "SELECT id FROM chunks WHERE entry_id=?", (entry_id,)
+                            )
+                        }
+                        if (
+                            current is None
+                            or dict(current) != values["after"]
+                            or chunks != {r["id"] for r in values["chunks"]}
+                        ):
+                            raise TagUndoConflict(conflict)
+                    for name, values in snapshot["tags"].items():
+                        row = conn.execute("SELECT * FROM tags WHERE name=?", (name,)).fetchone()
+                        current = dict(row) if row else None
+                        expected = values["after"]
+                        fields = ("name", "pinned_at", "position", "created_at")
+                        if (current is None) != (expected is None) or (
+                            current and any(current[key] != expected[key] for key in fields)
+                        ):
+                            raise TagUndoConflict(conflict)
+                    for name, values in snapshot["aliases"].items():
+                        row = conn.execute(
+                            "SELECT canonical FROM tag_aliases WHERE alias=?", (name,)
+                        ).fetchone()
+                        if (row[0] if row else None) != values["after"]:
+                            raise TagUndoConflict(conflict)
+                    # Validate the restored namespace before changing any files or rows.
+                    standards = {r[0] for r in conn.execute("SELECT name FROM tags")}
+                    aliases = dict(conn.execute("SELECT alias, canonical FROM tag_aliases"))
+                    restored_names = set()
+                    for name, values in snapshot["tags"].items():
+                        if values["before"]:
+                            standards.add(name)
+                            restored_names.add(name)
+                        else:
+                            standards.discard(name)
+                    for name, values in snapshot["aliases"].items():
+                        if values["before"]:
+                            aliases[name] = values["before"]
+                            restored_names.add(name)
+                        else:
+                            aliases.pop(name, None)
+                    if restored_names.intersection(standards, aliases):
+                        raise TagUndoConflict(
+                            "后续标签与待恢复的标准标签或别名重名，无法撤销；后续关联已保留"
+                        )
+                    created = {
+                        name
+                        for name, values in snapshot["tags"].items()
+                        if values["before"] is None
+                    }
+                    if created:
+                        changed_paths = set(snapshot["files"])
+                        sources = list((self.vault.vault_path / "wiki/sources").glob("*.md"))
+                        sources += list((self.vault.vault_path / "creators").glob("*/sources/*.md"))
+                        for path in sources:
+                            self.vault._reject_vault_symlinks(path, field="tag undo source")
+                            if str(path.relative_to(self.vault.vault_path)) in changed_paths:
+                                continue
+                            text = path.read_text(encoding="utf-8")
+                            match = re.match(r"\A---\n(.*?)\n---(?:\n|$)", text, re.S)
+                            try:
+                                metadata = yaml.safe_load(match[1]) if match else None
+                            except yaml.YAMLError as exc:
+                                raise TagUndoConflict(
+                                    "资料格式已变化，无法安全撤销；请先修复 Markdown"
+                                ) from exc
+                            if (
+                                isinstance(metadata, dict)
+                                and metadata.get("type") in {None, "source"}
+                                and isinstance(metadata.get("tags"), list)
+                                and created.intersection(metadata["tags"])
+                            ):
+                                raise TagUndoConflict(conflict)
+                        for row in conn.execute("SELECT alias, canonical FROM tag_aliases"):
+                            if (
+                                row["canonical"] in created
+                                and row["alias"] not in snapshot["aliases"]
+                            ):
+                                raise TagUndoConflict(conflict)
+                        for row in conn.execute("SELECT id, tags_json FROM entries"):
+                            if row["id"] not in snapshot["entries"] and created.intersection(
+                                json.loads(row["tags_json"])
+                            ):
+                                raise TagUndoConflict(conflict)
+                    # Restore standards before aliases to preserve foreign-key validity.
+                    for values in snapshot["tags"].values():
+                        before = values["before"]
+                        if before:
+                            conn.execute(
+                                "INSERT INTO tags VALUES (?, ?, ?, ?, ?) "
+                                "ON CONFLICT(name) DO UPDATE SET "
+                                "pinned_at=excluded.pinned_at, position=excluded.position, "
+                                "last_used_at=MAX(COALESCE(tags.last_used_at, ''), "
+                                "COALESCE(excluded.last_used_at, '')), "
+                                "created_at=excluded.created_at",
+                                tuple(
+                                    before[key]
+                                    for key in (
+                                        "name",
+                                        "pinned_at",
+                                        "position",
+                                        "last_used_at",
+                                        "created_at",
+                                    )
+                                ),
+                            )
+                    for name, values in snapshot["aliases"].items():
+                        conn.execute("DELETE FROM tag_aliases WHERE alias=?", (name,))
+                        if values["before"]:
+                            conn.execute(
+                                "INSERT INTO tag_aliases VALUES (?, ?)", (name, values["before"])
+                            )
+                    for name, values in snapshot["tags"].items():
+                        if values["before"] is None:
+                            conn.execute("DELETE FROM tags WHERE name=?", (name,))
+                    if (
+                        conn.execute(
+                            "SELECT COUNT(*) FROM tags WHERE pinned_at IS NOT NULL"
+                        ).fetchone()[0]
+                        > PIN_LIMIT
+                    ):
+                        raise TagUndoConflict(
+                            "固定标签已满，无法恢复原固定状态；请先取消一个固定标签"
+                        )
+                    for entry_id, values in snapshot["entries"].items():
+                        before = values["before"]
+                        conn.execute(
+                            "UPDATE entries SET tags_json=?, data_json=? WHERE id=?",
+                            (before["tags_json"], before["data_json"], entry_id),
+                        )
+                        for chunk in values["chunks"]:
+                            conn.execute(
+                                "UPDATE chunks SET tags_text=? WHERE id=?",
+                                (chunk["tags_text"], chunk["id"]),
+                            )
+                        for chunk in values["fts"]:
+                            conn.execute(
+                                "UPDATE chunks_fts SET tags=? WHERE chunk_id=?",
+                                (chunk["tags"], chunk["chunk_id"]),
+                            )
+                    for path, values in paths.items():
+                        rollback[path] = values["after"]
+                        if values["before"] is None:
+                            path.unlink(missing_ok=True)
+                        else:
+                            self.vault._atomic_write(path, values["before"])
+                    conn.execute(
+                        "UPDATE tag_undo SET undone_at=? WHERE id=?", (iso_now(), operation_id)
+                    )
+            except Exception:
+                for path, content in rollback.items():
+                    self.vault._atomic_write(path, content)
+                raise
+            if (self.vault.vault_path / ".git").exists():
+                self.vault.commit(list(rollback), "tags: undo vocabulary change")
 
     def split(self, alias: str) -> None:
         """Turn an alias back into an independent tag. Articles stay on the canonical name."""

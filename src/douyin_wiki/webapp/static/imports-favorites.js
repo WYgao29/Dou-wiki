@@ -9,7 +9,6 @@
   D.bindCheckList($("items"));
   let jobId = null, page = 1, current = null, busy = false, timer = null, generation = 0;
   const ongoing = new Set(["queued", "inventorying", "dispatching", "monitoring"]);
-  const terminal = new Set(["completed", "completed_with_warnings", "failed", "needs_auth"]);
   const node = D.node;
   async function request(path, body) {
     return D.api(path, body === undefined ? {} : {
@@ -27,7 +26,7 @@
     ["select-all", "exclude-all"].forEach((id) => { if ($(id)) $(id).disabled = busy || !canSelect; });
     if ($("previous")) $("previous").disabled = busy || !current || page <= 1;
     if ($("next")) $("next").disabled = busy || !current?.has_more;
-    if ($("retry")) $("retry").disabled = busy || !current || !(terminal.has(current.status) || current.summary.failed);
+    if ($("retry")) $("retry").disabled = busy || !current?.can_retry;
     view.querySelectorAll("input[data-work]").forEach((input) => {
       input.disabled = busy || !canSelect || input.dataset.eligible !== "true";
     });
@@ -202,7 +201,7 @@
   }));
   $("clear-cache")?.addEventListener("click", () => run(async () => {
     const preview = await request("/api/favorites/cache/clear", {confirmed: false});
-    const ok = window.confirm(`${preview.will_delete.join("；")}。保留：${preview.will_keep.join("；")}。共 ${preview.run_count} 份缓存。`);
+    const ok = await D.confirmDanger({title: "清理收藏缓存", confirmLabel: "确认清理", description: `${preview.will_delete.join("；")}。保留：${preview.will_keep.join("；")}。共 ${preview.run_count} 份缓存。`});
     if (!ok) return;
     const result = await request("/api/favorites/cache/clear", {confirmed: true});
     D.toast(`已清除 ${result.run_count} 份本地收藏缓存`);
@@ -212,7 +211,7 @@
     const preview = await D.api(`/api/imports/${encodeURIComponent(jobId)}`, {
       method: "DELETE", body: JSON.stringify({confirmed: false}),
     });
-    const ok = window.confirm(`${preview.will_delete.join("；")}。保留：${preview.will_keep.join("；")}`);
+    const ok = await D.confirmDanger({title: "清理收藏缓存", confirmLabel: "确认清理", description: `${preview.will_delete.join("；")}。保留：${preview.will_keep.join("；")}`});
     if (!ok) return;
     await D.api(`/api/imports/${encodeURIComponent(jobId)}`, {
       method: "DELETE", body: JSON.stringify({confirmed: true}),

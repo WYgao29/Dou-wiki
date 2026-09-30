@@ -123,6 +123,10 @@ class ImportMixin:
         return {"job_id": job_id, "changed": changed, "selection": summary}
 
     def confirm_creator_import(self, job_id: str, *, accept_partial: bool = False) -> JobRecord:
+        with self.vault.entry_operations_locked():
+            return self._confirm_creator_import_locked(job_id, accept_partial=accept_partial)
+
+    def _confirm_creator_import_locked(self, job_id: str, *, accept_partial: bool) -> JobRecord:
         job = self.database.get_job(job_id)
         if job.kind != "creator_import" or job.status != JobStatus.NEEDS_SELECTION:
             raise JobStateError("只有处于“待选择作品”状态的博主任务可以确认")
@@ -147,6 +151,7 @@ class ImportMixin:
                 with suppress(JobStateError):
                     existing_job = self.database.get_job(work.last_job_id)
                     if existing_job.status not in {
+                        JobStatus.CANCELLED,
                         JobStatus.FAILED,
                         JobStatus.COMPLETED,
                         JobStatus.COMPLETED_WITH_WARNINGS,
@@ -468,11 +473,22 @@ class ImportMixin:
             if (self.config.vault_path / ".git").exists():
                 self.commit_vault(changed, f"creator: {creator.nickname} {action}")
 
+    def refresh_batch_parents(self) -> None:
+        self.favorites.refresh_all()
+        for parent in self.database.list_jobs(
+            status=JobStatus.MONITORING,
+            kinds={"creator_import"},
+            limit=None,
+        ):
+            self.refresh_creator_parent(parent.id)
+
     def refresh_creator_parent(self, parent_job_id: str) -> None:
         if not parent_job_id:
             return
         with suppress(JobStateError):
             parent = self.database.get_job(parent_job_id)
+            if parent.artifacts.get("cancel_requested"):
+                return
             if parent.kind != "creator_import" or parent.status not in {
                 JobStatus.MONITORING,
                 JobStatus.COMPLETED,
@@ -488,6 +504,7 @@ class ImportMixin:
                 JobStatus.COMPLETED,
                 JobStatus.COMPLETED_WITH_WARNINGS,
                 JobStatus.FAILED,
+                JobStatus.CANCELLED,
             }
             counts: dict[str, int] = {}
             for child in children:
@@ -509,8 +526,10 @@ class ImportMixin:
                     expected_child_updates=child_updates,
                 )
                 return
-            warnings = counts.get(JobStatus.FAILED.value, 0) + counts.get(
-                JobStatus.COMPLETED_WITH_WARNINGS.value, 0
+            warnings = (
+                counts.get(JobStatus.FAILED.value, 0)
+                + counts.get(JobStatus.CANCELLED.value, 0)
+                + counts.get(JobStatus.COMPLETED_WITH_WARNINGS.value, 0)
             )
             self.database.update_job(
                 parent.id,

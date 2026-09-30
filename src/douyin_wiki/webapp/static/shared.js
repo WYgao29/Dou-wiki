@@ -10,10 +10,11 @@
   Douku.$ = (id) => document.getElementById(id);
   Douku.qs = (selector, root = document) => root.querySelector(selector);
   Douku.qsa = (selector, root = document) => [...root.querySelectorAll(selector)];
+  Douku.clientId = [...crypto.getRandomValues(new Uint8Array(16))].map(value => value.toString(16).padStart(2, "0")).join("");
   Douku.api = async (url, options = {}) => {
     const response = await fetch(url, {
-      headers: {"Content-Type": "application/json", ...(options.headers || {})},
       ...options,
+      headers: {"Content-Type": "application/json", "X-Douku-Client": Douku.clientId, ...(options.headers || {})},
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -209,30 +210,59 @@
     }
     return section;
   };
-  Douku.confirmDanger = async ({title, description, confirmLabel}) => new Promise((resolve) => {
+  Douku.confirmDanger = ({title, description, confirmLabel, action}) => new Promise((resolve) => {
     const dialog = Douku.$("destructive-dialog");
-    if (!dialog) {
-      resolve(window.confirm(description));
-      return;
-    }
+    if (dialog.open) { resolve(false); return; }
+    const confirm = Douku.$("confirm-destructive");
+    const error = Douku.$("destructive-error");
+    let settled = false;
+    let busy = false;
+    const cleanup = () => {
+      confirm.removeEventListener("click", onConfirm);
+      dialog.removeEventListener("cancel", onCancel);
+      dialog.removeEventListener("close", onClose);
+      dialog.removeEventListener("submit", onSubmit);
+      confirm.disabled = false;
+      confirm.textContent = confirmLabel || "确认";
+    };
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      dialog.close();
+      resolve(value);
+    };
+    const onClose = () => { if (!dialog.open) finish(false); };
+    const onSubmit = (event) => { if (busy) event.preventDefault(); };
+    const onCancel = (event) => {
+      event.preventDefault();
+      if (!busy) finish(false);
+    };
+    const onConfirm = async (event) => {
+      event.preventDefault();
+      if (busy) return;
+      busy = true;
+      confirm.disabled = true;
+      error.classList.add("hidden");
+      try { finish(action ? await action() : true); }
+      catch (failure) {
+        error.textContent = failure.message || "操作失败";
+        error.classList.remove("hidden");
+        confirm.disabled = false;
+      } finally { busy = false; }
+    };
     Douku.$("destructive-title").textContent = title;
     Douku.$("destructive-description").textContent = description;
-    Douku.$("confirm-destructive").textContent = confirmLabel || "确认";
-    Douku.$("destructive-error").classList.add("hidden");
-    const finish = (ok) => {
-      dialog.close();
-      resolve(ok);
-    };
-    const onClose = () => {
-      dialog.removeEventListener("close", onClose);
-      if (dialog.returnValue === "cancel") resolve(false);
-    };
-    dialog.addEventListener("close", onClose, {once: true});
-    Douku.$("confirm-destructive").onclick = (event) => {
-      event.preventDefault();
-      finish(true);
-    };
+    confirm.textContent = confirmLabel || "确认";
+    confirm.disabled = false;
+    error.classList.add("hidden");
+    dialog.returnValue = "";
+    confirm.addEventListener("click", onConfirm);
+    dialog.addEventListener("cancel", onCancel);
+    dialog.addEventListener("close", onClose);
+    dialog.addEventListener("submit", onSubmit);
     dialog.showModal();
+    confirm.focus();
   });
   Douku.icon = (name) => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");

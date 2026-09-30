@@ -3,7 +3,7 @@
   const D = window.Douku;
   const $ = D.$;
   const node = D.node;
-  const state = {rows: [], duplicates: [], aliases: {}, selected: new Set(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
+  const state = {rows: [], duplicates: [], aliases: {}, undoByAlias: {}, selected: new Set(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
   const PIN_LIMIT = 8;
   const narrowTags = () => window.matchMedia("(width < 480px)").matches;
   const active = () => $("app-shell").dataset.page === "tags";
@@ -27,6 +27,7 @@
     state.rows = data.tags || [];
     state.duplicates = data.duplicates || [];
     state.aliases = data.aliases || {};
+    state.undoByAlias = data.undo_by_alias || {};
   }
   function actionMessage(action, payload) {
     if (action === "rename") return `已重命名为 ${payload.target}`;
@@ -35,13 +36,13 @@
     if (action === "pin") return payload.pinned ? "已固定" : "已取消固定";
     if (action === "reorder") return "已调整固定顺序";
     if (action === "split") return "已拆回独立标签";
+    if (action === "undo") return "已恢复操作前的标签和资料关联";
     return "标签已更新";
   }
   async function change(action, payload, selection = null) {
     if (state.busy) return false;
     state.busy = true; render();
     try {
-      D.markOwnMutation?.();
       const data = await D.api(`/api/tags/${action}`, {method: "POST", body: JSON.stringify(payload)});
       state.request += 1;
       applyOverview(data);
@@ -49,16 +50,12 @@
       $("tags-error").classList.add("hidden");
       await D.refreshLibrary();
       const text = data.warnings?.length ? `${actionMessage(action, payload)}；${data.warnings.join("；")}` : actionMessage(action, payload);
-      if (action === "merge") {
-        const sources = [...new Set(payload.names || [])].filter((name) => name && name !== payload.target);
+      if (data.operation_id) {
         D.toastAction(text, "撤销", async () => {
-          D.markOwnMutation?.();
-          for (const name of sources) {
-            await D.api("/api/tags/split", {method: "POST", body: JSON.stringify({name})});
-          }
+          await D.api("/api/tags/undo", {method: "POST", body: JSON.stringify({operation_id: data.operation_id})});
           await load();
           await D.refreshLibrary();
-          D.toast("已拆回独立标签");
+          D.toast("已恢复操作前的标签和资料关联");
         });
       } else D.toast(text);
       return true;
@@ -175,10 +172,13 @@
     if (!entries.length) { root.replaceChildren(); return; }
     root.replaceChildren(
       node("h2", "别名"),
-      node("p", "别名会解析成标准标签。撤销只拆回独立标签，文章仍留在标准标签上。", "hint-copy"),
+      node("p", "撤销操作会恢复该次合并或重命名前的资料关联。解除别名只影响今后的归类。历史操作没有撤销记录时，可解除别名。", "hint-copy"),
       ...entries.map(([alias, canonical]) => {
         const row = node("div", null, "tag-alias-row");
-        row.append(node("span", `${alias} → ${canonical}`), button("撤销", () => change("split", {name: alias}), "text-button"));
+        row.append(node("span", `${alias} → ${canonical}`));
+        const operation = state.undoByAlias[alias];
+        if (operation) row.append(button("撤销操作", () => change("undo", {operation_id: operation}), "text-button"));
+        row.append(button("解除别名", () => change("split", {name: alias}), "text-button"));
         return row;
       }),
     );
@@ -240,9 +240,14 @@
         state.focus = row.name; render();
       });
       const copy = node("div", null, "tag-card-copy");
-      copy.append(tagLink(row), node("span", `${row.count} 条`, "tag-count"));
+      copy.append(tagLink(row), node("span", `${row.count} 条`, "tag-count"), node("time", `最近使用 ${date(row.last_used_at)}`, "hint-copy"));
       const actions = node("div", null, "tag-card-actions");
       actions.append(makePin(row));
+      if (row.pinned_at) {
+        actions.append(button("↑", () => move(row.name, -1)), button("↓", () => move(row.name, 1)));
+        actions.children[1].setAttribute("aria-label", `上移 ${row.name}`);
+        actions.children[2].setAttribute("aria-label", `下移 ${row.name}`);
+      }
       card.append(check, copy, actions);
       return card;
     }));
@@ -259,6 +264,11 @@
     $("tags-select-all").disabled = state.busy || !rows.length;
     $("tags-select-all").checked = Boolean(rows.length) && rows.every(row => state.selected.has(row.name));
     $("tags-select-all").indeterminate = rows.some(row => state.selected.has(row.name)) && !$("tags-select-all").checked;
+    $("tags-mobile-sort").value = `${state.sort}:${state.direction}`;
+    $("tags-mobile-sort").disabled = state.busy;
+    const mobileAll = $("tags-mobile-select-all");
+    mobileAll.checked = $("tags-select-all").checked; mobileAll.indeterminate = $("tags-select-all").indeterminate;
+    mobileAll.disabled = $("tags-select-all").disabled;
     $("tags-empty").classList.toggle("hidden", rows.length > 0);
     document.querySelectorAll("[data-tag-sort]").forEach(control => {
       const selected = control.dataset.tagSort === state.sort;
@@ -285,6 +295,13 @@
   D.tags = {open, load, renderPanel};
   document.addEventListener("DOMContentLoaded", () => {
     $("tags-search").addEventListener("input", render);
+    $("tags-mobile-select-all").addEventListener("change", event => {
+      visibleRows().forEach(row => { if (event.target.checked) state.selected.add(row.name); else state.selected.delete(row.name); }); render();
+    });
+    $("tags-mobile-sort").addEventListener("change", event => {
+      const [sort, direction] = event.target.value.split(":");
+      state.sort = sort; state.direction = Number(direction); render();
+    });
     $("tags-select-all").addEventListener("change", () => {
       visibleRows().forEach(row => { if ($("tags-select-all").checked) state.selected.add(row.name); else state.selected.delete(row.name); }); render();
     });
@@ -310,11 +327,15 @@
           confirmLabel: "确认清理",
         });
         if (!confirmed) return;
-        D.markOwnMutation?.();
+
         const data = await D.api("/api/tags/cleanup", {method: "POST", body: JSON.stringify({confirmed: true})});
         applyOverview(data);
         await D.refreshLibrary();
-        D.toast(`已清理 ${data.deleted?.length || preview.count} 个未使用标签`);
+        const message = `已清理 ${data.deleted?.length || 0} 个未使用标签`;
+        if (data.operation_id) D.toastAction(message, "撤销", async () => {
+          await D.api("/api/tags/undo", {method: "POST", body: JSON.stringify({operation_id: data.operation_id})});
+          await load(); await D.refreshLibrary(); D.toast("已恢复标签");
+        }); else D.toast(message);
         render();
       } catch (error) {
         $("tags-error").textContent = error.message;
@@ -331,7 +352,7 @@
       if (!rows.length) return;
       event.preventDefault();
       const current = rows.findIndex((row) => row.dataset.tagName === state.focus);
-      const next = rows[Math.max(0, Math.min(rows.length - 1, (current < 0 ? 0 : current) + (event.key === "j" ? 1 : -1)))];
+      const next = rows[Math.max(0, Math.min(rows.length - 1, (current < 0 ? (event.key === "j" ? -1 : 1) : current) + (event.key === "j" ? 1 : -1)))];
       state.focus = next.dataset.tagName;
       next.focus({preventScroll: false});
       renderPanel();

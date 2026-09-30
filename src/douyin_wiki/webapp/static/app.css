@@ -853,6 +853,8 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   bottom: 0; padding: var(--space-2) 0; border-top: 1px solid var(--border); flex-shrink: 0;
   margin-top: auto;
 }
+.selection-bar { flex-wrap: wrap; }
+.selection-bar .selection-hint { flex: 0 0 100%; }
 .selection-bar span { flex: 1; color: var(--text-2); font-size: var(--fs-13); }
 #author-filter-search { width: 100%; margin-bottom: var(--space-2); padding: 0 var(--space-2); }
 .metadata-favorite svg { fill: currentColor; }
@@ -1757,20 +1759,17 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 .tag-card.selected { background: var(--surface-selected); }
 .dialog-error a, .dialog-error button { margin-inline: 0; }
 .tag-alias-row, .tag-card { display: flex; align-items: center; gap: var(--space-2); }
-.tag-alias-row { margin-top: var(--space-2); }
+.tag-alias-row { margin-top: var(--space-2); flex-wrap: wrap; }
 .tag-alias-row > span, .tag-card strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .tag-cards { display: none; }
 .tag-card {
   justify-content: space-between; padding: var(--space-3); border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius);
 }
 .tag-card-actions { display: flex; align-items: center; gap: var(--space-1); }
+.tags-mobile-tools { display: none; }
 .tag-table-wrap { overflow-x: auto; }
-@media (width < 480px) {
-  .tag-table-wrap { display: none; }
-  .tag-cards { display: grid; gap: var(--space-2); }
-  .tag-table { min-width: 0; }
-}
+
 .tag-table { border-collapse: collapse; width: 100%; font-size: var(--fs-13); }
 .tag-table th, .tag-table td {
   padding: var(--space-2); height: 48px; text-align: left; border-bottom: 1px solid var(--border);
@@ -1861,6 +1860,12 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   .library-toolbar .select-control svg { pointer-events: none; }
   .search-box kbd { display: none; }
   .view-header #topics-create-button { max-width: 160px; white-space: normal; }
+}
+@media (width < 480px) {
+  .tag-table-wrap { display: none; }
+  .tag-cards { display: grid; gap: var(--space-2); }
+  .tags-mobile-tools { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-3); }
+  .tag-card-actions { flex-wrap: wrap; max-width: 92px; justify-content: flex-end; }
 }
 @media (960px <= width < 1280px) {
   .app-shell, .app-shell.is-panel-collapsed {

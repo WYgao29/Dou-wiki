@@ -128,6 +128,7 @@ class DouyinShareResolver:
         ) as client:
             identity: tuple[str, SourceKind] | None = None
             for _ in range(8):
+                current = extract_douyin_url(current)
                 try:
                     response = await client.get(current, follow_redirects=False)
                 except httpx.HTTPError as exc:
@@ -155,15 +156,25 @@ class DouyinShareResolver:
             "短链已解析，但没有得到抖音作品 ID", details={"redirect_chain": chain}
         )
 
+    async def resolve_creator(self, share_text: str) -> str:
+        kind, url = await self.classify_target(share_text)
+        if kind != "creator":
+            raise InvalidShareTextError("请粘贴抖音博主主页链接；这个链接不是博主主页")
+        return url
+
     async def classify(self, share_text: str) -> str:
+        kind, _ = await self.classify_target(share_text)
+        return kind
+
+    async def classify_target(self, share_text: str) -> tuple[str, str]:
         """Return work, creator, or unknown. Canonical links do not touch the network."""
         original_url = extract_douyin_url(share_text)
         if extract_creator_sec_uid(original_url):
-            return "creator"
+            return "creator", original_url
         if extract_work_identity(original_url):
-            return "work"
+            return "work", original_url
         if not is_douyin_short_link(original_url):
-            return "unknown"
+            return "unknown", original_url
         chain = [original_url]
         current = original_url
         headers = {
@@ -176,6 +187,7 @@ class DouyinShareResolver:
             timeout=self.timeout_seconds, headers=headers, transport=self.transport
         ) as client:
             for _ in range(8):
+                current = extract_douyin_url(current)
                 try:
                     response = await client.get(current, follow_redirects=False)
                 except httpx.HTTPError as exc:
@@ -186,17 +198,18 @@ class DouyinShareResolver:
                 candidates = [str(response.url)]
                 if location:
                     current = urljoin(current, location)
+                    extract_douyin_url(current)
                     chain.append(current)
                     candidates.append(current)
                 for candidate in candidates:
                     if extract_creator_sec_uid(candidate):
-                        return "creator"
+                        return "creator", candidate
                     if extract_work_identity(candidate):
-                        return "work"
+                        return "work", candidate
                 if not location:
                     break
             else:
                 raise InvalidShareTextError(
                     "抖音短链重定向次数过多", details={"redirect_chain": chain}
                 )
-        return "unknown"
+        return "unknown", current

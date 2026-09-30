@@ -163,7 +163,7 @@ class EntriesMixin:
         entries = {
             source.entry_id: self.database.get_entry(source.entry_id) for source in topic.sources
         }
-        with self.vault.locked():
+        with self.vault.entry_operations_locked(), self.vault.locked():
             changed = self.vault.write_topic(topic, artifacts, entries)
             topics_index = self.vault.write_topics_index(self.database.list_topics())
             changed.append(topics_index)

@@ -125,8 +125,10 @@ def test_overview_alerts_unverified_video_channel(tmp_path) -> None:
     service.favorites.adapter = service.image_note_downloader
     app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
-        overview = client.get("/api/overview").json()
+        initial = client.get("/api/overview").json()
+        assert initial["auth"]["pending"]
         auth = client.get("/api/auth/status", params={"refresh": "true"}).json()
+        overview = client.get("/api/overview").json()
     video = auth["channels"]["video"]
     assert video["user_state"] == "unconfirmed"
     assert video["user_state_label"] == "暂时无法确认"

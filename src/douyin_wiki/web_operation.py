@@ -138,16 +138,16 @@ class WebOperationService:
                 JobStatus(status)
             except ValueError as exc:
                 raise ValueError("不支持的任务状态") from exc
-        jobs = self.core.list_jobs(limit=None)
+        jobs = [
+            job for job in self.core.list_jobs(limit=None) if not job.artifacts.get("user_deleted")
+        ]
         if parents_only:
             jobs = [job for job in jobs if parent_job_id(job) is None]
         if kind:
             jobs = [job for job in jobs if job.kind == kind]
         if in_progress:
             jobs = [
-                job
-                for job in jobs
-                if job_is_in_progress(job) and job.status != JobStatus.QUEUED
+                job for job in jobs if job_is_in_progress(job) and job.status != JobStatus.QUEUED
             ]
         elif status == JobStatus.COMPLETED.value:
             done = {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}
@@ -171,6 +171,8 @@ class WebOperationService:
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         job = self.core.get_job(job_id)
+        if job.artifacts.get("user_deleted"):
+            raise JobStateError("任务不存在")
         timeline = [
             {
                 "id": event.id,
@@ -188,7 +190,9 @@ class WebOperationService:
         children = []
         for child_id in job.result.get("child_job_ids") or []:
             try:
-                children.append(self.present(self.core.get_job(child_id)))
+                child = self.core.get_job(child_id)
+                if not child.artifacts.get("user_deleted"):
+                    children.append(self.present(child))
             except JobStateError:
                 continue
         if job.kind == "favorites_import":
@@ -286,13 +290,14 @@ class WebOperationService:
         }
 
     async def overview(self) -> dict[str, Any]:
-        auth = await self.auth_status(refresh=True)
+        auth = await self.auth_status()
         counts = self.job_counts()
         counts["requires_user_action"] = self.list_jobs(requires_user_action=True, limit=1)["total"]
         recent = [
             self.present(job)
             for job in self.core.list_jobs(limit=8)
             if job.kind in {"capture", "creator_import", "favorites_import"}
+            and not job.artifacts.get("user_deleted")
         ]
         alerts = []
         video = auth["channels"]["video"]

@@ -341,9 +341,15 @@ def register_operation_routes(
     @app.post("/api/creators/inventory", status_code=202)
     async def creator_inventory(body: CreatorInventoryBody):
         try:
-            assert_creator_share(body.source_text)
+            source = assert_creator_share(body.source_text)
+            resolver = (
+                core.resolver
+                if hasattr(core.resolver, "resolve_creator")
+                else DouyinShareResolver()
+            )
+            source = await resolver.resolve_creator(source)
             job = core.capture_douyin_creator(
-                body.source_text,
+                source,
                 inspirations=body.inspirations,
                 options=CaptureOptions(
                     retention=body.retention,

@@ -154,28 +154,24 @@
     return button;
   }
 
-  const CANCELLABLE = new Set([
-    "queued", "resolving", "inventorying", "dispatching", "monitoring",
-    "downloading", "extracting", "transcribing", "analyzing",
-  ]);
-
   function cancelButton(job, {reloadDetail = false} = {}) {
-    if (!CANCELLABLE.has(job.status)) return null;
+    if (!job.can_cancel) return null;
     const button = D.node("button", "取消", "secondary-button");
     button.type = "button";
     button.addEventListener("click", async () => {
-      const queued = job.status === "queued";
+      const paused = job.status === "queued" || job.requires_user_action
+        || job.status === "awaiting_agent_analysis" || job.status === "monitoring";
       const confirmed = await D.confirmDanger({
         title: "取消这个任务？",
-        description: queued
-          ? "排队中的任务会马上取消，不会开始下载。"
+        description: paused
+          ? "取消后不再继续处理；若仍有正在执行的步骤，将在安全检查点停止。"
           : "运行中的任务会在下一个安全检查点停止，不会在下载中途打断。",
         confirmLabel: "取消任务",
       });
       if (!confirmed) return;
       try {
-        await D.api(`/api/jobs/${encodeURIComponent(job.id)}/cancel`, {method: "POST", body: "{}"});
-        D.toast(queued ? "已取消" : "已请求停止");
+        const result = await D.api(`/api/jobs/${encodeURIComponent(job.id)}/cancel`, {method: "POST", body: "{}"});
+        D.toast(result.status === "cancelled" ? "已取消" : "已请求停止");
         if (reloadDetail) await loadDetail(job.id);
         else await loadFromPath(routePath(location.pathname));
       } catch (error) {

@@ -63,6 +63,10 @@ class JobStateError(DouyinWikiError):
     code = "invalid_job_state"
 
 
+class JobCancelledError(JobStateError):
+    """The worker reached a safe persistence checkpoint after cancellation."""
+
+
 class JobLeaseLostError(JobStateError):
     code = "job_lease_lost"
 

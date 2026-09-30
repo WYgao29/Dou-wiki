@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .localization import ANALYSIS_MODE_LABELS, JOB_KIND_LABELS, JOB_STATUS_LABELS, label_status
-from .models import AnalysisMode, JobRecord, JobStatus
+from .models import CANCELLABLE_JOB_STATUSES, AnalysisMode, JobRecord, JobStatus
 from .time_utils import beijing_iso, format_beijing
 
 USER_STAGES: dict[str, str] = {
@@ -421,6 +421,8 @@ def present_job(
         "next_action": next_action_for(job, analysis_mode=analysis_mode),
         "display_title": job_display_title(job),
         "retryable": retryable(job),
+        "can_cancel": job.status in CANCELLABLE_JOB_STATUSES
+        and not job.artifacts.get("user_deleted", False),
         "requires_user_action": requires_user_action(job),
         "dismissed": user_dismissed(job),
         "updated_at": beijing_iso(job.updated_at),
