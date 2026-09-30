@@ -400,6 +400,7 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
     const data = await api(`/api/library${params.size ? `?${params}` : ""}`);
     state.items = data.items;
     state.facets = data.facets;
+    state.tags = [...new Set(state.tags.map(tag => state.facets.tag_aliases?.[tag] || tag))];
     if (!state.query) state.allItems = data.items;
     else if (!state.allItems.length) await ensureCommandItems();
     state.catalogHasItems = Boolean(
@@ -454,7 +455,7 @@ function renderFilters() {
   $("#tag-filters").replaceChildren(...(state.facets.tags || []).map((value) => makeChoice(value, value, "tags")));
   $("#inspiration-only").checked = state.inspirationOnly;
   if (state.panelPage === "library") {
-    $$(".nav-item[data-section]").forEach((node) => node.classList.toggle("active", node.dataset.section === state.section));
+    $$(".nav-item[data-section]").forEach((node) => node.classList.toggle("active", !state.tags.length && node.dataset.section === state.section));
     $("#topics-nav").classList.remove("active"); $("#trash-nav").classList.remove("active");
   }
   renderSidebarTags();
@@ -464,19 +465,17 @@ function renderFilters() {
 
 function renderSidebarTags() {
   const root = $("#sidebar-tags");
-  const tags = (state.facets.tags || []).slice(0, 8);
+  const tags = state.facets.sidebar_tags || [];
   root.replaceChildren(...tags.map((tag) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "sidebar-tag";
-    button.append(svgIcon("hash"), window.Douku.node("span", tag));
-    button.classList.toggle("active", state.tags.includes(tag));
-    button.setAttribute("aria-pressed", String(state.tags.includes(tag)));
+    button.append(window.Douku.node("span", "#", "tag-hash"), window.Douku.node("span", tag.name, "tag-name"), window.Douku.node("span", String(tag.count), "nav-count"));
+    const selected = state.panelPage === "library" && state.tags.includes(tag.name);
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
     button.addEventListener("click", () => {
-      toggleListValue("tags", tag);
-      showLibrary(false);
-      renderFilters();
-      writeStateToURL("push");
+      window.Douku.navigate(`/?tag=${encodeURIComponent(tag.name)}&view=list`);
     });
     return button;
   }));
@@ -874,7 +873,11 @@ function renderLibrary() {
     favorite: "你在资料库里收藏、会永久留在本机的资料",
     inspiration: "带有你原始灵感的文章",
   };
-  $("#view-title").textContent = titles[state.section];
+  const tag = state.tags.length === 1 ? state.tags[0] : "";
+  const tagCount = state.facets.tag_details?.find(row => row.name === tag)?.count ?? items.length;
+  $("#view-title").textContent = tag ? `# ${tag} · ${tagCount} 条` : titles[state.section];
+  $("#tag-manage-link").classList.toggle("hidden", !tag);
+  $("#result-count").classList.toggle("hidden", Boolean(tag));
   $("#view-summary").textContent = summaries[state.section];
   $("#result-count").textContent = String(items.length);
   $("#library-status").classList.add("hidden");
@@ -1051,7 +1054,8 @@ function showLibrary(push = true) {
   window.Douku?.setPage("library");
   $("#topics-nav").classList.remove("active");
   $("#trash-nav").classList.remove("active");
-  $$(".nav-item[data-section]").forEach((node) => node.classList.toggle("active", node.dataset.section === state.section));
+  $$(".nav-item[data-section]").forEach((node) => node.classList.toggle("active", !state.tags.length && node.dataset.section === state.section));
+  renderSidebarTags();
   if (push) history.pushState({}, "", currentLibraryURL());
   document.title = "资料库 · 抖库";
   renderLibrary();
@@ -1063,6 +1067,14 @@ function showLibrary(push = true) {
     if (!$("#library-results").contains(document.activeElement)) $("#main-content").focus({preventScroll: true});
   }
 }
+
+function showTags() {
+  state.currentEntry = ""; state.currentArticleItem = null; state.currentTopic = "";
+  closeDrawers(false);
+  window.Douku.tags.open();
+  renderSidebarTags();
+}
+window.Douku.refreshLibrary = () => loadLibrary({showLoading: false});
 
 async function loadTopics() {
   const data = await api("/api/topics");
@@ -2115,6 +2127,7 @@ function renderInspirationsPanel(item) {
 }
 
 function renderPanelSummary() {
+  if (state.panelPage === "tags") { window.Douku.tags.renderPanel(); return; }
   const item = state.panelPage === "article" ? state.currentArticleItem
     : state.panelPage === "library" ? findLibraryItem(state.focusedEntryId) : null;
   if (state.panelPage === "article" && !item) {
@@ -2908,7 +2921,8 @@ function handleGlobalKeydown(event) {
       $("#library-view > .view-header").classList.add("is-search-open");
       $("#search-toggle").setAttribute("aria-expanded", "true");
       $("#search-input").focus();
-    } else openCommandMenu();
+    } else if (state.panelPage === "tags") $("#tags-search").focus();
+    else openCommandMenu();
   } else if (event.key === "[") { event.preventDefault(); setSidebarOpen(panelBreakpoint() === "drawer" ? state.activeDrawer !== "sidebar" : state.sidebarCollapsed); }
   else if (event.key === "]") { event.preventDefault(); setChatPanelOpen(!isPanelOpen()); }
   else if (event.key === "?") { event.preventDefault(); $("#shortcuts-dialog").showModal(); }
@@ -2978,7 +2992,10 @@ function bindEvents() {
     state.topicSelectionMode = false; state.selectedEntryIds.clear(); renderLibrary();
   });
   $("#library-selection-next").addEventListener("click", openTopicDialog);
-  window.addEventListener("douku:page", (event) => renderPanelTabs(event.detail.page));
+  window.addEventListener("douku:page", (event) => {
+    renderPanelTabs(event.detail.page);
+    renderSidebarTags();
+  });
   $("#imports-popover").addEventListener("keydown", (event) => {
     if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
     event.preventDefault();
@@ -3067,7 +3084,6 @@ function bindEvents() {
   });
   $("#filter-close").addEventListener("click", closeFilterPopover);
   $("#apply-filters").addEventListener("click", closeFilterPopover);
-  $("#all-tags-button").addEventListener("click", () => openFilterPopover(true));
   $("#clear-filters").addEventListener("click", () => {
     state.authors = []; state.types = []; state.tags = []; state.sources = []; state.inspirationOnly = false;
     renderFilters(); renderLibrary(); writeStateToURL();
@@ -3162,6 +3178,7 @@ function bindEvents() {
     if (path === "/") { readStateFromURL(); showLibrary(false); loadLibrary({showLoading: false}); return; }
     if (path === "/topics") { showTopics(false); return; }
     if (path === "/trash") { showTrash(false); return; }
+    if (path === "/tags") { showTags(); return; }
     const entryMatch = path.match(/^\/articles\/([^/]+)$/);
     if (entryMatch) { openArticle(decodeURIComponent(entryMatch[1]), false); return; }
     const topicMatch = path.match(/^\/topics\/([^/]+)$/);
@@ -3214,6 +3231,7 @@ function bindEvents() {
     else if (topicMatch) openTopic(decodeURIComponent(topicMatch[1]), false);
     else if (path === "/topics") showTopics(false);
     else if (path === "/trash") showTrash(false);
+    else if (path === "/tags") showTags();
     else if (window.Douku?.isOperationPath(path)) window.Douku.navigate(path + window.location.search, false);
     else if (window.Douku && !window.Douku.isKnownAppPath(path)) {
       window.Douku.hideAllViews();
@@ -3250,6 +3268,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   else if (state.currentEntry) await openArticle(state.currentEntry, false);
   else if (window.location.pathname === "/topics") await showTopics(false);
   else if (window.location.pathname === "/trash") await showTrash(false);
+  else if (window.location.pathname === "/tags") showTags();
   else if (window.Douku?.isOperationPath(window.location.pathname)) {
     window.Douku.navigate(window.location.pathname + window.location.search, false);
   } else if (window.Douku && !window.Douku.isKnownAppPath(window.location.pathname)) {
@@ -3266,6 +3285,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadLibrary({showLoading: false});
     await loadTopics();
     if (!$("#trash-view").classList.contains("hidden")) await loadTrash();
+    if (state.panelPage === "tags") await window.Douku.tags.load();
     if (state.currentEntry) await openArticle(state.currentEntry, false);
     if (state.currentTopic) await openTopic(state.currentTopic, false);
     toast("资料库已更新");

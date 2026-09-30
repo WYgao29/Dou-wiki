@@ -53,6 +53,7 @@ from .service_entries import EntriesMixin
 from .service_import import ImportMixin
 from .service_maintenance import MaintenanceMixin
 from .service_trash import TrashMixin
+from .tags import TagManager
 from .vault import VaultWriter
 
 
@@ -84,6 +85,7 @@ class DouyinWikiService(
         self.config = config
         self.database = Database(config.database_path)
         self.vault = VaultWriter(config.vault_path)
+        self.tags = TagManager(self.database, self.vault)
         self.resolver = resolver or DouyinShareResolver()
         self.downloader = downloader or YtDlpDownloader(config.media, config.browser_profile_dir)
         self.image_note_downloader = image_note_downloader or PlaywrightImageNoteDownloader(
@@ -566,6 +568,12 @@ class DouyinWikiService(
         """Persist an entry while the caller already owns the operation lock."""
         if require_existing:
             self.database.get_entry(entry.id)
+        # Resolve again under the operation lock: a merge can finish while AI is running.
+        tags = self.tags.resolve(entry.tags)
+        entry = entry.model_copy(update={"tags": tags})
+        data.setdefault("analysis", {})["tags"] = tags
+        for chunk in chunks:
+            chunk["tags_text"] = " ".join(tags)
         return self.database.persist_entry_bundle(
             entry, data, chunks, relations, reminders,
             publish_documents=lambda: self.write_entry_documents(

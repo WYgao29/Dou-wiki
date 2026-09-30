@@ -11,7 +11,9 @@ import yaml
 
 from ..database import Database
 from ..models import InspirationInput, LibraryItem, SourceKind
+from ..tags import TagManager
 from ..time_utils import parse_datetime
+from ..vault import VaultWriter
 
 CONTENT_TYPE_LABELS = {
     "tutorial": "教程",
@@ -75,6 +77,7 @@ class LibraryCatalog:
     def __init__(self, vault_path: Path, database: Database) -> None:
         self.vault_path = vault_path.expanduser().resolve()
         self.database = database
+        self.tags = TagManager(database, VaultWriter(self.vault_path))
         self._items: dict[str, LibraryItem] = {}
         self._load_errors: list[dict[str, str]] = []
         self._fingerprint: tuple[tuple[str, int, int], ...] = ()
@@ -114,6 +117,7 @@ class LibraryCatalog:
         if creators.is_dir():
             candidates.extend(creators.glob("*/sources/*.md"))
 
+        resolve_tags = self.tags.resolver()
         items: dict[str, LibraryItem] = {}
         load_errors: list[dict[str, str]] = []
         for path in sorted(candidates):
@@ -129,6 +133,7 @@ class LibraryCatalog:
                 continue
             if item is None:
                 continue
+            item.tags = resolve_tags(item.tags)
             previous = items.get(item.entry_id)
             preferred = db_entries.get(item.work_id)
             if previous is None or (

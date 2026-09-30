@@ -385,10 +385,12 @@ class Database:
 
     def initialize(self) -> None:
         from .favorites_store import FAVORITES_SCHEMA
+        from .tags import TAG_SCHEMA
 
         with self.connect() as conn:
             previous_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             conn.executescript(SCHEMA)
+            conn.executescript(TAG_SCHEMA)
             conn.executescript(FAVORITES_SCHEMA)
             conn.executescript(AUTH_SESSIONS_SCHEMA)
             self._migrate_chat_sessions_for_topics(conn)
@@ -421,7 +423,7 @@ class Database:
             if previous_version < 9:
                 self._rebuild_fts_conn(conn)
             self._retire_undeliverable_events_conn(conn)
-            conn.execute("PRAGMA user_version=11")
+            conn.execute("PRAGMA user_version=12")
 
     @staticmethod
     def _rebuild_fts_conn(conn: sqlite3.Connection) -> None:

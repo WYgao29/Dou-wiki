@@ -50,7 +50,7 @@ from .catalog import CONTENT_TYPE_LABELS, LibraryCatalog
 from .chat import ChatContextBuilder, ChatProvider, OpenAICompatibleChatProvider
 from .rendering import render_article, render_chat
 
-WEB_VERSION = "0.2.40"
+WEB_VERSION = "0.2.41"
 
 ANALYSIS_MODE_INFO = {
     "gateway": {
@@ -379,6 +379,8 @@ def create_app(
         allowed_hosts=["127.0.0.1", "localhost", "testserver"],
     )
     package_root = Path(str(files("douyin_wiki.webapp")))
+    from .tag_api import install_tag_api
+
     templates = Jinja2Templates(directory=str(package_root / "templates"))
     app.mount("/static", StaticFiles(directory=str(package_root / "static")), name="static")
     app.state.config = cfg
@@ -403,6 +405,9 @@ def create_app(
         except Exception as exc:
             warnings.append(f"操作已完成，但网页更新通知失败：{exc}")
         return {**result, "warnings": warnings}
+
+    tag_overview = install_tag_api(app, core, catalog, publish_mutation)
+    templates.context_processors.append(lambda request: {"sidebar_tags": tag_overview()["sidebar"]})
 
     def _local_write_origin_ok(request: Request) -> bool:
         """Require Origin or Referer to match this local host on write requests.
@@ -498,6 +503,12 @@ def create_app(
             },
         )
 
+    @app.get("/tags", response_class=HTMLResponse)
+    async def tags_page(request: Request):
+        return templates.TemplateResponse(request, "app.html", {
+            "page_title": "标签管理", "initial_entry_id": "", "web_version": WEB_VERSION,
+        })
+
     @app.get("/trash", response_class=HTMLResponse)
     async def trash_page(request: Request):
         return templates.TemplateResponse(
@@ -547,6 +558,9 @@ def create_app(
         recent: bool = False,
         limit: int | None = Query(None, ge=1, le=500),
     ):
+        tags = await asyncio.to_thread(tag_overview)
+        resolved_tags = core.tags.resolve([tag])
+        tag = resolved_tags[0] if resolved_tags else ""
         items = catalog.filter(
             query=q,
             author=author,
@@ -568,7 +582,10 @@ def create_app(
                     for code, label in CONTENT_TYPE_LABELS.items()
                     if any(item.content_type == code for item in all_items)
                 ],
-                "tags": sorted({tag for item in all_items for tag in item.tags}),
+                "tags": sorted(row["name"] for row in tags["tags"] if row["count"] > 0),
+                "tag_details": tags["tags"],
+                "sidebar_tags": tags["sidebar"],
+                "tag_aliases": tags["aliases"],
             },
             "total": len(items),
             "limit": limit,

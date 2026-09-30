@@ -1610,6 +1610,8 @@ image_index、quote、context、confidence、valid_until、review_after、stale�
 用户灵感必须逐字保留，只能用于调整分析重点，禁止替用户发明灵感。
 metadata.existing_knowledge 是从本地知识库召回的既有主张；只有新旧主张明确不兼容时才写入
 contradictions，必须引用其中真实存在的 entry_id/claim_id，保留双方来源，不要擅自裁决或覆盖。
+metadata.existing_tags 是已有标准标签清单。tags 优先复用其中合适的标签，保持原有拼写；
+只有确实没有合适的标准标签时才新建，不生成已有标签的近义词或中英别名。
 日期、促销、活动或待办放入 reminders；不能确定绝对时间时 due_at=null、needs_clarification=true。
 输出一个 JSON 对象，字段必须兼容：title, analysis_version=2, one_liner,
 relevance_to_inspiration, takeaways[], content_type, facets[], content_card, chapters[],

@@ -359,9 +359,11 @@ async def verify():
                 await page.click("#nav-toggle")
                 await page.click("#all-tags-button")
                 assert not await page.locator("#main-content").evaluate("e => e.inert")
-                assert await page.locator("#tag-filters input").first.is_visible()
-                await page.locator("#tag-filters input").first.check()
-                await key("Escape")
+                await page.wait_for_selector("#tags-view:not(.hidden) #tags-rows tr")
+                assert await page.locator("#tags-search").is_visible()
+                await page.locator("#tags-rows tr a").first.click()
+                await page.wait_for_selector("#library-view:not(.hidden)")
+                assert await page.locator("#view-title").inner_text() != "资料库"
                 await page.set_viewport_size({"width": 1440, "height": 900})
                 await fresh("/?q=不存在的关键词")
                 assert await page.locator("#empty-results").is_visible()
@@ -410,7 +412,7 @@ async def verify():
                                 "menu focus return",
                                 "cross-filter topic creation",
                                 "delete to trash",
-                                "mobile all-tags filter",
+                                "mobile tag management and filter",
                                 "empty/error/retry/loading",
                                 "responsive controls and mobile selection",
                             ],

@@ -69,8 +69,10 @@ class AnalysisMixin:
                 for issue in self.database.get_review_issues(job_id, open_only=True)
             ],
             "existing_knowledge": self.indexer.find_related_claims(context_text),
+            "existing_tags": self.tags.standard_names(),
             "analysis_schema": AnalysisResult.model_json_schema(),
             "rules": [
+                "标签优先复用 existing_tags 中的标准标签；只有确实没有合适的才新建。",
                 "根据原话上下文和对应 OCR 直接给出最贴近原意的校正版，不请求人工校对，"
                 "不增加独立复核调用；数字、金额、人名缺少依据时保留原表述。",
                 "灵感必须逐字保留，不得改写或补造。",
@@ -282,6 +284,8 @@ class AnalysisMixin:
             }
         )
         data["analysis"] = validated.model_dump(mode="json")
+        validated.tags = self.tags.resolve(validated.tags)
+        data["analysis"]["tags"] = validated.tags
         data.pop("fact_checks", None)
         data["provider"] = f"agent:{producer}"
         data["model"] = model
@@ -385,6 +389,7 @@ class AnalysisMixin:
                 ]
             )
             metadata["existing_knowledge"] = self.indexer.find_related_claims(context_text)
+            metadata["existing_tags"] = self.tags.standard_names()
             checkpoints = artifacts.setdefault("llm_checkpoints", {})
 
             def save_checkpoint(_fingerprint: str, _value: dict[str, Any]) -> None:

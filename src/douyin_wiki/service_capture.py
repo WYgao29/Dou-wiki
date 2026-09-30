@@ -621,6 +621,7 @@ class CaptureMixin:
                 analysis_metadata["existing_knowledge"] = self.indexer.find_related_claims(
                     context_text
                 )
+                analysis_metadata["existing_tags"] = self.tags.standard_names()
                 async with self.analysis_semaphore:
                     analysis_kwargs = (
                         {
@@ -1000,6 +1001,7 @@ class CaptureMixin:
                 ]
             )
             analysis_metadata["existing_knowledge"] = self.indexer.find_related_claims(context_text)
+            analysis_metadata["existing_tags"] = self.tags.standard_names()
             checkpoints = artifacts.setdefault("llm_checkpoints", {})
 
             def save_checkpoint(_fingerprint: str, _value: dict[str, Any]) -> None:

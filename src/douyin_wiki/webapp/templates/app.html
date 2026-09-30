@@ -10,8 +10,8 @@
   <link rel="stylesheet" href="/static/app.css?v={{ web_version }}">
   {% if initial_entry_id %}<link id="reading-fonts" rel="stylesheet" href="/static/reading.css?v={{ web_version }}">{% endif %}
 </head>
-{% set panel_config = {"library": ["info", "chat"], "article": ["info", "inspiration", "chat"], "topics": ["chat"], "topic": ["sources", "chat"]} %}
-{% set panel_page = "article" if initial_entry_id else "topic" if initial_topic_id | default('') else "library" if request.url.path == '/' else "topics" if request.url.path == '/topics' else "operations" %}
+{% set panel_config = {"library": ["info", "chat"], "article": ["info", "inspiration", "chat"], "topics": ["chat"], "topic": ["sources", "chat"], "tags": ["info"]} %}
+{% set panel_page = "article" if initial_entry_id else "topic" if initial_topic_id | default('') else "library" if request.url.path == '/' else "topics" if request.url.path == '/topics' else "tags" if request.url.path == '/tags' else "operations" %}
 {% set panel_labels = {"info": "信息", "inspiration": "灵感", "sources": "来源", "chat": "AI 对话"} %}
 {% set panel_panes = {"info": "info-pane", "inspiration": "inspiration-pane", "sources": "topic-sources-pane", "chat": "chat-panel"} %}
 <body data-entry-id="{{ initial_entry_id }}" data-topic-id="{{ initial_topic_id | default('') }}">
@@ -39,8 +39,9 @@
 
       <section class="sidebar-section"><div class="sidebar-section-heading"><h2>专题</h2></div><button class="nav-item" id="topics-nav" type="button"><svg aria-hidden="true"><use href="/static/icons.svg#layers"></use></svg><span>专题</span></button></section>
       <section class="sidebar-section tags-section" aria-labelledby="common-tags-title">
-        <div class="sidebar-section-heading"><h2 id="common-tags-title">标签</h2><button class="text-button" id="all-tags-button" type="button">全部</button></div>
-        <div id="sidebar-tags" class="sidebar-tags"></div>
+        <div class="sidebar-section-heading"><h2 id="common-tags-title">标签</h2></div>
+        <div id="sidebar-tags" class="sidebar-tags">{% for tag in sidebar_tags %}<a class="sidebar-tag" href="/?tag={{ tag.name | urlencode }}&amp;view=list"><span class="tag-hash" aria-hidden="true">#</span><span class="tag-name">{{ tag.name }}</span><span class="nav-count">{{ tag.count }}</span></a>{% endfor %}</div>
+        <a class="all-tags-link" id="all-tags-button" href="/tags" data-route="/tags">全部标签 →</a>
       </section>
 
       <section class="sidebar-section sidebar-operations" aria-label="操作">
@@ -63,7 +64,7 @@
     <main class="library-main" id="main-content" tabindex="-1">
       <div id="header-controls" hidden><button class="icon-button mobile-nav-button" id="nav-toggle" type="button" aria-label="打开导航栏" aria-controls="library-sidebar" aria-expanded="false"><svg aria-hidden="true"><use href="/static/icons.svg#menu"></use></svg></button><button class="icon-button sidebar-restore-button" id="sidebar-restore" type="button" aria-label="展开导航栏" title="展开导航栏"><svg aria-hidden="true"><use href="/static/icons.svg#panel-left"></use></svg></button><button class="toolbar-button chat-toggle-button" id="chat-toggle" type="button" aria-label="打开右侧面板" aria-controls="side-panel" aria-expanded="true"><svg aria-hidden="true"><use href="/static/icons.svg#panel-right"></use></svg></button></div>
       <section id="library-view" class="content-view" aria-labelledby="view-title">
-        <header class="view-header" aria-label="资料库工具栏"><div class="view-header-left"></div><h1 id="view-title">资料库</h1><span id="result-count" class="result-count" aria-live="polite">正在加载…</span><button id="search-toggle" class="icon-button search-toggle" type="button" aria-label="展开搜索" aria-expanded="false"><svg aria-hidden="true"><use href="/static/icons.svg#search"></use></svg></button><label class="search-box" for="search-input"><svg aria-hidden="true"><use href="/static/icons.svg#search"></use></svg><input id="search-input" type="search" placeholder="搜索知识库" autocomplete="off"><kbd><svg aria-hidden="true"><use href="/static/icons.svg#command"></use></svg>K</kbd></label><div class="view-header-right"></div></header>
+        <header class="view-header" aria-label="资料库工具栏"><div class="view-header-left"></div><h1 id="view-title">资料库</h1><span id="result-count" class="result-count" aria-live="polite">正在加载…</span><button id="search-toggle" class="icon-button search-toggle" type="button" aria-label="展开搜索" aria-expanded="false"><svg aria-hidden="true"><use href="/static/icons.svg#search"></use></svg></button><label class="search-box" for="search-input"><svg aria-hidden="true"><use href="/static/icons.svg#search"></use></svg><input id="search-input" type="search" placeholder="搜索知识库" autocomplete="off"><kbd><svg aria-hidden="true"><use href="/static/icons.svg#command"></use></svg>K</kbd></label><div class="view-header-right"><a id="tag-manage-link" class="text-button hidden" href="/tags" data-route="/tags">管理</a></div></header>
         <div class="library-toolbar"><div class="source-tabs" role="group" aria-label="来源类型"><button class="source-tab" type="button" data-source="" aria-pressed="true">全部</button><button class="source-tab" type="button" data-source="video" aria-pressed="false">视频</button><button class="source-tab" type="button" data-source="image_note" aria-pressed="false">图文</button></div><div class="popover-anchor">
             <button class="toolbar-button" id="filter-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="filter-popover"><svg aria-hidden="true"><use href="/static/icons.svg#filter"></use></svg><span>筛选</span><span id="filter-count" class="control-count hidden"></span></button>
             <section class="filter-popover hidden" id="filter-popover" aria-label="筛选资料" tabindex="-1">
@@ -255,6 +256,15 @@
         </section>
       </section>
 
+      <section class="content-view tags-view hidden" id="tags-view" aria-labelledby="tags-title">
+        <header class="view-header"><div class="view-header-left"></div><h1 id="tags-title">标签管理</h1><label class="search-box tags-search"><svg aria-hidden="true"><use href="/static/icons.svg#search"></use></svg><input id="tags-search" type="search" placeholder="搜索标签" aria-label="搜索标签"><kbd>/</kbd></label><div class="view-header-right"></div></header>
+        <section id="tag-duplicates" class="tag-duplicates hidden" aria-label="可能重复的标签"></section>
+        <div class="tags-toolbar"><span id="tags-count" class="hint-copy"></span><div class="tag-selection-actions"><span id="tags-selected" aria-live="polite"></span><button id="tags-rename" class="text-button" type="button" disabled>重命名</button><button id="tags-merge" class="secondary-button" type="button" disabled>合并到…</button><button id="tags-delete" class="danger-text-button" type="button" disabled>删除</button></div></div>
+        <p id="tags-error" class="dialog-error hidden" role="alert"></p>
+        <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th><input id="tags-select-all" type="checkbox" aria-label="选择所有搜索结果"></th><th><button type="button" data-tag-sort="name">标签名</button></th><th aria-sort="descending"><button type="button" data-tag-sort="count">数量 ↓</button></th><th><button type="button" data-tag-sort="last_used_at">最近使用时间</button></th><th>固定</th></tr></thead><tbody id="tags-rows"></tbody></table></div>
+        <p id="tags-empty" class="hint-copy hidden">没有符合条件的标签。</p>
+        <p class="hint-copy tags-help">固定标签优先显示在侧栏，最多 8 个。拖动已固定行可排序，也可使用行内的上移 / 下移按钮。</p>
+      </section>
     </main>
 
     <aside class="side-panel" id="side-panel" aria-label="右侧面板">
@@ -314,6 +324,9 @@
       <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary-button" type="submit">取消</button><button id="confirm-topic" class="primary-button" value="default" type="submit">创建专题</button></div>
     </form>
   </dialog>
+  <dialog id="tag-edit-dialog" class="inspiration-dialog" aria-labelledby="tag-edit-title">
+    <form method="dialog" id="tag-edit-form"><header><h2 id="tag-edit-title">编辑标签</h2><button class="icon-button" type="submit" value="cancel" formnovalidate aria-label="关闭">×</button></header><p id="tag-edit-description" class="dialog-description"></p><label id="tag-name-label">新名称<input id="tag-new-name" maxlength="100" required></label><label id="tag-target-label">合并到<select id="tag-target"></select></label><p id="tag-edit-error" class="dialog-error hidden" role="alert"></p><div class="dialog-actions"><button type="submit" value="cancel" formnovalidate class="secondary-button">取消</button><button id="tag-edit-submit" type="submit" class="primary-button">保存</button></div></form>
+  </dialog>
   <dialog id="destructive-dialog" class="inspiration-dialog" aria-labelledby="destructive-title" aria-describedby="destructive-description">
     <form method="dialog" id="destructive-form">
       <header><div><span class="dialog-kicker danger-kicker"><svg aria-hidden="true"><use href="/static/icons.svg#alert-circle"></use></svg>需要确认</span><h2 id="destructive-title">确认操作</h2></div><button value="cancel" formnovalidate class="icon-button dialog-close" type="submit" aria-label="关闭确认窗口"><svg aria-hidden="true"><use href="/static/icons.svg#x"></use></svg></button></header>
@@ -333,6 +346,7 @@
   <script src="/static/system-settings.js?v={{ web_version }}" defer></script>
   <script src="/static/analysis-settings.js?v={{ web_version }}" defer></script>
   <script src="/static/model-settings.js?v={{ web_version }}" defer></script>
+  <script src="/static/tags.js?v={{ web_version }}" defer></script>
   <script src="/static/app.js?v={{ web_version }}" defer></script>
 </body>
 </html>

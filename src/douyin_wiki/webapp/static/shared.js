@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const VIEW_IDS = [
-    "library-view", "article-view", "topics-view", "topic-view", "trash-view",
+    "library-view", "article-view", "topics-view", "topic-view", "trash-view", "tags-view",
     "imports-view", "imports-single-view", "imports-creators-view", "imports-favorites-view",
     "jobs-view", "job-detail-view", "auth-view", "system-view",
     "analysis-view", "model-view", "settings-view", "not-found-view",
@@ -116,7 +116,7 @@
     return seconds * 1000;
   };
   Douku.isKnownAppPath = (path) => (
-    path === "/" || path === "/topics" || path === "/trash"
+    path === "/" || path === "/topics" || path === "/trash" || path === "/tags"
     || path.startsWith("/articles/") || path.startsWith("/topics/")
     || Douku.isOperationPath(path)
   );
