@@ -1,13 +1,13 @@
 # 抖库 Web UI 重设计规格：Readwise Reader 风格
 
-> 状态：已按代码审查修订，分阶段实施中（2026-09-30）
+> 状态：已完成的设计规格与历史实施记录；Phase 0–6 均已落地，实施记录见第 8 章。
 > 日期：2026-09-29
 > 适用范围：`src/douyin_wiki/webapp/templates/app.html` + `src/douyin_wiki/webapp/static/*`（单模板 SPA，Jinja2 + 原生 JS，服务于 127.0.0.1）
-> 取代：`docs/web-ui-design-system.md`（Apple 风格重构）。实现完成后该文档改写为本规格的"现状版"（见第 6 章 Phase 6）。
+> 当前界面约定：[Web UI 设计系统](web-ui-design-system.md)。本文保留设计起点、目标规格及各阶段的历史验证；代码行号、尺寸和测试数字属于对应设计或实施基准，不作为当前运行结果。
 
 ---
 
-## 0. 现状盘点（本规格基于的真实代码）
+## 0. 设计起点盘点（2026-09-29 实施前代码）
 
 | 项 | 现状 |
 |---|---|
@@ -1519,7 +1519,7 @@ hover（可点击时）：字 `--text`。激活（作为筛选条件）：bg `--
 5. **正文图片**：后端已移除封面，禁止新增按首段位置隐藏图片的 CSS。回归用例必须覆盖「封面 + 正文证据图」、只读 Markdown 和多图笔记。
 6. **强调色**：选墨绿的理由见 2.1；若更想要中文"朱批"气质，可换朱红（2.2 已附变量），但危险色需改成更深的酒红（如 `#9F1D2A`）以示区分，且 accent 文字要用 `#C4323A`。
 7. **Readwise 细节边界**：本规格引用的 Readwise 行为（三栏、Info/Notebook/Chat、`[` `]`、`⌘K`、`?`、↑/↓ 段落焦点、`Shift+N`、`Shift+F`、左栏目录）均来自官方文档；列表行的视觉细节（左侧焦点竖条、hover 操作图标、行底进度条、LATER/SHORTLIST/ARCHIVE 标签）来自官方宣传截图，不是文档。`j/k` 是本项目加的别名。
-8. **`docs/screenshots/` 不存在**：任务说明里提到的截图目录在仓库里没有；现状截图只有 box 上的 `/workspace/doku/album-wall-desktop.jpg`、`article-desktop.jpg`。Phase 0 起新建 `docs/screenshots/redesign/`。
+8. **设计起点的截图目录**：2026-09-29 初始设计环境没有 `docs/screenshots/`；当时现状截图只有 box 上的 `/workspace/doku/album-wall-desktop.jpg`、`article-desktop.jpg`。Phase 0 起已建立 `docs/screenshots/redesign/`，当前验证入口和输出目录见 [Web UI 设计系统](web-ui-design-system.md#验证)；此处保留初期环境记录。
 9. **截图与代码不一致**：现状截图里 AI 面板是常驻第三栏，但代码中 `.chat-panel` 是 `position: fixed` 覆盖层且默认收起（`STORAGE.chat` 默认 `"true"`）——截图应是手动打开覆盖层后的状态；新设计按常驻第三栏实现。
 
 ## 8. 审查修订记录（2026-09-30）

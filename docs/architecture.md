@@ -44,13 +44,15 @@ flowchart TD
 | `worker.py`、`runtime.py` | 队列调度、租约续期、失效任务恢复、代码更新检测 |
 | `service.py`、`service_*.py` | 服务门面；采集、分析、批量导入、资料、维护、废纸篓六个 mixin |
 | `database.py`、`vault.py` | SQLite 持久状态与索引；Markdown、侧车和 Vault Git |
-| `favorites*.py` | 收藏清点、选择、幂等派发和批次汇总 |
+| `favorites.py`、`favorites_models.py`、`favorites_store.py` | 收藏清点、选择、幂等派发和批次汇总；数据契约及批次持久存储 |
+| `tags.py` | 标签、别名与资料关联；沿用数据库事务和解析约定 |
 | `adapters/` | 抖音解析与下载、媒体处理、模型、向量和系统提醒适配 |
 | `search.py` | 证据分块、FTS 与向量检索、资料关系 |
 | `web_auth.py`、`auth_guidance.py` | Web 授权会话与 macOS 授权引导 |
 | `operation.py`、`web_operation.py` | 任务展示、授权状态与维护操作 |
 | `config.py`、`setup.py`、`secrets.py` | 配置、安装检查、LaunchAgent 与密钥访问 |
 | `models.py`、`errors.py` | 数据契约与稳定错误类型 |
+| `localization.py`、`time_utils.py` | 面向用户的状态文案；时间解析、时区和显示转换 |
 
 ## 状态与数据
 

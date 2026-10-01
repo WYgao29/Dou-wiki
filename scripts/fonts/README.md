@@ -2,10 +2,12 @@
 
 运行时仅加载 `src/douyin_wiki/webapp/static/fonts/`，不连接字体服务。Inter 在所有页面加载；Newsreader 与 Doku Serif SC 的 `@font-face` 独立放在 `reading.css`，只在文章页附加，离开文章页移除。专题、设置、任务与资料库均使用 UI 字体。
 
-- [Inter](https://github.com/rsms/inter)：`docs/font-files/InterVariable.woff2`，保留上游文件与 OFL 许可。
+- [Inter](https://github.com/rsms/inter)：`src/douyin_wiki/webapp/static/fonts/InterVariable.woff2`，保留上游文件与 OFL 许可。
 - [Newsreader](https://github.com/google/fonts/tree/main/ofl/newsreader)：可变 TTF 用 `fontTools.ttLib.TTFont` 设置 `flavor = "woff2"` 后保存。
 - [Noto Serif SC](https://github.com/notofonts/noto-cjk/tree/main/Serif/SubsetOTF/SC)：Regular、SemiBold；来源文件哈希见 `source-sha256.json`。子集字体内部 family / PostScript name 改为 `Doku Serif SC` / `DokuSerifSC`，避免使用上游保留字体名称。
 - 字表来自 [通用规范汉字表整理数据](https://github.com/jaywcjlove/table-of-general-standard-chinese-characters/blob/main/data/characters.txt)，取按字序排列的前 6500 字，校验总数和去重数均为 6500。数据许可见 `charset-LICENSE.txt`。
+
+静态原型 `docs/prototypes/readwise/index.html` 复用上述应用字体目录，不另复制字体；三个字体许可文件与发布字体一同保存在应用目录。源文件、字表许可、来源及输出哈希仍由本目录记录。
 
 裁剪方法（将下载的源字体放在当前工作目录）：
 

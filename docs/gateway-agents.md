@@ -30,79 +30,28 @@ flowchart LR
 索引和 Git。`gateway` 模式下只有视频逐字稿校正、作品分析以及 Gateway 给用户组织回复时使用
 当前 Agent 模型并消耗 token。原视频和原图不会发给模型；模型只收到文字、OCR 和元数据。
 
+## 调用边界与多客户端
+
+本指南适用于通过 MCP 使用抖库的外部 Agent。仓库维护规则见[根 AGENTS.md](../AGENTS.md)，通用自助接入入口见 [docs/agents](agents/README.md)。应用生成的 Vault AGENTS.md 约束知识库文档，三者职责分别维护。
+
+调用方只使用配置开放的 MCP 工具，不直接修改仓库源码、测试或配置，不执行仓库 Git 操作。采集、分析、灵感或专题等工具可以更新知识库数据；“不改代码”并不表示数据只读。数据操作按接入时选定的角色执行，长视频、提醒、专题保存等仍沿用下文现有确认条件。
+
+| 角色 | 工具开放范围 |
+| --- | --- |
+| 查询 | `search_knowledge`、`get_entry`、`get_job`、`list_jobs`、`list_creators`、`get_creator`、`list_topics`、`search_topic` |
+| 采集 / 分析 | 在查询工具之外，只开放所用流程必需的采集、上下文、提交、事件及确认工具；参数和顺序见下文 |
+
+工具过滤和源码写权限需由实际客户端配置或运行账户落实。客户端不支持可靠限制时应明确其能力边界；目录划分和提示词不提供强制权限控制。生效配置、凭据和 Agent 工作目录放在仓库外，STDIO 启动命令仍可指向本仓库。接入时检查共用规则的实际加载方式及是否接收服务端 instructions，不能仅存放一个不会被读取的文件。
+
+多个 Agent 接入时，每个客户端使用独立 `gateway` 标识，保存 `channel`、`conversation_id`、`message_id` 和 `reply_target`，并约定各自处理的任务和会话。只处理分配给自己的事件，其他事件跳过且不确认；提交前调用 `get_job` / `get_analysis_context` 重读最新阶段，成功处理或交付后再确认。轮询需逐页扫描未确认事件，即使整页属于其他客户端也继续翻页；重启、失败重试与游标处理见下文“事件接续”。
+
+当前 `list_job_events` 只有游标、未确认和数量参数，会返回混合路由事件；`acknowledge_job_event` 只接收事件 ID。`gateway_context` 用于回传路由，不能据此宣称服务端已实现按 Agent 授权或任务排他领取。无法划分任务归属时，先限定一个采集 / 分析执行者，其余作为查询入口；需要强制隔离或同任务抢占式并发时，应单独设计服务端能力。
+
 ## MCP STDIO 配置
 
-先确认本地命令可运行：
+按[自助配置步骤](agents/self-setup.md)读取客户端实际版本与配置机制，再将[STDIO 启动契约](agents/integration-contract.md#stdio-启动契约)映射为原生配置。现有入口 `douyin-wiki-mcp` 保持；通用启动方式使用已安装的 Python、`-B -m douyin_wiki.mcp_server`、仓库外工作目录和显式的 `DOUYIN_WIKI_CONFIG`。
 
-```bash
-cd /Users/weisengao/Documents/ChatGPT/douyin-wiki
-uv run douyin-wiki doctor
-uv run douyin-wiki-mcp
-```
-
-Hermes 的 MCP 配置可使用本地 STDIO server，并用工具过滤只开放需要的工具。示例：
-
-```yaml
-mcp_servers:
-  douyin-wiki:
-    command: /opt/homebrew/bin/uv
-    args:
-      - --directory
-      - /Users/weisengao/Documents/ChatGPT/douyin-wiki
-      - run
-      - douyin-wiki-mcp
-    tools:
-      include:
-        - capture_douyin
-        - capture_douyin_creator
-        - get_creator_inventory
-        - set_creator_work_selection
-        - confirm_creator_import
-        - import_creator_works
-        - get_creator
-        - list_creators
-        - list_creator_works
-        - sync_creator
-        - get_job
-        - get_auth_status
-        - list_job_events
-        - acknowledge_job_event
-        - get_analysis_context
-        - submit_transcript_correction
-        - resolve_review
-        - approve_job
-        - retry_job
-        - submit_gateway_analysis
-        - reanalyze_entry
-        - reanalyze_all
-        - search_knowledge
-        - get_entry
-        - add_inspiration
-        - confirm_reminder
-```
-
-OpenClaw 的 STDIO MCP server 配置示例：
-
-```json
-{
-  "mcp": {
-    "servers": {
-      "douyin-wiki": {
-        "command": "/opt/homebrew/bin/uv",
-        "args": [
-          "--directory",
-          "/Users/weisengao/Documents/ChatGPT/douyin-wiki",
-          "run",
-          "douyin-wiki-mcp"
-        ]
-      }
-    }
-  }
-}
-```
-
-配置字段以所用 Gateway 版本为准，可参考 [Hermes MCP 文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)
-和 [OpenClaw MCP 文档](https://docs.openclaw.ai/cli/mcp)。
+共用规范不规定某个客户端的配置文件或字段，也不在仓库保存生效配置。接入 Agent 自己发现和转换格式，只开放所选角色及流程的工具；不能把一份特定客户端示例当作所有 Agent 的配置。服务当前只支持 STDIO，其他传输能力不足时记录限制，不修改源码补适配层。
 
 ## Agent 必须执行的工具顺序
 
@@ -171,8 +120,8 @@ Gateway 应先调用 `get_auth_status` 和 `get_job` 复核最新状态，不要
 `retry_job`。
 
 **状态字段约定（程序判断用机读码）**：MCP/`get_job` 同时返回英文机读码 （`status` / 事件里的状态）和中文展示字段（`status_label`、`state_label`、`stage_label` 等）。Agent 轮询与分支判断必须用英文机读码（如 `awaiting_agent_analysis`、历史 `needs_review`）；面向用户回复时只用中文 label，不要用中文 label 做相等判断。若用户选择稍后处理、引导超时或本机弹框不可用，再按任务中的 `auth_scope` 提供手工兜底：
-优先用 `uv run douyin-wiki auth douyin` 完成视频主路径、图文、博主和收藏共用的专用浏览器授权。
-`uv run douyin-wiki auth video` 只为 yt-dlp 最后回退准备系统浏览器 Cookie；确认对应路径授权成功后再调用 `retry_job`。
+优先在仓库外工作目录、沿用服务配置环境运行 `<PYTHON_EXECUTABLE> -B -m douyin_wiki auth douyin`，完成视频主路径、图文、博主和收藏共用的专用浏览器授权。
+`<PYTHON_EXECUTABLE> -B -m douyin_wiki auth video` 只为 yt-dlp 最后回退准备系统浏览器 Cookie；确认对应路径授权成功后再调用 `retry_job`。
 不得要求用户提供 Cookie；状态接口也不会返回 Cookie 值。
 
 “等待用户确认”表示视频超过 30 分钟。Agent 必须说明继续将消耗当前 Gateway 模型
@@ -215,7 +164,7 @@ token，获得用户明确同意后才能调用 `approve_job`。超过 2 小时�
 
 - 在支持后台任务续跑时，把 `job_id` 交给 Gateway 自身的后台任务；
 - 使用 Gateway 定时任务调用 `list_job_events`；
-- 使用无 Agent 的本地定时器运行 `uv run douyin-wiki jobs events`，再由 Gateway 的事件桥
+- 使用无 Agent 的本地定时器运行现有 `jobs events` 分页入口，再由 Gateway 的事件桥
   唤醒一次 Agent。
 
 最后一种方式的“事件桥”属于 Agent 的部署配置，不由本项目自动安装。空轮询只运行本地命令、
@@ -223,11 +172,17 @@ token，获得用户明确同意后才能调用 `approve_job`。超过 2 小时�
 
 1. 配置上面的 MCP STDIO server，并让 Agent 能访问 `list_job_events`、`get_job`、
    `get_analysis_context`、提交、复核和 `acknowledge_job_event` 工具。
-2. 配置一个随 Agent 启动并持续运行的无模型监控任务，定时在项目目录执行
-   `uv run douyin-wiki gateway monitor-events`。空输出不启动模型；非空 JSON 中每个事件
-   按 `gateway_context` 路由到原会话，唤醒一次处理。不要只依赖“输出变化”触发：交付失败时
-   同一个未确认事件会再次出现，必须按失败次数有界重试并退避；重启时重新扫描未确认事件。
-   只持久化 `after_event_id` 高水位会跳过早先失败的未确认事件。
+2. 配置一个随 Agent 启动并持续运行的无模型监控任务，在仓库外工作目录沿用服务启动环境逐页执行
+   `<PYTHON_EXECUTABLE> -B -m douyin_wiki jobs events --after-event-id <cursor> --limit 100`，或使用等价的
+   `list_job_events(after_event_id=cursor, unacknowledged_only=true, limit=100)` 调用。
+   每轮从 `cursor=0` 开始，按整页最后一个事件的 ID 推进；即使本页事件全部属于其他客户端，
+   也继续翻页，直到返回空数组。CLI 空页输出 `[]`，不能用“stdout 是否为空”判断。
+   只唤醒分配给当前 Gateway/会话的事件，并按 `gateway_context` 路由到原会话。
+   不要只依赖“输出变化”触发：处理或交付失败时保留未确认，按失败次数有界重试并退避，
+   同时继续扫描本页其他事件及后续页。每轮和重启后重新从头扫描，
+   不跨轮持久化 `after_event_id` 高水位，以免跳过早先失败的未确认事件。
+   CLI 输出用于事件 ID 和路由；判断业务状态时读取 MCP `get_job` 返回的英文 `status` 与
+   `get_analysis_context.phase`，不要将 CLI 的中文显示状态或 label 与内部状态码比较。
 3. Agent 处理每个事件前重新调用 `get_job`，核对任务仍处于该事件对应的可操作阶段；
    再调用 `get_analysis_context` 读取最新 `phase` 和 schema。`awaiting_agent_analysis`
    可能先后对应 `transcript_correction` 和 `analysis`，状态相同也要处理新事件。
@@ -240,21 +195,36 @@ token，获得用户明确同意后才能调用 `approve_job`。超过 2 小时�
 
 ```text
 every polling interval:
-    output = run_without_model("uv run douyin-wiki gateway monitor-events")
-    if output is empty: return
-    for event in parse_json(output):
-        job = mcp.get_job(event.job_id)
-        if event is obsolete for job: continue
-        context = mcp.get_analysis_context(event.job_id) when job requires AI
-        process current context.phase and deliver to event.gateway_context
-        mcp.acknowledge_job_event(event.id) only after successful processing/delivery
+    cursor = 0
+    while true:
+        output = run_without_model(
+            [PYTHON_EXECUTABLE, "-B", "-m", "douyin_wiki", "jobs", "events",
+             "--after-event-id", str(cursor), "--limit", "100"],
+            cwd=EXTERNAL_WORK_DIR, env=SERVER_ENV
+        )
+        if command failed or output is not a valid JSON array: retry with backoff; return
+        events = parse_json(output)
+        if events is empty: break
+        cursor = events[-1].id  # advance past the whole page, including skipped events
+        for event in events:
+            if event is not assigned to this Gateway/conversation: continue
+            if event is waiting for its retry backoff: continue
+            try:
+                job = mcp.get_job(event.job_id)
+                if event is obsolete for job: continue
+                context = mcp.get_analysis_context(event.job_id) when job requires AI
+                process current context.phase and deliver to event.gateway_context
+                mcp.acknowledge_job_event(event.id) only after successful processing/delivery
+            on processing, delivery or MCP failure:
+                leave event unacknowledged; schedule bounded retry with backoff; continue
 ```
 
 Hermes 的定时任务与投递能力见
 [Hermes Cron 文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron/)。
 
-Hermes 的 cron 配置可直接调用抖库 CLI 的监控命令：
-`uv run douyin-wiki gateway monitor-events`（请在项目根目录执行）。它在没有未确认事件时不输出任何内容。
+支持 cron 或后台任务的客户端可按上述伪代码运行无模型分页扫描，CLI 入口为 `jobs events`，
+在仓库外工作目录运行并沿用服务的配置环境。兼容命令 `douyin-wiki gateway monitor-events` 在没有未确认事件时
+不输出任何内容，有事件时固定返回最早的 100 条；它只作单页探测，不能代替完整分页扫描。
 当前机器可用以下命令检查 Hermes 的部署状态（仅在选用 Hermes 时执行）：
 
 ```bash
@@ -269,6 +239,8 @@ hermes cron runs --limit 10
 
 ```text
 当消息包含抖音链接且用户给出灵感时，调用 douyin-wiki 的 capture_douyin。
+只使用开放的 MCP 工具，不直接修改仓库源码、测试或配置，不执行仓库 Git 操作。
+只处理分配给当前 gateway/会话的事件，其他事件跳过且不确认；提交前重新读取任务和阶段。
 灵感必须逐字传递；capture 时保存当前 gateway/channel/conversation/message 路由。
 任务进入“待 AI 处理”后，视频先校正逐字稿，图文直接按返回的 schema 分析；
 不得改写灵感，不得把 AI 推断当作作品原话。历史“需要人工复核”任务仅在用户明确要求继续时调用 retry_job；长视频必须询问用户；
@@ -282,10 +254,12 @@ hermes cron runs --limit 10
 
 ## 调试
 
-```bash
-uv run douyin-wiki jobs events
-uv run douyin-wiki gateway context JOB_ID
-uv run douyin-wiki jobs get JOB_ID
+下列命令中的解释器需替换为实际路径，在仓库外工作目录执行，并沿用 MCP 的配置环境：
+
+```text
+<PYTHON_EXECUTABLE> -B -m douyin_wiki jobs events
+<PYTHON_EXECUTABLE> -B -m douyin_wiki gateway context JOB_ID
+<PYTHON_EXECUTABLE> -B -m douyin_wiki jobs get JOB_ID
 ```
 
 如果任务已完成但 Gateway 没有回复，先看未确认事件中是否保留了正确的

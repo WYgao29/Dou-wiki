@@ -47,6 +47,29 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/douyin_wiki"]
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/.pi/**",
+  "/.obsidian/**",
+  "/.test-*/**",
+  "/.codex-tmp/**",
+  "/.superpowers/**",
+  "/.venv/**",
+  "/.worktrees/**",
+  "/docs/screenshots/**",
+  "/.pytest_cache/**",
+  "/.ruff_cache/**",
+  "/htmlcov/**",
+  "/dist/**",
+  "/build/**",
+  "/.env",
+  "/.coverage",
+  "**/__pycache__/**",
+  "**/*.py[cod]",
+  "**/*.egg-info/**",
+  "**/.DS_Store",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

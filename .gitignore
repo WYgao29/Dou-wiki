@@ -4,6 +4,7 @@
 .superpowers/
 .env
 .obsidian/
+.pi/
 .venv/
 .worktrees/
 .pytest_cache/

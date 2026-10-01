@@ -133,6 +133,8 @@ Esc 依次关闭当前对话框、菜单、抽屉 / 右侧覆盖层；文章页�
 
 ## 验证
 
+以下八个浏览器脚本是当前验证入口；后文带版本、阶段及测试数量的段落保留原历史基准。
+
 ```sh
 uv run ruff check .
 uv run pytest -q -m 'not live'
@@ -143,6 +145,7 @@ uv run python scripts/verify_readwise_reader.py
 uv run python scripts/verify_readwise_chat.py
 uv run python scripts/verify_readwise_operations.py
 uv run python scripts/verify_readwise_cleanup.py
+uv run python scripts/verify_readwise_tags.py
 uv build
 ```
 

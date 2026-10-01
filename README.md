@@ -346,22 +346,9 @@ uv run douyin-wiki topic generate TOPIC_ID --kind decision_brief
 
 ## MCP
 
-启动 STDIO server：
+外部 Agent 从 [MCP 自助接入入口](docs/agents/README.md)读取通用步骤和参数，自行转换为当前客户端的原生配置。实际配置、工作目录、凭据、日志和验收记录均放在仓库外，接入不生成仓库内客户端文件。
 
-```bash
-uv run douyin-wiki-mcp
-```
-
-Codex 配置示例：
-
-```toml
-[mcp_servers.douyin-wiki]
-command = "/opt/homebrew/bin/uv"
-args = ["--directory", "/Users/weisengao/Documents/ChatGPT/douyin-wiki", "run", "douyin-wiki-mcp"]
-tool_timeout_sec = 60
-```
-
-若不使用 Keychain，可额外设置 `env_vars = ["DOUYIN_WIKI_LLM_API_KEY"]`。
+已有 STDIO 入口 `douyin-wiki-mcp` 保持，也可使用已安装解释器执行 `<PYTHON_EXECUTABLE> -B -m douyin_wiki.mcp_server`。完整启动环境、隔离配置和文件边界见[接入契约](docs/agents/integration-contract.md)；不需要为某个客户端修改代码或新增适配模块。
 
 采集是异步任务，因此 MCP 调用不会被作品处理时长阻塞。Gateway 应传入原会话的
 `gateway_context`，使用 `list_job_events` 接收持久事件，并在成功处理或投递后调用
