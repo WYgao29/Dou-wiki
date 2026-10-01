@@ -205,8 +205,7 @@ def test_replace_knowledge_cache_rolls_back_every_projection_on_restore_failure(
 
     with database.connect() as conn:
         after = {
-            table: [dict(row) for row in conn.execute(f"SELECT * FROM {table}")]
-            for table in before
+            table: [dict(row) for row in conn.execute(f"SELECT * FROM {table}")] for table in before
         }
     assert after == before
 
@@ -237,10 +236,7 @@ def test_replace_knowledge_cache_rolls_back_every_projection_on_restore_failure(
                 "maintenance_runs",
             )
         }
-    assert preserved_after_success == {
-        table: before[table]
-        for table in preserved_after_success
-    }
+    assert preserved_after_success == {table: before[table] for table in preserved_after_success}
     with database.connect() as conn:
         restored_work = conn.execute(
             "SELECT entry_id, last_job_id FROM creator_works WHERE creator_id=? AND work_id=?",
@@ -254,9 +250,7 @@ def test_list_jobs_accepts_none_limit_for_all_matching_jobs(tmp_path: Path) -> N
     database = Database(tmp_path / "state.sqlite3")
     database.initialize()
     for index in range(55):
-        job = database.create_job(
-            CaptureRequest(share_text=f"https://v.douyin.com/test-{index}/")
-        )
+        job = database.create_job(CaptureRequest(share_text=f"https://v.douyin.com/test-{index}/"))
         database.update_job(
             job.id,
             status=JobStatus.NEEDS_AUTH,

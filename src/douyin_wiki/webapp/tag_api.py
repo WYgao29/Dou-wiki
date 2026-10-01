@@ -18,6 +18,7 @@ class TagChange(BaseModel):
 
 class TagCleanup(BaseModel):
     confirmed: bool = False
+    names: list[str] | None = Field(default=None, max_length=5000)
 
 
 def install_tag_api(app, core, catalog, publish_mutation):
@@ -105,8 +106,7 @@ def install_tag_api(app, core, catalog, publish_mutation):
                 visible = {item.entry_id: item for item in items}
                 entries = core.database.list_entries()
                 if any(
-                    entry.id not in visible
-                    or visible[entry.id].source_path != entry.source_path
+                    entry.id not in visible or visible[entry.id].source_path != entry.source_path
                     for entry in entries
                 ):
                     raise TagUndoConflict(
@@ -121,6 +121,10 @@ def install_tag_api(app, core, catalog, publish_mutation):
                     )
                 if not payload.confirmed:
                     return {"names": names, "count": len(names), "confirmed": False}
+                if payload.names is None:
+                    raise ValueError("请先预览并提交要清理的标签")
+                if set(payload.names) != set(names):
+                    raise TagUndoConflict("未使用标签已变化，请重新预览后确认清理")
                 operation_id = core.tags.delete(names) if names else None
                 catalog.refresh()
                 return {

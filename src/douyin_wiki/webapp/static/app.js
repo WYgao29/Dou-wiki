@@ -43,6 +43,8 @@ const state = {
   commandSearch: 0,
   commandTimer: 0,
   pendingNewSession: false,
+  sessionScope: "",
+  sessionsByScope: new Map(),
   currentEntry: document.body.dataset.entryId || "",
   currentArticleItem: null,
   currentTopic: document.body.dataset.topicId || "",
@@ -2412,14 +2414,20 @@ function showChatNotice(message = "", unconfigured = false) {
   }
 }
 
-function sessionInScope(session) {
-  if (!session) return false;
-  if (state.panelPage === "topic" && state.currentTopic) return session.scope === "topic" && session.context_topic_id === state.currentTopic;
+function chatScopeKey() {
+  if (state.panelPage === "topic" && state.currentTopic) return `topic:${state.currentTopic}`;
   const item = currentEntryItem();
   if (state.panelPage === "article" && state.currentEntry && isDatabaseManaged(item)) {
-    return session.scope === "entry" && session.context_entry_id === state.currentEntry;
+    return `entry:${state.currentEntry}`;
   }
-  return session.scope === "library";
+  return "library";
+}
+
+function sessionInScope(session) {
+  if (!session) return false;
+  const key = session.scope === "topic" ? `topic:${session.context_topic_id}`
+    : session.scope === "entry" ? `entry:${session.context_entry_id}` : "library";
+  return key === chatScopeKey();
 }
 
 function prepareNewChat() {
@@ -2464,9 +2472,23 @@ async function createSession() {
 
 function syncSessionScope() {
   if (state.sending) return;
-  if (state.currentSession && !state.sessions.some(session => session.id === state.currentSession && sessionInScope(session))) {
+  const scope = chatScopeKey();
+  const scopeChanged = scope !== state.sessionScope;
+  const previousSession = state.currentSession;
+  if (scopeChanged) {
+    if (state.sessionScope) state.sessionsByScope.set(state.sessionScope, {
+      id: state.currentSession, pending: state.pendingNewSession,
+    });
+    state.sessionScope = scope;
+    const remembered = state.sessionsByScope.get(scope);
+    state.currentSession = remembered?.id || "";
+    state.pendingNewSession = remembered?.pending || false;
+  }
+  if (!state.pendingNewSession && !state.sessions.some(session => session.id === state.currentSession && sessionInScope(session))) {
     state.currentSession = state.sessions.find(sessionInScope)?.id || "";
-    state.pendingNewSession = !state.currentSession;
+  }
+  if (scopeChanged || previousSession !== state.currentSession) {
+    state.chatMessagesRequestId += 1;
     if (state.currentSession) loadMessages().catch(error => showChatNotice(error.message));
     else $("#chat-messages").replaceChildren(makeWelcome());
   }
@@ -3330,7 +3352,7 @@ function bindEvents() {
     }
   });
   $("#session-select").addEventListener("change", async (event) => {
-    state.pendingNewSession = false;
+    state.pendingNewSession = !event.target.value;
     state.currentSession = event.target.value;
     if (state.currentSession) await loadMessages();
     else $("#chat-messages").replaceChildren(makeWelcome());
@@ -3361,6 +3383,7 @@ function bindEvents() {
   $("#inspiration-dialog").addEventListener("close", () => state.lastDialogTrigger?.focus());
   $("#command-input").addEventListener("input", () => { state.commandIndex = 0; scheduleCommandSearch(); });
   $("#command-input").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { event.preventDefault(); $("#command-dialog").close(); return; }
     const length = commandMatches().length;
     if (event.key === "ArrowDown" && length) { event.preventDefault(); state.commandIndex = (state.commandIndex + 1) % length; renderCommandResults(); }
     if (event.key === "ArrowUp" && length) { event.preventDefault(); state.commandIndex = (state.commandIndex - 1 + length) % length; renderCommandResults(); }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -594,26 +596,16 @@ class AnalysisMixin:
                 )
 
         def repair_timestamp(item: Any, provenance: str) -> Any:
-            quote = _normalize_evidence_text(getattr(item, "quote", "") or "")
+            raw_quote = getattr(item, "quote", "") or ""
+            quote = _normalize_evidence_text(raw_quote)
             if not quote or provenance not in {"audio", "ocr", "audio+ocr"}:
                 return item
-            candidates: list[tuple[int, str]] = []
+            matching: list[int] = []
             if provenance in {"audio", "audio+ocr"}:
-                for source in context.get("transcript_corrected") or context.get(
+                transcript = context.get("transcript_corrected") or context.get(
                     "transcript_raw", []
-                ):
-                    candidates.append(
-                        (
-                            int(
-                                source.get("start_ms", 0)
-                                if isinstance(source, dict)
-                                else source.start_ms
-                            ),
-                            str(
-                                source.get("text", "") if isinstance(source, dict) else source.text
-                            ),
-                        )
-                    )
+                )
+                matching.extend(start for start, _ in _audio_quote_ranges(transcript, raw_quote))
             if provenance in {"ocr", "audio+ocr"}:
                 for source in context.get("ocr", []):
                     timestamp = (
@@ -621,22 +613,9 @@ class AnalysisMixin:
                         if isinstance(source, dict)
                         else source.timestamp_ms
                     )
-                    if timestamp is not None:
-                        candidates.append(
-                            (
-                                int(timestamp),
-                                str(
-                                    source.get("text", "")
-                                    if isinstance(source, dict)
-                                    else source.text
-                                ),
-                            )
-                        )
-            matching = [
-                timestamp
-                for timestamp, text in candidates
-                if quote in _normalize_evidence_text(text)
-            ]
+                    text = str(source.get("text", "") if isinstance(source, dict) else source.text)
+                    if timestamp is not None and _evidence_quote_matches(text, raw_quote):
+                        matching.append(int(timestamp))
             if not matching:
                 return item
             original = getattr(item, "timestamp_ms", None)
@@ -743,14 +722,6 @@ class AnalysisMixin:
             if (value := item.get("image_index") if isinstance(item, dict) else item.image_index)
             is not None
         }
-        evidence_text = {
-            "audio": transcript_text,
-            "ocr": ocr_text,
-            "audio+ocr": f"{transcript_text}\n{ocr_text}",
-            "post_text": post_text,
-            "image_ocr": ocr_text,
-            "post_text+image_ocr": f"{post_text}\n{ocr_text}",
-        }
         allowed = (
             {"post_text", "image_ocr", "post_text+image_ocr", "ai_inference"}
             if is_image_note
@@ -805,10 +776,58 @@ class AnalysisMixin:
                 if duration_ms and timestamp_ms is not None and timestamp_ms > duration_ms + 5000:
                     errors.append(f"{label} 的时间戳超出视频时长")
             if quote and provenance != "ai_inference":
-                source = _normalize_evidence_text(evidence_text.get(provenance, ""))
-                normalized_quote = _normalize_evidence_text(quote)
-                if not normalized_quote or normalized_quote not in source:
-                    errors.append(f"{label} 的引文无法在原始 ASR/OCR/正文中定位")
+                local_audio = "\n".join(
+                    str(source.get("text", "") if isinstance(source, dict) else source.text)
+                    for source, (start, end) in zip(
+                        transcript_values, transcript_ranges, strict=True
+                    )
+                    if timestamp_ms is not None and start - 1000 <= timestamp_ms <= end + 1000
+                )
+                local_ocr = "\n".join(
+                    str(source.get("text", "") if isinstance(source, dict) else source.text)
+                    for source in ocr_values
+                    if (
+                        is_image_note
+                        and (
+                            source.get("image_index")
+                            if isinstance(source, dict)
+                            else source.image_index
+                        )
+                        == image_index
+                    )
+                    or (
+                        not is_image_note
+                        and timestamp_ms is not None
+                        and (
+                            observed := source.get("timestamp_ms")
+                            if isinstance(source, dict)
+                            else source.timestamp_ms
+                        )
+                        is not None
+                        and abs(timestamp_ms - int(observed)) <= 1500
+                    )
+                )
+                located_text = {
+                    "audio": local_audio,
+                    "ocr": local_ocr,
+                    "audio+ocr": f"{local_audio}\n{local_ocr}",
+                    "post_text": post_text,
+                    "image_ocr": local_ocr,
+                    "post_text+image_ocr": f"{post_text}\n{local_ocr}",
+                }
+                quote_matches = _evidence_quote_matches(located_text.get(provenance, ""), quote)
+                if provenance in {"audio", "audio+ocr"}:
+                    audio_quote_matches = timestamp_ms is not None and any(
+                        start - 1000 <= timestamp_ms <= end + 1000
+                        for start, end in _audio_quote_ranges(transcript_values, quote)
+                    )
+                    quote_matches = (
+                        audio_quote_matches
+                        if provenance == "audio"
+                        else quote_matches or audio_quote_matches
+                    )
+                if not quote_matches:
+                    errors.append(f"{label} 的引文无法在指定时间戳/图片的 ASR/OCR/正文中定位")
 
         if is_image_note and analysis.chapters:
             errors.append("静态图文不能包含视频时间轴图解")
@@ -829,15 +848,70 @@ class AnalysisMixin:
                 errors.append(f"知识原子 id 重复：{atom.id}")
             atom_ids.add(atom.id)
             validate_item(atom, label=f"知识原子 {atom.id or index}", atom=True)
-        corpus = _normalize_evidence_text(f"{transcript_text}\n{ocr_text}\n{post_text}")
+        corpus = f"{transcript_text}\n{ocr_text}\n{post_text}"
         for reminder in analysis.reminders:
-            if reminder.source_quote:
-                quote = _normalize_evidence_text(reminder.source_quote)
-                if not quote or quote not in corpus:
-                    errors.append(f"提醒候选 {reminder.id} 的依据无法在原始证据中定位")
+            if reminder.source_quote and not _evidence_quote_matches(corpus, reminder.source_quote):
+                errors.append(f"提醒候选 {reminder.id} 的依据无法在原始证据中定位")
         if errors:
             raise JobStateError("分析证据校验失败：" + "；".join(errors[:8]))
 
 
 def _normalize_evidence_text(value: str) -> str:
-    return re.sub(r"[\W_]+", "", value, flags=re.UNICODE).lower()
+    """Use context-independent Unicode casing before removing separators."""
+    return re.sub(r"[\W_]+", "", value.casefold(), flags=re.UNICODE)
+
+
+def _evidence_quote_positions(source: str, quote: str) -> Iterator[int]:
+    """Find quotes that consume complete original characters after normalization."""
+    normalized_quote = _normalize_evidence_text(quote)
+    if not normalized_quote:
+        return
+    normalized_source = _normalize_evidence_text(source)
+    position = normalized_source.find(normalized_quote)
+    if position < 0:
+        return
+    interior_offsets: set[int] = set()
+    offset = 0
+    for character in source:
+        folded = character.casefold()
+        if len(folded) == 1:
+            # The normalizer retains Unicode alphanumerics and removes underscores.
+            offset += folded.isalnum()
+        else:
+            length = len(_normalize_evidence_text(character))
+            interior_offsets.update(range(offset + 1, offset + length))
+            offset += length
+    while position >= 0:
+        if (
+            position not in interior_offsets
+            and position + len(normalized_quote) not in interior_offsets
+        ):
+            yield position
+        position = normalized_source.find(normalized_quote, position + 1)
+
+
+def _evidence_quote_matches(source: str, quote: str) -> bool:
+    return next(_evidence_quote_positions(source, quote), None) is not None
+
+
+def _audio_quote_ranges(transcript: list[Any], quote: str) -> list[tuple[int, int]]:
+    """Locate contiguous quotes and return the ranges where each quote starts."""
+    texts = [
+        str(item.get("text", "") if isinstance(item, dict) else item.text) for item in transcript
+    ]
+    ends = []
+    offset = 0
+    for text in texts:
+        offset += len(_normalize_evidence_text(text))
+        ends.append(offset)
+    ranges = []
+    seen = set()
+    for position in _evidence_quote_positions("".join(texts), quote):
+        # bisect_right skips empty segments and assigns a boundary to the next one.
+        item = transcript[bisect_right(ends, position)]
+        start = int(item.get("start_ms", 0) if isinstance(item, dict) else item.start_ms)
+        end = int(item.get("end_ms", 0) if isinstance(item, dict) else item.end_ms)
+        if (start, end) not in seen:
+            ranges.append((start, end))
+            seen.add((start, end))
+    return ranges

@@ -531,7 +531,7 @@ def test_web_028_settings_health_and_favorite_copy(tmp_path) -> None:
     assert 'if (work.entry_id) return "已入库"' in creators
     assert "抖音收藏操作失败" in favorites
     assert 'favoriteFailure("库内收藏", error)' in app_js
-    assert '`${kind}操作失败`' in app_js
+    assert "`${kind}操作失败`" in app_js
     assert 'setNav("settings-nav")' in app_js
 
 
@@ -551,7 +551,7 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
     with local_client(app) as client:
         page = client.get("/")
         footer_start = page.text.index('class="sidebar-footer"')
-        footer = page.text[footer_start:page.text.index("</aside>", footer_start)]
+        footer = page.text[footer_start : page.text.index("</aside>", footer_start)]
         assert footer.count("settings-nav-link") == 1
         assert 'id="settings-nav"' in footer
         assert ">设置</span>" in footer

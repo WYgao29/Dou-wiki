@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -46,14 +47,16 @@ class EntriesMixin:
         data.pop("purposes", None)
         data["inspirations"] = [item.model_dump(mode="json") for item in entry.inspirations]
         chunks, relations, reminders = self.prepare_entry_bundle(entry, data)
-        self.write_entry_documents(
+        self.persist_entry_documents_and_bundle(
             entry,
             data,
+            chunks,
+            relations,
+            reminders,
             action="inspiration",
             log_summary=inspiration.text,
             commit_message=f"inspiration: {entry.video_id} {entry.title}",
         )
-        self.database.persist_entry_bundle(entry, data, chunks, relations, reminders)
         return self.database.get_entry(entry_id)
 
     def add_purpose(self, entry_id: str, purpose: InspirationInput) -> EntryRecord:
@@ -332,7 +335,7 @@ class EntriesMixin:
         }
         if kind == "note":
             raise ValueError("用户笔记请使用 save_topic_note 保存")
-        topic = self.refresh_topic(topic_id)
+        topic = await asyncio.to_thread(self.refresh_topic, topic_id)
         contexts, revisions = self._topic_context(topic)
         if provider is None:
             from .webapp.chat import OpenAICompatibleChatProvider
@@ -376,32 +379,36 @@ class EntriesMixin:
         enabled_ids = {source.entry_id for source in topic.sources if source.enabled}
         if not any(entry_id in answer for entry_id in enabled_ids):
             raise ExternalToolError("专题成果缺少来源标注，未保存；请重试")
-        with self.vault.entry_operations_locked():
-            latest_topic = self.refresh_topic(topic_id)
-            now = utc_now()
-            artifact = TopicArtifact(
-                id=f"{kind}-{uuid.uuid4().hex[:12]}",
-                topic_id=topic.id,
-                kind=kind,
-                title=labels[kind],
-                content_markdown=answer.strip(),
-                source_revision=topic.source_revision,
-                source_revisions=revisions,
-                status=(
-                    "current"
-                    if latest_topic.source_revision == topic.source_revision
-                    else "needs_update"
-                ),
-                model=provider.model or None,
-                prompt_tokens=usage.get("prompt_tokens"),
-                completion_tokens=usage.get("completion_tokens"),
-                total_tokens=usage.get("total_tokens"),
-                created_at=now,
-                updated_at=now,
-            )
-            artifact = self.database.save_topic_artifact(artifact)
-            self.persist_topic(latest_topic)
-        return artifact.model_dump(mode="json")
+
+        def publish() -> dict[str, Any]:
+            with self.vault.entry_operations_locked():
+                latest_topic = self.refresh_topic(topic_id)
+                now = utc_now()
+                artifact = TopicArtifact(
+                    id=f"{kind}-{uuid.uuid4().hex[:12]}",
+                    topic_id=topic.id,
+                    kind=kind,
+                    title=labels[kind],
+                    content_markdown=answer.strip(),
+                    source_revision=topic.source_revision,
+                    source_revisions=revisions,
+                    status=(
+                        "current"
+                        if latest_topic.source_revision == topic.source_revision
+                        else "needs_update"
+                    ),
+                    model=provider.model or None,
+                    prompt_tokens=usage.get("prompt_tokens"),
+                    completion_tokens=usage.get("completion_tokens"),
+                    total_tokens=usage.get("total_tokens"),
+                    created_at=now,
+                    updated_at=now,
+                )
+                artifact = self.database.save_topic_artifact(artifact)
+                self.persist_topic(latest_topic)
+            return artifact.model_dump(mode="json")
+
+        return await asyncio.to_thread(publish)
 
     def save_topic_note(
         self,
@@ -545,9 +552,7 @@ class EntriesMixin:
         if title:
             candidate_data["title"] = title
         candidate = ReminderCandidate.model_validate(candidate_data)
-        if status != "creating" and not self.database.claim_reminder_creation(
-            entry_id, reminder_id, candidate
-        ):
+        if not self.database.claim_reminder_creation(entry_id, reminder_id, candidate):
             candidate, status, system_id = self.database.get_reminder(entry_id, reminder_id)
             return {
                 "status": status,

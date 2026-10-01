@@ -156,6 +156,29 @@ def test_collect_mixed_creator_post_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_creator_parent_updates_stats_when_children_finish(creator_service) -> None:
+    service, _, _ = creator_service
+    parent = service.capture_douyin_creator("https://www.douyin.com/user/example-sec-uid")
+    await service.process_claimed_job(service.database.claim_next_job())
+    service.set_creator_work_selection(parent.id, CreatorWorkDecision.SELECTED, ordinals=[1, 2])
+    parent = service.confirm_creator_import(parent.id)
+    first, second = parent.result["child_job_ids"]
+    running = service.database.claim_next_job()
+    assert running.id == first
+    cancelled = service.cancel_job(parent.id)
+    assert cancelled.status == JobStatus.CANCELLED
+    assert cancelled.result["child_status_counts"] == {"queued": 1, "cancelled": 1}
+    finished = await service.process_claimed_job(running)
+    assert finished.status == JobStatus.CANCELLED
+    service.delete_job(second)
+    persisted = service.database.get_job(parent.id)
+    assert persisted.status == JobStatus.CANCELLED
+    assert persisted.result["child_status_counts"] == {"cancelled": 2}
+    assert persisted.result["finished_count"] == 2
+    assert persisted.result["warning_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_creator_inventory_selection_and_isolated_vault(creator_service) -> None:
     service, adapter, downloader = creator_service
     job = service.capture_douyin_creator("8.92 复制打开抖音 https://v.douyin.com/rrcucI9W-e8/")
@@ -168,9 +191,7 @@ async def test_creator_inventory_selection_and_isolated_vault(creator_service) -
     inventory = service.get_creator_inventory(job.id)
     assert inventory["total"] == 2
     assert [item["ordinal"] for item in inventory["items"]] == [1, 2]
-    empty = service.set_creator_work_selection(
-        job.id, CreatorWorkDecision.SELECTED, ordinals=[]
-    )
+    empty = service.set_creator_work_selection(job.id, CreatorWorkDecision.SELECTED, ordinals=[])
     assert empty["changed"] == 0
     assert empty["selection"]["pending"] == 2
     with pytest.raises(Exception, match="仍有未决定作品"):
@@ -249,9 +270,9 @@ async def test_rebuild_reports_invalid_creator_sidecar_without_clearing_database
     with pytest.raises(Exception, match="creator_errors"):
         service.rebuild_database_from_vault(apply=True)
 
-    assert service.database.get_entry(completed.result["entry_id"]).id == completed.result[
-        "entry_id"
-    ]
+    assert (
+        service.database.get_entry(completed.result["entry_id"]).id == completed.result["entry_id"]
+    )
     assert service.database.get_creator(creator["id"]).id == creator["id"]
 
 

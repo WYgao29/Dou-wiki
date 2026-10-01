@@ -134,6 +134,7 @@ class Worker:
                         return
 
         heartbeat_task = asyncio.create_task(heartbeat())
+
         async def process():
             with self.service.database.claimed_job_updates(job.id, self.worker_id):
                 return await self.service.process_claimed_job(job)

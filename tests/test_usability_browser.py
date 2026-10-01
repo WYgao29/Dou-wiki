@@ -72,6 +72,39 @@ async def ui(tmp_path):
                 await browser.close()
 
 
+async def test_chat_scope_restores_selected_library_session_and_new_chat_intent(ui):
+    page, service, _client, _calls = ui
+    second = service.database.create_chat_session(title="另一资料库会话", scope="library")
+    await page.reload()
+    await page.wait_for_function(
+        "document.querySelector('#session-select').textContent.includes('另一资料库会话')"
+    )
+    await page.locator("#panel-tab-chat").click()
+    await page.locator("#session-select").select_option(second.id)
+    await page.evaluate("window.Douku.navigate('/articles/dy-1000')")
+    await page.wait_for_function("document.querySelector('#session-select').value === ''")
+    await page.evaluate("window.Douku.navigate('/')")
+    await page.wait_for_function(
+        "id => document.querySelector('#session-select').value === id", arg=second.id
+    )
+    await page.locator("#panel-tab-chat").click()
+    await page.locator("#chat-menu-toggle").click()
+    await page.locator("#new-session").click()
+    await page.evaluate("window.Douku.navigate('/articles/dy-123')")
+    await page.wait_for_function("document.querySelector('#session-select').value !== ''")
+    await page.evaluate("window.Douku.navigate('/')")
+    await page.wait_for_function("document.querySelector('#session-select').value === ''")
+
+
+async def test_command_search_closes_with_one_escape_and_keeps_query(ui):
+    page, _service, _client, _calls = ui
+    await page.keyboard.press("Meta+k")
+    await page.locator("#command-input").fill("jev")
+    await page.keyboard.press("Escape")
+    assert not await page.locator("#command-dialog").evaluate("dialog => dialog.open")
+    assert await page.locator("#command-input").input_value() == "jev"
+
+
 @pytest.mark.parametrize("state", ["cancelled", "deleted", "failed"])
 async def test_favorites_retry_button_follows_parent_and_child_state(ui, state):
     page, service, _client, calls = ui
@@ -145,7 +178,7 @@ async def test_scope_changes_and_command_query_clears_old_results(ui):
     await page.locator("#command-results").get_by_text("无匹配", exact=True).wait_for()
     await page.keyboard.press("Enter")
     assert await page.locator("#command-dialog").evaluate("node => node.open")
-    await page.fill("#command-input", "本资料")
+    await page.fill("#command-input", "测文章")
     await page.locator("#command-results [data-entry-id='dy-123']").wait_for()
 
 

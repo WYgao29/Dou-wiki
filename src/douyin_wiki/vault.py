@@ -101,6 +101,9 @@ entry_operation_observer: ContextVar[Callable[[], Callable[[], None]] | None] = 
     "entry_operation_observer",
     default=None,
 )
+_document_writes: ContextVar[dict[Path, str | None] | None] = ContextVar(
+    "document_writes", default=None
+)
 
 
 class VaultWriter:
@@ -110,6 +113,32 @@ class VaultWriter:
         self.last_creator_load_errors: list[dict[str, str]] = []
         self.last_topic_load_errors: list[dict[str, str]] = []
         self.last_artifact_load_errors: list[dict[str, str]] = []
+
+    @contextmanager
+    def reversible_writes(self) -> Iterator[None]:
+        """Restore all documents if their SQLite transaction cannot be published."""
+        if _document_writes.get() is not None:
+            yield
+            return
+        previous: dict[Path, str | None] = {}
+        token = _document_writes.set(previous)
+        try:
+            yield
+        except Exception:
+            for path, content in previous.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    self._atomic_write(path, content)
+            raise
+        finally:
+            _document_writes.reset(token)
+
+    @staticmethod
+    def _remember_write(path: Path) -> None:
+        previous = _document_writes.get()
+        if previous is not None and path not in previous:
+            previous[path] = path.read_bytes().decode("utf-8") if path.exists() else None
 
     @contextmanager
     def locked(self) -> Iterator[None]:
@@ -123,12 +152,14 @@ class VaultWriter:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     @contextmanager
-    def entry_operations_locked(self) -> Iterator[None]:
+    def entry_operations_locked(self, *, blocking: bool = True) -> Iterator[bool]:
         """Serialize entry mutations across Web, CLI, MCP, and worker processes.
 
         This lock must always be acquired before ``locked()`` when both are
         needed.  Keeping it separate from the short-lived Vault file lock lets
         one logical entry mutation cover its SQLite and filesystem changes.
+        With ``blocking=False``, yield False immediately when another operation
+        holds the lock, so readers can retain their last complete snapshot.
         """
         lock_path = self.vault_path / ".douyin-wiki" / "entry-operations.lock"
         key = (os.getpid(), str(lock_path.resolve()))
@@ -136,18 +167,22 @@ class VaultWriter:
         if held is None:
             held = _entry_locks.held = set()
         if key in held:
-            yield
+            yield True
             return
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            except BlockingIOError:
+                yield False
+                return
             held.add(key)
             finished = None
             try:
                 observer = entry_operation_observer.get()
                 if observer is not None:
                     finished = observer()
-                yield
+                yield True
             finally:
                 try:
                     if finished is not None:
@@ -720,6 +755,7 @@ class VaultWriter:
 
     def append_log(self, action: str, title: str, summary: str, paths: list[Path]) -> Path:
         path = self.vault_path / "log.md"
+        self._remember_write(path)
         relative_paths = [str(item.relative_to(self.vault_path)) for item in paths]
         block = (
             f"\n## [{beijing_date()}] {action} | {title}\n\n"
@@ -1863,6 +1899,7 @@ class VaultWriter:
 
     def _atomic_write(self, path: Path, content: str) -> None:
         self._reject_vault_symlinks(path, field="write_path")
+        self._remember_write(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         try:

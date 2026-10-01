@@ -49,8 +49,6 @@ class FavoritesService:
         job_id = self.store.create(
             CaptureRequest(share_text=FAVORITES_URL, gateway_context=gateway_context), options
         )
-        if update_mode == "incremental" and not directory_only:
-            self.store.seed_from_previous(job_id, folder_ids=folder_ids)
         return self.database.get_job(job_id)
 
     async def process(self, job):
@@ -284,13 +282,13 @@ class FavoritesService:
 
     def _refresh_with(self, job_id, run, items, summary):
         current = self.database.get_job(job_id)
-        if (
-            not run["confirmed"]
-            or current.status == JobStatus.CANCELLED
+        if not run["confirmed"]:
+            return current
+        inactive = (
+            current.status == JobStatus.CANCELLED
             or current.artifacts.get("cancel_requested")
             or current.artifacts.get("user_deleted")
-        ):
-            return current
+        )
         children = [i for i in items if i["job_id"] and i["selected"]]
         finished = sum(i["disposition"] in {"failed", "completed"} for i in children)
         warnings = (
@@ -314,15 +312,18 @@ class FavoritesService:
             "accept_partial": run["accept_partial"],
             "child_job_ids": [i["job_id"] for i in children],
         }
+        if inactive:
+            status, progress = current.status, current.progress
+            result = {**current.result, **result}
         if current.status == status and current.result == result and current.progress == progress:
             return current
         try:
             return self.database.update_job(
                 job_id,
-                status=status,
-                progress=progress,
+                status=None if inactive else status,
+                progress=None if inactive else progress,
                 result=result,
-                unlock=True,
+                unlock=not inactive,
                 expected_updated_at=current.updated_at,
                 expected_child_updates={i["job_id"]: i["job_updated_at"] for i in children},
             )
@@ -364,9 +365,8 @@ class FavoritesService:
                     self.core.retry_job(item["job_id"])
                 except JobStateError:
                     latest = self.database.get_job(item["job_id"])
-                    if (
-                        latest.status == JobStatus.FAILED
-                        and not latest.artifacts.get("user_deleted")
+                    if latest.status == JobStatus.FAILED and not latest.artifacts.get(
+                        "user_deleted"
                     ):
                         raise
             return self.refresh(job_id)

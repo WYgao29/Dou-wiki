@@ -136,63 +136,7 @@ class ImportMixin:
         if summary.get(CreatorWorkDecision.PENDING.value, 0):
             raise JobStateError("仍有未决定作品；请先选择或跳过全部作品")
         creator_id = str(job.artifacts["creator_id"])
-        creator = self.database.get_creator(creator_id)
-        selected, _ = self.database.list_creator_inventory(
-            job_id, limit=5000, decision=CreatorWorkDecision.SELECTED
-        )
-        self.database.update_job(job_id, status=JobStatus.DISPATCHING, progress=0.55)
-        child_ids: list[str] = []
-        for item in selected:
-            work = item.work
-            if work.entry_id:
-                self.database.mark_creator_work_imported(creator_id, work.work_id, work.entry_id)
-                continue
-            if work.last_job_id:
-                with suppress(JobStateError):
-                    existing_job = self.database.get_job(work.last_job_id)
-                    if existing_job.status not in {
-                        JobStatus.CANCELLED,
-                        JobStatus.FAILED,
-                        JobStatus.COMPLETED,
-                        JobStatus.COMPLETED_WITH_WARNINGS,
-                    }:
-                        child_ids.append(existing_job.id)
-                        continue
-            child_request = CaptureRequest(
-                share_text=work.canonical_url,
-                inspirations=[],
-                options=job.request.options,
-                gateway_context=job.request.gateway_context,
-            )
-            child = self.database.create_job(
-                child_request,
-                artifacts={
-                    "creator_context": {
-                        "id": creator.id,
-                        "folder_path": creator.folder_path,
-                        "parent_job_id": job.id,
-                        "work_id": work.work_id,
-                        "batch_silent": True,
-                    }
-                },
-            )
-            self.database.attach_creator_child_job(creator_id, work.work_id, child.id)
-            child_ids.append(child.id)
-        result = {
-            **job.result,
-            "selection": self.database.creator_inventory_summary(job_id),
-            "child_job_ids": child_ids,
-            "queued_count": len(child_ids),
-            "accept_partial": accept_partial,
-        }
-        status = JobStatus.MONITORING if child_ids else JobStatus.COMPLETED
-        updated = self.database.update_job(
-            job_id,
-            status=status,
-            progress=0.65 if child_ids else 1,
-            result=result,
-            unlock=True,
-        )
+        updated = self.database.dispatch_creator_import(job_id, accept_partial=accept_partial)
         self.refresh_creator_documents(creator_id, action="confirm-import")
         return updated
 
@@ -487,13 +431,20 @@ class ImportMixin:
             return
         with suppress(JobStateError):
             parent = self.database.get_job(parent_job_id)
-            if parent.artifacts.get("cancel_requested"):
-                return
-            if parent.kind != "creator_import" or parent.status not in {
-                JobStatus.MONITORING,
-                JobStatus.COMPLETED,
-                JobStatus.COMPLETED_WITH_WARNINGS,
-            }:
+            inactive = (
+                parent.status in {JobStatus.CANCELLED, JobStatus.FAILED}
+                or parent.artifacts.get("cancel_requested")
+                or parent.artifacts.get("user_deleted")
+            )
+            if parent.kind != "creator_import" or (
+                not inactive
+                and parent.status
+                not in {
+                    JobStatus.MONITORING,
+                    JobStatus.COMPLETED,
+                    JobStatus.COMPLETED_WITH_WARNINGS,
+                }
+            ):
                 return
             child_ids = list(parent.result.get("child_job_ids", []))
             if not child_ids:
@@ -516,6 +467,21 @@ class ImportMixin:
                 "child_status_counts": counts,
                 "finished_count": finished,
             }
+            warnings = (
+                counts.get(JobStatus.FAILED.value, 0)
+                + counts.get(JobStatus.CANCELLED.value, 0)
+                + counts.get(JobStatus.COMPLETED_WITH_WARNINGS.value, 0)
+            )
+            if inactive:
+                result.update(completed_count=finished, warning_count=warnings)
+                if result != parent.result:
+                    self.database.update_job(
+                        parent.id,
+                        result=result,
+                        expected_updated_at=parent.updated_at,
+                        expected_child_updates=child_updates,
+                    )
+                return
             if children and finished < len(children):
                 self.database.update_job(
                     parent.id,
@@ -526,11 +492,6 @@ class ImportMixin:
                     expected_child_updates=child_updates,
                 )
                 return
-            warnings = (
-                counts.get(JobStatus.FAILED.value, 0)
-                + counts.get(JobStatus.CANCELLED.value, 0)
-                + counts.get(JobStatus.COMPLETED_WITH_WARNINGS.value, 0)
-            )
             self.database.update_job(
                 parent.id,
                 status=(JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED),

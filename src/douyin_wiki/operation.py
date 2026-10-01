@@ -327,9 +327,8 @@ def next_action_for(
             "label": "打开知识资料",
             "href": f"/articles/{entry_id}",
         }
-    if (
-        job.status in {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}
-        and child_job_ids(job)
+    if job.status in {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS} and child_job_ids(
+        job
     ):
         return {
             "code": "view_children",

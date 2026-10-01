@@ -424,6 +424,10 @@ class Database:
             )
             if previous_version < 9:
                 self._rebuild_fts_conn(conn)
+            for row in conn.execute(
+                "SELECT tags_json, created_at FROM entries WHERE status='active'"
+            ).fetchall():
+                self._remember_tags_conn(conn, json.loads(row["tags_json"]), row["created_at"])
             self._retire_undeliverable_events_conn(conn)
             conn.execute("PRAGMA user_version=13")
 
@@ -541,26 +545,40 @@ class Database:
         status: JobStatus = JobStatus.QUEUED,
         progress: float = 0,
     ) -> JobRecord:
-        job_id = uuid.uuid4().hex
-        now = iso_now()
         with self.connect() as conn:
-            conn.execute(
-                """INSERT INTO jobs
+            job_id = self._insert_job_conn(
+                conn, request, kind=kind, artifacts=artifacts, status=status, progress=progress
+            )
+        return self.get_job(job_id)
+
+    @staticmethod
+    def _insert_job_conn(
+        conn: sqlite3.Connection,
+        request: CaptureRequest,
+        *,
+        kind: str = "capture",
+        artifacts: dict[str, Any] | None = None,
+        status: JobStatus = JobStatus.QUEUED,
+        progress: float = 0,
+    ) -> str:
+        job_id, now = uuid.uuid4().hex, iso_now()
+        conn.execute(
+            """INSERT INTO jobs
                    (id, kind, status, progress, request_json, artifacts_json, result_json,
                     created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?)""",
-                (
-                    job_id,
-                    kind,
-                    status.value,
-                    max(0.0, min(1.0, progress)),
-                    request.model_dump_json(),
-                    json.dumps(artifacts or {}, ensure_ascii=False),
-                    now,
-                    now,
-                ),
-            )
-        return self.get_job(job_id)
+            (
+                job_id,
+                kind,
+                status.value,
+                max(0.0, min(1.0, progress)),
+                request.model_dump_json(),
+                json.dumps(artifacts or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        return job_id
 
     def get_or_create_active_job(
         self,
@@ -1082,7 +1100,21 @@ class Database:
                       AND COALESCE(json_extract(artifacts_json, '$.cancel_requested'), 0) != 1""",
                 (JobStatus.QUEUED.value, iso_now(), *recoverable, timestamp),
             )
-        return cancelled.rowcount + result.rowcount
+            # Older confirmations committed dispatching without a Worker lease.
+            # Their linked children can be reused by a fresh atomic confirmation.
+            dispatches = conn.execute(
+                """UPDATE jobs SET status=CASE
+                       WHEN json_extract(artifacts_json, '$.cancel_requested')=1 THEN ?
+                       ELSE ? END, updated_at=?
+                   WHERE kind='creator_import' AND status=? AND locked_at IS NULL""",
+                (
+                    JobStatus.CANCELLED.value,
+                    JobStatus.NEEDS_SELECTION.value,
+                    iso_now(),
+                    JobStatus.DISPATCHING.value,
+                ),
+            )
+        return cancelled.rowcount + result.rowcount + dispatches.rowcount
 
     def unlock_all_jobs(self) -> int:
         """Compatibility escape hatch. Runtime recovery must use recover_expired_jobs()."""
@@ -1504,11 +1536,12 @@ class Database:
             JobStatus.COMPLETED.value,
             JobStatus.COMPLETED_WITH_WARNINGS.value,
             JobStatus.FAILED.value,
+            JobStatus.CANCELLED.value,
         )
         with self.connect() as conn:
             row = conn.execute(
                 """SELECT 1 FROM jobs
-                   WHERE kind='creator_import' AND status NOT IN (?, ?, ?) LIMIT 1""",
+                   WHERE kind='creator_import' AND status NOT IN (?, ?, ?, ?) LIMIT 1""",
                 terminal,
             ).fetchone()
         return row is not None
@@ -1820,6 +1853,122 @@ class Database:
                        VALUES (?, ?, ?, ?, 0)""",
                     (job_id, creator_id, work_id, ordinal),
                 )
+
+    def dispatch_creator_import(self, job_id: str, *, accept_partial: bool = False) -> JobRecord:
+        """Publish the complete child set and its parent in one transaction."""
+        terminal = {
+            JobStatus.CANCELLED,
+            JobStatus.FAILED,
+            JobStatus.COMPLETED,
+            JobStatus.COMPLETED_WITH_WARNINGS,
+        }
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            parent_row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if parent_row is None:
+                raise JobStateError(f"job not found: {job_id}")
+            parent = self._job_from_row(parent_row)
+            if parent.kind != "creator_import" or parent.status != JobStatus.NEEDS_SELECTION:
+                raise JobStateError("只有处于“待选择作品”状态的博主任务可以确认")
+            if parent.artifacts.get("inventory_partial") and not accept_partial:
+                raise JobStateError("清单不完整；如仍要处理已发现作品，请设置 accept_partial=true")
+            creator_id = str(parent.artifacts["creator_id"])
+            creator = self._creator_from_row(
+                conn.execute("SELECT * FROM creators WHERE id=?", (creator_id,)).fetchone()
+            )
+            rows = conn.execute(
+                """SELECT w.* FROM creator_run_items r JOIN creator_works w
+                   ON w.creator_id=r.creator_id AND w.work_id=r.work_id
+                   WHERE r.job_id=? ORDER BY r.ordinal""",
+                (job_id,),
+            ).fetchall()
+            if any(row["decision"] == CreatorWorkDecision.PENDING.value for row in rows):
+                raise JobStateError("仍有未决定作品；请先选择或跳过全部作品")
+            child_ids = []
+            for row in rows:
+                if row["decision"] != CreatorWorkDecision.SELECTED.value:
+                    continue
+                work = self._creator_work_from_row(row)
+                if work.entry_id:
+                    conn.execute(
+                        "UPDATE creator_works SET decision=?, availability='available' "
+                        "WHERE creator_id=? AND work_id=?",
+                        (CreatorWorkDecision.IMPORTED.value, creator_id, work.work_id),
+                    )
+                    continue
+                child_row = conn.execute(
+                    "SELECT * FROM jobs WHERE id=?", (work.last_job_id,)
+                ).fetchone()
+                if child_row is None:
+                    # Recover children created before the old dispatch attached its work link.
+                    child_row = conn.execute(
+                        """SELECT * FROM jobs WHERE kind='capture'
+                           AND json_extract(artifacts_json, '$.creator_context.parent_job_id')=?
+                           AND json_extract(artifacts_json, '$.creator_context.work_id')=?
+                           ORDER BY created_at DESC LIMIT 1""",
+                        (job_id, work.work_id),
+                    ).fetchone()
+                if child_row is not None and self._job_from_row(child_row).status not in terminal:
+                    child_id = str(child_row["id"])
+                else:
+                    child_id = self._insert_job_conn(
+                        conn,
+                        CaptureRequest(
+                            share_text=work.canonical_url,
+                            inspirations=[],
+                            options=parent.request.options,
+                            gateway_context=parent.request.gateway_context,
+                        ),
+                        artifacts={
+                            "creator_context": {
+                                "id": creator.id,
+                                "folder_path": creator.folder_path,
+                                "parent_job_id": parent.id,
+                                "work_id": work.work_id,
+                                "batch_silent": True,
+                            }
+                        },
+                    )
+                conn.execute(
+                    "UPDATE creator_works SET last_job_id=? WHERE creator_id=? AND work_id=?",
+                    (child_id, creator_id, work.work_id),
+                )
+                child_ids.append(child_id)
+            summary = {decision.value: 0 for decision in CreatorWorkDecision}
+            for row in conn.execute(
+                """SELECT w.decision, COUNT(*) AS count FROM creator_run_items r
+                   JOIN creator_works w ON w.creator_id=r.creator_id AND w.work_id=r.work_id
+                   WHERE r.job_id=? GROUP BY w.decision""",
+                (job_id,),
+            ):
+                summary[row["decision"]] = row["count"]
+            summary.update(
+                total=len(rows),
+                not_imported=sum(not row["entry_id"] for row in rows),
+                new=conn.execute(
+                    "SELECT COUNT(*) FROM creator_run_items WHERE job_id=? AND is_new=1",
+                    (job_id,),
+                ).fetchone()[0],
+            )
+            result = {
+                **parent.result,
+                "selection": summary,
+                "child_job_ids": child_ids,
+                "queued_count": len(child_ids),
+                "accept_partial": accept_partial,
+            }
+            conn.execute(
+                """UPDATE jobs SET status=?, progress=?, result_json=?, updated_at=?,
+                   locked_at=NULL, lock_owner=NULL, lease_expires_at=NULL WHERE id=?""",
+                (
+                    JobStatus.MONITORING.value if child_ids else JobStatus.COMPLETED.value,
+                    0.65 if child_ids else 1,
+                    json.dumps(result, ensure_ascii=False),
+                    iso_now(),
+                    job_id,
+                ),
+            )
+        return self.get_job(job_id)
 
     def creator_inventory_summary(self, job_id: str) -> dict[str, int]:
         with self.connect() as conn:
@@ -2201,10 +2350,51 @@ class Database:
         return {"creator_ids": list(dict.fromkeys(restored_creators))}
 
     def upsert_entry(self, entry: EntryRecord, data: dict[str, Any]) -> EntryRecord:
-        values = self._entry_values(entry, data)
         with self.connect() as conn:
-            self._upsert_entry_conn(conn, values)
+            conn.execute("BEGIN IMMEDIATE")
+            self._merge_created_reminder_states_conn(conn, entry.id, data)
+            self._upsert_entry_conn(conn, self._entry_values(entry, data))
+            if entry.status == "active":
+                self._remember_tags_conn(conn, entry.tags, entry.created_at.isoformat())
         return self.get_entry(entry.id)
+
+    @staticmethod
+    def _merge_created_reminder_states_conn(
+        conn: sqlite3.Connection, entry_id: str, data: dict[str, Any]
+    ) -> None:
+        # System reminder creation can finish after the caller read the entry.
+        states = {
+            str(item.get("id")): item
+            for item in data.get("reminder_states", [])
+            if isinstance(item, dict)
+        }
+        for row in conn.execute(
+            "SELECT data_json, system_id FROM reminders WHERE entry_id=? AND status='created'",
+            (entry_id,),
+        ):
+            candidate = ReminderCandidate.model_validate_json(row["data_json"])
+            states[candidate.id] = {
+                "id": candidate.id,
+                "status": "created",
+                "system_id": row["system_id"],
+            }
+        if states:
+            data["reminder_states"] = list(states.values())
+
+    @staticmethod
+    def _remember_tags_conn(conn: sqlite3.Connection, tags: list[str], captured_at: str) -> None:
+        """Keep vocabulary history in the same transaction as entry publication."""
+        from .tags import TagManager
+
+        now = iso_now()
+        captured_at = parse_datetime(captured_at).astimezone(UTC).isoformat()
+        for name in TagManager._resolve(conn, tags):
+            conn.execute(
+                """INSERT INTO tags(name,last_used_at,created_at) VALUES (?,?,?)
+                   ON CONFLICT(name) DO UPDATE SET
+                   last_used_at=MAX(COALESCE(tags.last_used_at,''),excluded.last_used_at)""",
+                (name, captured_at, now),
+            )
 
     @staticmethod
     def _entry_values(entry: EntryRecord, data: dict[str, Any]) -> tuple[Any, ...]:
@@ -2268,10 +2458,14 @@ class Database:
             conn.execute("BEGIN IMMEDIATE")
             if active := _ACTIVE_CLAIM.get():
                 self.assert_job_claim(conn, active[0])
+            self._persist_entry_bundle_conn(conn, entry, data, chunks, relations, reminders)
             if publish_documents is not None:
                 publish_documents()
-            self._persist_entry_bundle_conn(conn, entry, data, chunks, relations, reminders)
-        return self.get_entry(entry.id)
+            # Read and decode the response before commit: a response failure must
+            # not make the caller restore files after SQLite has already committed.
+            row = conn.execute("SELECT * FROM entries WHERE id=?", (entry.id,)).fetchone()
+            persisted = self._entry_from_row(row)
+        return persisted
 
     def _persist_entry_bundle_conn(
         self,
@@ -2284,7 +2478,10 @@ class Database:
     ) -> None:
         """Persist one complete entry projection using the caller's connection."""
         now = iso_now()
+        self._merge_created_reminder_states_conn(conn, entry.id, data)
         self._upsert_entry_conn(conn, self._entry_values(entry, data))
+        if entry.status == "active":
+            self._remember_tags_conn(conn, entry.tags, entry.created_at.isoformat())
         old_ids = [
             row["id"]
             for row in conn.execute(
@@ -2349,7 +2546,8 @@ class Database:
         created_ids = {
             ReminderCandidate.model_validate_json(row["data_json"]).id
             for row in conn.execute(
-                "SELECT data_json FROM reminders WHERE entry_id=? AND status='created'",
+                "SELECT data_json FROM reminders WHERE entry_id=? "
+                "AND status IN ('created','creating')",
                 (entry.id,),
             ).fetchall()
         }
@@ -2406,6 +2604,9 @@ class Database:
                 ).fetchall()
             ]
             self._clear_knowledge_cache_conn(conn, include_creators=True)
+            # Every relation target must exist, including forward and cyclic links.
+            for entry, data, _, _, _ in entries:
+                self._upsert_entry_conn(conn, self._entry_values(entry, data))
             for entry, data, chunks, relations, reminders in entries:
                 self._persist_entry_bundle_conn(conn, entry, data, chunks, relations, reminders)
             for creator, works in creators:
@@ -2795,7 +2996,7 @@ class Database:
                 "SELECT status FROM reminders WHERE entry_id=? AND id IN (?, ?)",
                 (entry_id, reminder_id, storage_id),
             ).fetchone()
-        if row and row["status"] == "created":
+        if row and row["status"] in {"created", "creating"}:
             return False
         raise JobStateError("该提醒正在由另一个进程创建，请稍后重试")
 

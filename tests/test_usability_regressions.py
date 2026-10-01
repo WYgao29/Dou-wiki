@@ -127,7 +127,10 @@ def test_cleanup_refreshes_catalog_and_split_invalidates_alias_cache(tmp_path):
         stale = source(service, "1000", ["先前空标签"])
         with service.database.connect() as conn:
             conn.execute("INSERT INTO tags(name,created_at) VALUES ('先前空标签', '2026-01-01')")
-        result = client.post("/api/tags/cleanup", json={"confirmed": True})
+        preview = client.post("/api/tags/cleanup", json={"confirmed": False}).json()
+        result = client.post(
+            "/api/tags/cleanup", json={"confirmed": True, "names": preview["names"]}
+        )
         assert result.status_code == 200
         assert "先前空标签" not in result.json()["deleted"]
         assert "先前空标签" in stale.read_text()
@@ -610,9 +613,12 @@ def test_undo_rejects_restored_namespace_collisions_without_changing_later_data(
             "Coffee" if collision == "standard" else "茶"
         ]
         with service.database.connect() as conn:
-            assert conn.execute(
-                "SELECT undone_at FROM tag_undo WHERE id=?", (deleted["operation_id"],)
-            ).fetchone()[0] is None
+            assert (
+                conn.execute(
+                    "SELECT undone_at FROM tag_undo WHERE id=?", (deleted["operation_id"],)
+                ).fetchone()[0]
+                is None
+            )
 
 
 async def test_file_watcher_does_not_lose_background_changes_when_api_refreshed(

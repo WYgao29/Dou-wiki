@@ -193,7 +193,14 @@ class LibraryCatalog:
     ) -> list[LibraryItem]:
         needle = query.casefold().strip()
         result: list[LibraryItem] = []
+        ranks: dict[str, int] = {}
+
+        def subsequence(value: str) -> bool:
+            letters = iter(value)
+            return all(char in letters for char in needle)
+
         for item in self.list_items():
+            fields = [value.casefold() for value in [item.title, item.author, *item.tags]]
             haystack = "\n".join(
                 [
                     item.title,
@@ -204,10 +211,21 @@ class LibraryCatalog:
                     item.body_markdown,
                 ]
             ).casefold()
-            if needle and needle not in haystack:
-                letters = iter(haystack)
-                if not fuzzy or not all(char in letters for char in needle):
-                    continue
+            if (
+                needle
+                and needle not in haystack
+                and (not fuzzy or not any(subsequence(value) for value in fields))
+            ):
+                continue
+            if needle in fields[0]:
+                rank = 0
+            elif any(needle in value for value in fields):
+                rank = 1
+            elif needle in haystack:
+                rank = 2
+            else:
+                rank = 3
+            ranks[item.entry_id] = rank
             if author and item.author != author:
                 continue
             if content_type and item.content_type != content_type:
@@ -217,6 +235,8 @@ class LibraryCatalog:
             if inspiration_only and not item.inspirations:
                 continue
             result.append(item)
+        if fuzzy and needle:
+            result.sort(key=lambda item: ranks[item.entry_id])
         return result
 
     def _read_item(self, path: Path, db_entries: dict[str, Any]) -> LibraryItem | None:

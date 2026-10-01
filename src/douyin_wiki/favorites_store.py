@@ -120,57 +120,69 @@ class FavoritesStore:
         return job_id
 
     def previous_work_ids(self, job_id: str) -> set[str]:
-        current = self.load(job_id)
-        folder_ids = current["options"].get("folder_ids")
-        for other_id in self.parent_ids(limit=50):
-            if other_id == job_id:
-                continue
-            other = self.load(other_id)
-            if other["options"].get("directory_only"):
-                continue
-            if other["options"].get("folder_ids") != folder_ids:
-                continue
-            return {row["work_id"] for row in self.rows(other_id)}
-        return set()
-
-    def seed_from_previous(self, job_id: str, *, folder_ids=None) -> int:
-        source_id = None
-        for other_id in self.parent_ids(limit=50):
-            if other_id == job_id:
-                continue
-            other = self.load(other_id)
-            if other["options"].get("directory_only"):
-                continue
-            if other["options"].get("folder_ids") != folder_ids:
-                continue
-            source_id = other_id
-            break
-        if source_id is None:
-            return 0
-        rows = self.rows(source_id)
-        if not rows:
-            return 0
         with self.database.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            for index, row in enumerate(rows, start=1):
+            run = self._run(conn, job_id)
+            snapshot = run["snapshot"]
+            if "_baseline_work_ids" not in snapshot:
+                if not snapshot.get("account_id"):
+                    return set()
+                # Lazily freeze legacy runs using only an earlier run of this account.
+                source_id = self._previous_run_conn(conn, job_id, run, snapshot["account_id"])
+                snapshot["_baseline_work_ids"] = self._work_ids_conn(conn, source_id)
                 conn.execute(
-                    """INSERT OR IGNORE INTO favorites_items
-                       (parent_id,work_id,position,data_json,selected)
-                       VALUES (?,?,?,?,?)""",
-                    (job_id, row["work_id"], index, row["data_json"], int(row["selected"])),
+                    "UPDATE favorites_runs SET snapshot_json=? WHERE parent_id=?",
+                    (json.dumps(snapshot, ensure_ascii=False), job_id),
                 )
-            snapshot = json.loads(
-                conn.execute(
-                    "SELECT snapshot_json FROM favorites_runs WHERE parent_id=?",
-                    (source_id,),
-                ).fetchone()["snapshot_json"]
-                or "{}"
+            return set(snapshot["_baseline_work_ids"])
+
+    @staticmethod
+    def _work_ids_conn(conn: sqlite3.Connection, source_id: str | None) -> list[str]:
+        return [
+            row["work_id"]
+            for row in conn.execute(
+                "SELECT work_id FROM favorites_items WHERE parent_id=? ORDER BY position,work_id",
+                (source_id,),
             )
+        ]
+
+    @staticmethod
+    def _previous_run_conn(
+        conn: sqlite3.Connection, job_id: str, run: dict, account_id: str
+    ) -> str | None:
+        current = conn.execute("SELECT created_at,rowid FROM jobs WHERE id=?", (job_id,)).fetchone()
+        rows = conn.execute(
+            """SELECT f.* FROM favorites_runs f JOIN jobs j ON j.id=f.parent_id
+               WHERE j.created_at<? OR (j.created_at=? AND j.rowid<?)
+               ORDER BY j.created_at DESC,j.rowid DESC""",
+            (current["created_at"], current["created_at"], current["rowid"]),
+        ).fetchall()
+        for row in rows:
+            options, snapshot = json.loads(row["options_json"]), json.loads(row["snapshot_json"])
+            if (
+                not options.get("directory_only")
+                and set(options.get("folder_ids") or [])
+                == set(run["options"].get("folder_ids") or [])
+                and snapshot.get("account_id") == account_id
+            ):
+                return str(row["parent_id"])
+        return None
+
+    @staticmethod
+    def _seed_previous_conn(
+        conn: sqlite3.Connection, job_id: str, source_id: str, options: dict
+    ) -> None:
+        rows = conn.execute(
+            "SELECT * FROM favorites_items WHERE parent_id=? ORDER BY position,work_id",
+            (source_id,),
+        ).fetchall()
+        for index, row in enumerate(rows, start=1):
+            selected = bool(row["selected"]) and eligible(json.loads(row["data_json"]), options)
             conn.execute(
-                "UPDATE favorites_runs SET snapshot_json=? WHERE parent_id=?",
-                (json.dumps(snapshot, ensure_ascii=False), job_id),
+                """INSERT OR IGNORE INTO favorites_items
+                   (parent_id,work_id,position,data_json,selected) VALUES (?,?,?,?,?)""",
+                (job_id, row["work_id"], index, row["data_json"], int(selected)),
             )
-        return len(rows)
 
     def checkpoint(self, job_id: str, snapshot: FavoriteInventory) -> None:
         payload = snapshot.model_dump(mode="json")
@@ -183,6 +195,18 @@ class FavoritesStore:
                 raise BrowserAuthRequiredError("专用浏览器账号已变化，请登录原账号或新建清点任务")
             if run["confirmed"]:
                 raise JobStateError("已提交的收藏清单不能重新清点")
+            if "_baseline_work_ids" in run["snapshot"]:
+                payload["_baseline_work_ids"] = run["snapshot"]["_baseline_work_ids"]
+            else:
+                source_id = self._previous_run_conn(conn, job_id, run, snapshot.account_id)
+                payload["_baseline_work_ids"] = self._work_ids_conn(conn, source_id)
+                if (
+                    source_id
+                    and not previous
+                    and not run["options"].get("directory_only")
+                    and run["options"].get("update_mode", "incremental") == "incremental"
+                ):
+                    self._seed_previous_conn(conn, job_id, source_id, run["options"])
             works = payload.pop("works")
             wanted = set(run["options"].get("folder_ids") or [])
             if wanted:

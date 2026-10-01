@@ -793,7 +793,9 @@ class CaptureMixin:
         ]
         with self.vault.entry_operations_locked():
             self.check_job_cancelled(job)
-            if request.options.retention == RetentionPolicy.DISCARD:
+            if existing:
+                entry = self.merge_reacquisition_state(entry, data, existing.id)
+            if entry.retention == RetentionPolicy.DISCARD:
                 self.trash_assets(entry, mark_database=False)
                 entry = entry.model_copy(update={"media_status": "removed"})
             chunks, relations, reminders = self.prepare_entry_bundle(
@@ -1165,6 +1167,8 @@ class CaptureMixin:
         ]
         with self.vault.entry_operations_locked():
             self.check_job_cancelled(job)
+            if existing:
+                entry = self.merge_reacquisition_state(entry, data, existing.id)
             chunks, relations, reminders = self.prepare_entry_bundle(
                 entry, data, reminders=reminders
             )
@@ -1203,6 +1207,32 @@ class CaptureMixin:
                 },
                 unlock=True,
             )
+
+    def merge_reacquisition_state(
+        self, entry: EntryRecord, data: dict[str, Any], existing_id: str
+    ) -> EntryRecord:
+        """Keep user mutations made while media and analysis were running."""
+        current = self.database.get_entry(existing_id)
+        current_data = self.database.get_entry_data(existing_id)
+        data["inspirations"] = [item.model_dump(mode="json") for item in current.inspirations]
+        if "reminder_states" in current_data:
+            data["reminder_states"] = current_data["reminder_states"]
+        expires_at = current.media_expires_at
+        now = utc_now()
+        if current.retention == RetentionPolicy.TEMPORARY:
+            if expires_at is None or expires_at <= now:
+                expires_at = now + timedelta(days=self.config.media.retention_days)
+        else:
+            expires_at = None
+        return entry.model_copy(
+            update={
+                "favorite": current.favorite,
+                "retention": current.retention,
+                "media_expires_at": expires_at,
+                "inspirations": current.inspirations,
+                "created_at": current.created_at,
+            }
+        )
 
     def persist_video_cover(
         self,

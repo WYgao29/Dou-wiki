@@ -369,14 +369,23 @@ class DouyinWikiService(
                 if child_id not in shared:
                     with suppress(JobStateError):
                         self.database.request_cancel(child_id)
+        self.refresh_job_parents(job_id)
+        if job.kind == "favorites_import":
+            self.favorites.refresh(job_id)
+        elif job.kind == "creator_import":
+            self.refresh_creator_parent(job_id)
+        return self.database.get_job(job_id)
+
+    def refresh_job_parents(self, job_id: str) -> None:
         self.favorites.refresh_for_child(job_id)
         for parent in self.database.list_jobs(limit=None):
             if parent.kind == "creator_import" and job_id in parent.result.get("child_job_ids", []):
                 self.refresh_creator_parent(parent.id)
-        return job
 
     def delete_job(self, job_id: str) -> None:
-        self.database.delete_finished_job(job_id)
+        with self.vault.entry_operations_locked():
+            self.database.delete_finished_job(job_id)
+            self.refresh_job_parents(job_id)
 
     def check_job_cancelled(self, job: JobRecord) -> None:
         current = self.database.get_job(job.id)
@@ -512,8 +521,8 @@ class DouyinWikiService(
         *,
         action: str,
         log_summary: str,
-        commit_message: str,
-    ) -> None:
+        commit_message: str | None,
+    ) -> list[Path]:
         entries = [item for item in self.database.list_entries() if item.id != entry.id]
         entries.append(entry)
         with self.vault.locked():
@@ -528,7 +537,9 @@ class DouyinWikiService(
                     [*written.changed_paths, index],
                 )
                 changed.append(log)
-            self.commit_vault(changed, commit_message)
+            if commit_message is not None:
+                self.commit_vault(changed, commit_message)
+            return changed
 
     def persist_entry_documents_and_bundle(
         self,
@@ -579,20 +590,26 @@ class DouyinWikiService(
         data.setdefault("analysis", {})["tags"] = tags
         for chunk in chunks:
             chunk["tags_text"] = " ".join(tags)
-        return self.database.persist_entry_bundle(
-            entry,
-            data,
-            chunks,
-            relations,
-            reminders,
-            publish_documents=lambda: self.write_entry_documents(
-                entry,
-                data,
-                action=action,
-                log_summary=log_summary,
-                commit_message=commit_message,
-            ),
-        )
+        changed: list[Path] = []
+
+        def publish() -> None:
+            changed.extend(
+                self.write_entry_documents(
+                    entry,
+                    data,
+                    action=action,
+                    log_summary=log_summary,
+                    commit_message=None,
+                )
+                or []
+            )
+
+        with self.vault.reversible_writes():
+            persisted = self.database.persist_entry_bundle(
+                entry, data, chunks, relations, reminders, publish_documents=publish
+            )
+        self.commit_vault(changed, commit_message)
+        return persisted
 
     def commit_vault(self, changed: list[Path], message: str) -> bool:
         if not (self.config.vault_path / ".git").exists():

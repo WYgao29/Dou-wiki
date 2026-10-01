@@ -361,17 +361,23 @@ async def _watch_catalog(
     if not roots:
         roots = [catalog.vault_path]
     known_fingerprint = catalog.fingerprint
+
+    def refresh_snapshot():
+        with catalog.tags.vault.entry_operations_locked():
+            current = catalog.compute_fingerprint()
+            if current != known_fingerprint:
+                catalog.refresh()
+            return current
+
     async for _changes in awatch(
         *roots,
         stop_event=stop_event,
         rust_timeout=500,
         yield_on_timeout=True,
     ):
-        with catalog.tags.vault.entry_operations_locked():
-            current = catalog.compute_fingerprint()
-            if current == known_fingerprint:
-                continue
-            catalog.refresh()
+        current = await asyncio.to_thread(refresh_snapshot)
+        if current == known_fingerprint:
+            continue
         published = notifier.already_published(known_fingerprint, current)
         known_fingerprint = current
         if not published:
@@ -485,7 +491,7 @@ def create_app(
         warnings = list(result.get("warnings") or [])
         if refresh_catalog:
             try:
-                catalog.refresh()
+                await asyncio.to_thread(catalog.refresh)
             except Exception as exc:
                 warnings.append(f"操作已完成，但网页目录刷新失败：{exc}")
         try:
@@ -494,8 +500,18 @@ def create_app(
             warnings.append(f"操作已完成，但网页更新通知失败：{exc}")
         return {**result, "warnings": warnings}
 
-    tag_overview = install_tag_api(app, core, catalog, publish_mutation)
-    templates.context_processors.append(lambda request: {"sidebar_tags": tag_overview()["sidebar"]})
+    install_tag_api(app, core, catalog, publish_mutation)
+
+    def read_tag_overview(*, refresh: bool = False):
+        if refresh:
+            with core.vault.entry_operations_locked(blocking=False) as acquired:
+                if acquired and catalog.compute_fingerprint() != catalog.fingerprint:
+                    catalog.refresh()
+        return core.tags.overview(catalog.list_items(), persist=False)
+
+    templates.context_processors.append(
+        lambda request: {"sidebar_tags": read_tag_overview()["sidebar"]}
+    )
 
     def _local_write_origin_ok(request: Request) -> bool:
         """Require Origin or Referer to match this local host on write requests.
@@ -596,7 +612,7 @@ def create_app(
     @app.get("/topics/{topic_id}", response_class=HTMLResponse)
     async def topic_page(request: Request, topic_id: str):
         try:
-            value = core.get_topic(topic_id)
+            value = await asyncio.to_thread(core.get_topic, topic_id)
         except KeyError:
             return shell_page(request, title="页面不存在", status_code=404, missing=True)
         return shell_page(
@@ -680,7 +696,7 @@ def create_app(
         fuzzy: bool = False,
         limit: int | None = Query(None, ge=1, le=500),
     ):
-        tags = await asyncio.to_thread(tag_overview)
+        tags = await asyncio.to_thread(read_tag_overview, refresh=True)
         resolved_tags = core.tags.resolve([tag])
         tag = resolved_tags[0] if resolved_tags else ""
         items = catalog.filter(
@@ -726,64 +742,69 @@ def create_app(
             resolved = await core.resolver.resolve(payload.share_text)
         except DouyinWikiError as exc:
             raise HTTPException(400, detail=str(exc)) from exc
-        with core.vault.entry_operations_locked():
-            existing = _existing_capture(core, resolved.video_id)
-            if existing:
-                return JSONResponse(existing, status_code=200)
-            if catalog.compute_fingerprint() != catalog.fingerprint:
-                catalog.refresh()
-            item = next(
-                (item for item in catalog.list_items() if item.work_id == resolved.video_id), None
-            )
-            if item:
+
+        def enqueue():
+            with core.vault.entry_operations_locked():
+                existing = _existing_capture(core, resolved.video_id)
+                if existing:
+                    return JSONResponse(existing, status_code=200)
+                if catalog.compute_fingerprint() != catalog.fingerprint:
+                    catalog.refresh()
+                item = next(
+                    (item for item in catalog.list_items() if item.work_id == resolved.video_id),
+                    None,
+                )
+                if item:
+                    return JSONResponse(
+                        {
+                            "duplicate": True,
+                            "in_trash": False,
+                            "entry_id": item.entry_id,
+                            "href": f"/articles/{item.entry_id}",
+                            "title": item.title,
+                            "message": "已在资料库",
+                        }
+                    )
+                new_job_id = uuid.uuid4().hex
+                job = core.database.get_or_create_active_job(
+                    CaptureRequest(
+                        share_text=payload.share_text,
+                        inspirations=inspirations,
+                        options=CaptureOptions(
+                            retention=payload.retention,
+                            allow_long=payload.allow_long,
+                            approve_cloud_analysis=payload.approve_cloud_analysis,
+                        ),
+                    ),
+                    kind="capture",
+                    new_job_id=new_job_id,
+                    match_artifact="work_id",
+                    artifacts={
+                        "work_id": resolved.video_id,
+                        "resolved": {
+                            "original_url": resolved.original_url,
+                            "canonical_url": resolved.canonical_url,
+                            "video_id": resolved.video_id,
+                            "source_kind": resolved.source_kind.value,
+                            "redirect_chain": list(resolved.redirect_chain),
+                        },
+                    },
+                )
+            if job.id != new_job_id:
                 return JSONResponse(
                     {
                         "duplicate": True,
+                        "active": True,
                         "in_trash": False,
-                        "entry_id": item.entry_id,
-                        "href": f"/articles/{item.entry_id}",
-                        "title": item.title,
-                        "message": "已在资料库",
+                        "job_id": job.id,
+                        "href": f"/jobs/{job.id}",
+                        "message": "同作品已有采集任务；新填写的灵感与处理选项尚未保存",
                     }
                 )
-            new_job_id = uuid.uuid4().hex
-            job = core.database.get_or_create_active_job(
-                CaptureRequest(
-                    share_text=payload.share_text,
-                    inspirations=inspirations,
-                    options=CaptureOptions(
-                        retention=payload.retention,
-                        allow_long=payload.allow_long,
-                        approve_cloud_analysis=payload.approve_cloud_analysis,
-                    ),
-                ),
-                kind="capture",
-                new_job_id=new_job_id,
-                match_artifact="work_id",
-                artifacts={
-                    "work_id": resolved.video_id,
-                    "resolved": {
-                        "original_url": resolved.original_url,
-                        "canonical_url": resolved.canonical_url,
-                        "video_id": resolved.video_id,
-                        "source_kind": resolved.source_kind.value,
-                        "redirect_chain": list(resolved.redirect_chain),
-                    },
-                },
-            )
-        if job.id != new_job_id:
-            return JSONResponse(
-                {
-                    "duplicate": True,
-                    "active": True,
-                    "in_trash": False,
-                    "job_id": job.id,
-                    "href": f"/jobs/{job.id}",
-                    "message": "同作品已有采集任务；新填写的灵感与处理选项尚未保存",
-                }
-            )
-        presented = operations.present(job)
-        return {"job_id": job.id, **presented}
+            presented = operations.present(job)
+            return {"job_id": job.id, **presented}
+
+        return await asyncio.to_thread(enqueue)
 
     @app.get("/api/articles/{entry_id}")
     async def article(entry_id: str):
@@ -805,7 +826,7 @@ def create_app(
         if existing_item is None:
             raise HTTPException(status_code=404, detail="文章不存在")
         try:
-            result = core.set_entry_favorite(entry_id, payload.favorite)
+            result = await asyncio.to_thread(core.set_entry_favorite, entry_id, payload.favorite)
         except EntryNotFoundError as exc:
             raise HTTPException(status_code=404, detail="文章不存在") from exc
         mutation = await publish_mutation({})
@@ -841,14 +862,16 @@ def create_app(
         except JobStateError as exc:
             raise HTTPException(status_code=404, detail="任务不存在") from exc
         try:
-            return operations.present(core.retry_job(job_id))
+            return operations.present(await asyncio.to_thread(core.retry_job, job_id))
         except JobStateError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.delete("/api/articles/{entry_id}")
     async def trash_article(entry_id: str, payload: ConfirmDestructiveActionRequest):
         try:
-            result = core.trash_entry(entry_id, confirmed=payload.confirmed)
+            result = await asyncio.to_thread(
+                core.trash_entry, entry_id, confirmed=payload.confirmed
+            )
         except EntryNotFoundError as exc:
             raise HTTPException(status_code=404, detail="文章不存在") from exc
         except (ValueError, DouyinWikiError) as exc:
@@ -867,7 +890,9 @@ def create_app(
     @app.post("/api/trash/batch/restore")
     async def restore_trash_items(payload: TrashBatchRequest):
         try:
-            result = core.restore_trashed_entries(payload.trash_ids, confirmed=payload.confirmed)
+            result = await asyncio.to_thread(
+                core.restore_trashed_entries, payload.trash_ids, confirmed=payload.confirmed
+            )
         except EntryNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (ValueError, DouyinWikiError) as exc:
@@ -877,8 +902,10 @@ def create_app(
     @app.post("/api/trash/batch/purge")
     async def permanently_delete_trash_items(payload: TrashBatchRequest):
         try:
-            result = core.permanently_delete_trashed_entries(
-                payload.trash_ids, confirmed=payload.confirmed
+            result = await asyncio.to_thread(
+                core.permanently_delete_trashed_entries,
+                payload.trash_ids,
+                confirmed=payload.confirmed,
             )
         except EntryNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -889,7 +916,9 @@ def create_app(
     @app.post("/api/trash/{trash_id}/restore")
     async def restore_trash_item(trash_id: str, payload: ConfirmDestructiveActionRequest):
         try:
-            result = core.restore_trashed_entry(trash_id, confirmed=payload.confirmed)
+            result = await asyncio.to_thread(
+                core.restore_trashed_entry, trash_id, confirmed=payload.confirmed
+            )
         except EntryNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (ValueError, DouyinWikiError) as exc:
@@ -901,7 +930,9 @@ def create_app(
         trash_id: str, payload: ConfirmDestructiveActionRequest
     ):
         try:
-            result = core.permanently_delete_trashed_entry(trash_id, confirmed=payload.confirmed)
+            result = await asyncio.to_thread(
+                core.permanently_delete_trashed_entry, trash_id, confirmed=payload.confirmed
+            )
         except EntryNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
@@ -910,12 +941,14 @@ def create_app(
 
     @app.get("/api/topics")
     async def list_topics():
-        return {"topics": [_topic_payload(item) for item in core.list_topics()]}
+        values = await asyncio.to_thread(core.list_topics)
+        return {"topics": [_topic_payload(item) for item in values]}
 
     @app.post("/api/topics", status_code=201)
     async def create_topic(payload: CreateTopicRequest):
         try:
-            value = core.create_topic(
+            value = await asyncio.to_thread(
+                core.create_topic,
                 payload.title,
                 payload.entry_ids,
                 goal=payload.goal,
@@ -923,21 +956,22 @@ def create_app(
             )
         except (ValueError, EntryNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        catalog.refresh()
+        await asyncio.to_thread(catalog.refresh)
         await notifier.publish()
         return _topic_payload(value)
 
     @app.get("/api/topics/{topic_id}")
     async def get_topic(topic_id: str):
         try:
-            return _topic_payload(core.get_topic(topic_id))
+            return _topic_payload(await asyncio.to_thread(core.get_topic, topic_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.put("/api/topics/{topic_id}/sources")
     async def set_topic_sources(topic_id: str, payload: SetTopicSourcesRequest):
         try:
-            value = core.set_topic_sources(
+            value = await asyncio.to_thread(
+                core.set_topic_sources,
                 topic_id,
                 [item.model_dump() for item in payload.sources],
             )
@@ -945,7 +979,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (ValueError, EntryNotFoundError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        catalog.refresh()
+        await asyncio.to_thread(catalog.refresh)
         await notifier.publish()
         return _topic_payload(value)
 
@@ -961,15 +995,19 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (ValueError, DouyinWikiError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        catalog.refresh()
+        await asyncio.to_thread(catalog.refresh)
         await notifier.publish()
-        result = {"topic": core.get_topic(topic_id)["topic"], "artifacts": [artifact]}
+        result = {
+            "topic": (await asyncio.to_thread(core.get_topic, topic_id))["topic"],
+            "artifacts": [artifact],
+        }
         return _topic_payload(result)["artifacts"][0]
 
     @app.post("/api/topics/{topic_id}/notes", status_code=201)
     async def save_topic_note(topic_id: str, payload: SaveTopicNoteRequest):
         try:
-            artifact = core.save_topic_note(
+            artifact = await asyncio.to_thread(
+                core.save_topic_note,
                 topic_id,
                 payload.content,
                 title=payload.title,
@@ -979,9 +1017,12 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        catalog.refresh()
+        await asyncio.to_thread(catalog.refresh)
         await notifier.publish()
-        result = {"topic": core.get_topic(topic_id)["topic"], "artifacts": [artifact]}
+        result = {
+            "topic": (await asyncio.to_thread(core.get_topic, topic_id))["topic"],
+            "artifacts": [artifact],
+        }
         return _topic_payload(result)["artifacts"][0]
 
     @app.get("/api/library/events")
@@ -1029,7 +1070,7 @@ def create_app(
             if not payload.context_topic_id:
                 raise HTTPException(status_code=400, detail="专题范围对话需要有效的目标专题")
             try:
-                core.get_topic(payload.context_topic_id)
+                await asyncio.to_thread(core.get_topic, payload.context_topic_id)
             except KeyError as exc:
                 raise HTTPException(
                     status_code=400, detail="专题范围对话需要有效的目标专题"

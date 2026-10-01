@@ -61,6 +61,117 @@ def valid_name(name: str) -> str:
     return name
 
 
+def replace_frontmatter_tags(frontmatter: str, tags: list[str]) -> str:
+    """Replace only the top-level tags value, preserving other YAML verbatim."""
+    replacement = json.dumps(tags, ensure_ascii=False)
+    root = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
+    original = yaml.safe_load(frontmatter)
+
+    def validated(result: str) -> str:
+        try:
+            parsed = yaml.safe_load(result)
+        except yaml.YAMLError as exc:
+            raise ValueError("标签更新无法保留合法 YAML，已停止修改") from exc
+        if parsed.get("tags") != tags or {
+            key: value for key, value in parsed.items() if key != "tags"
+        } != {key: value for key, value in original.items() if key != "tags"}:
+            raise ValueError("标签更新会改变其他 YAML 属性，已停止修改")
+        return result
+
+    keys = [key for key, _ in root.value if key.value == "tags"]
+    if not keys:
+        # Tags can be inherited through a YAML merge; make the override explicit.
+        return validated(frontmatter.rstrip("\n") + "\ntags: " + replacement)
+    key = keys[-1]
+    events = list(yaml.parse(frontmatter, Loader=yaml.SafeLoader))
+    index = (
+        next(
+            i
+            for i, event in enumerate(events)
+            if isinstance(event, yaml.ScalarEvent)
+            and event.start_mark.index == key.start_mark.index
+        )
+        + 1
+    )
+    value = events[index]
+    start, end = value.start_mark.index, value.end_mark.index
+    if isinstance(value, yaml.SequenceStartEvent):
+        if value.anchor:
+            replacement = f"&{value.anchor} " + replacement
+        if (
+            not value.flow_style
+            and value.start_mark.line > key.end_mark.line
+            and value.start_mark.column <= key.start_mark.column
+        ):
+            # YAML permits an unindented block list; a flow list needs indentation.
+            replacement = " " * (key.start_mark.column + 2 - value.start_mark.column) + replacement
+        depth = 0
+        for event in events[index:]:
+            if isinstance(event, (yaml.SequenceStartEvent, yaml.MappingStartEvent)):
+                depth += 1
+            elif isinstance(event, (yaml.SequenceEndEvent, yaml.MappingEndEvent)):
+                depth -= 1
+                if depth == 0:
+                    if value.flow_style:
+                        end = event.end_mark.index
+                    break
+            end = event.end_mark.index
+    elif not isinstance(value, yaml.AliasEvent):
+        raise ValueError("tags 必须是 YAML 列表")
+    if frontmatter[start:end].endswith("\n") and frontmatter[end:] and frontmatter[end] != "\n":
+        replacement += "\n"
+
+    # Replacing a list can remove anchors that other properties still reference.
+    # Inline those aliases with their original values before removing the definitions.
+    nodes = {}
+    visited = set()
+
+    def collect(node):
+        if id(node) in visited:
+            return
+        visited.add(id(node))
+        nodes[node.start_mark.index] = node
+        if isinstance(node, yaml.SequenceNode):
+            for child in node.value:
+                collect(child)
+        elif isinstance(node, yaml.MappingNode):
+            for key_node, value_node in node.value:
+                collect(key_node)
+                collect(value_node)
+
+    collect(root)
+    anchors = {
+        event.anchor: nodes[event.start_mark.index]
+        for event in events
+        if getattr(event, "anchor", None)
+        and not isinstance(event, yaml.AliasEvent)
+        and start <= event.start_mark.index < end
+    }
+    changes = [(start, end, replacement)]
+    loader = yaml.SafeLoader("")
+    try:
+        for event in events:
+            if (
+                isinstance(event, yaml.AliasEvent)
+                and event.anchor in anchors
+                and not start <= event.start_mark.index < end
+            ):
+                value = loader.construct_object(anchors[event.anchor], deep=True)
+                text = yaml.safe_dump(
+                    value, allow_unicode=True, default_flow_style=True, width=1_000_000
+                )
+                if text.endswith("\n...\n"):
+                    text = text[:-5]
+                text = text.rstrip("\n").replace("\n", "\n" + " " * event.start_mark.column)
+                changes.append((event.start_mark.index, event.end_mark.index, text))
+    finally:
+        loader.dispose()
+    result = frontmatter
+    for begin, finish, text in sorted(changes, reverse=True):
+        result = result[:begin] + text + result[finish:]
+    return validated(result)
+
+
 def duplicate_groups(rows: list[dict[str, Any]]) -> list[list[str]]:
     translations = {
         "aiagent": "ai代理",
@@ -149,7 +260,7 @@ class TagManager:
                 names.extend(json.loads(row[0]))
             return sorted(self._resolve(conn, names), key=str.casefold)
 
-    def overview(self, items) -> dict[str, Any]:
+    def overview(self, items, *, persist: bool = True) -> dict[str, Any]:
         now = iso_now()
         counts: dict[str, list] = defaultdict(list)
         resolve = self.resolver()
@@ -158,6 +269,8 @@ class TagManager:
                 for name in resolve(item.tags):
                     counts[name].append(item)
             for name in counts:
+                if not persist:
+                    continue
                 conn.execute(
                     "INSERT OR IGNORE INTO tags(name, created_at) VALUES (?, ?)", (name, now)
                 )
@@ -175,7 +288,13 @@ class TagManager:
                         "WHERE name=?",
                         (last, name),
                     )
-            records = conn.execute("SELECT * FROM tags").fetchall()
+            records = [dict(row) for row in conn.execute("SELECT * FROM tags")]
+            known = {row["name"] for row in records}
+            records.extend(
+                {"name": name, "pinned_at": None, "position": 0, "last_used_at": None}
+                for name in counts
+                if name not in known
+            )
             aliases = dict(conn.execute("SELECT alias, canonical FROM tag_aliases").fetchall())
             undo_by_alias = {}
             for row in conn.execute(
@@ -352,13 +471,10 @@ class TagManager:
                             continue
                         tags = replace(metadata["tags"])
                         if tags != metadata["tags"]:
-                            metadata["tags"] = tags
                             source_tags[path] = tags
                             changed[path] = (
                                 "---\n"
-                                + yaml.safe_dump(
-                                    metadata, allow_unicode=True, sort_keys=False
-                                ).rstrip()
+                                + replace_frontmatter_tags(match[1], tags)
                                 + "\n---\n"
                                 + text[match.end() :]
                             )

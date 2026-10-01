@@ -328,7 +328,7 @@
         });
         if (!confirmed) return;
 
-        const data = await D.api("/api/tags/cleanup", {method: "POST", body: JSON.stringify({confirmed: true})});
+        const data = await D.api("/api/tags/cleanup", {method: "POST", body: JSON.stringify({confirmed: true, names})});
         applyOverview(data);
         await D.refreshLibrary();
         const message = `已清理 ${data.deleted?.length || 0} 个未使用标签`;

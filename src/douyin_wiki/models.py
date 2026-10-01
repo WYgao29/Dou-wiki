@@ -564,9 +564,7 @@ class AnalysisResultV2(BaseModel):
             for index, moment in enumerate(ordered):
                 timestamp_ms = int(moment["timestamp_ms"])
                 next_timestamp_candidate = (
-                    int(ordered[index + 1]["timestamp_ms"])
-                    if index + 1 < len(ordered)
-                    else None
+                    int(ordered[index + 1]["timestamp_ms"]) if index + 1 < len(ordered) else None
                 )
                 next_timestamp = (
                     next_timestamp_candidate

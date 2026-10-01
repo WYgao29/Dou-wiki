@@ -68,7 +68,7 @@ class CreatorConfirmBody(BaseModel):
 
 class CreatorImportSkippedBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    work_ids: list[str] = Field(min_length=1, max_length=500)
+    work_ids: list[str] = Field(min_length=1)
 
 
 class ReanalyzeBody(BaseModel):
@@ -216,7 +216,7 @@ def register_operation_routes(
     @app.post("/api/jobs/{job_id}/cancel")
     async def cancel_job(job_id: str):
         try:
-            job = core.cancel_job(job_id)
+            job = await asyncio.to_thread(core.cancel_job, job_id)
         except JobStateError as exc:
             raise _http_error(exc) from exc
         await notifier.publish("jobs")
@@ -225,7 +225,7 @@ def register_operation_routes(
     @app.delete("/api/jobs/{job_id}")
     async def delete_job(job_id: str):
         try:
-            core.delete_job(job_id)
+            await asyncio.to_thread(core.delete_job, job_id)
         except JobStateError as exc:
             raise _http_error(exc) from exc
         await notifier.publish("jobs")
@@ -242,7 +242,7 @@ def register_operation_routes(
     @app.post("/api/jobs/{job_id}/dismiss")
     async def dismiss_job(job_id: str):
         try:
-            job = operations.dismiss_job(job_id)
+            job = await asyncio.to_thread(operations.dismiss_job, job_id)
         except JobStateError as exc:
             raise _http_error(exc) from exc
         await notifier.publish("jobs")
@@ -252,7 +252,7 @@ def register_operation_routes(
     async def approve_job(job_id: str):
         try:
             core.get_job(job_id)
-            job = core.approve_job(job_id)
+            job = await asyncio.to_thread(core.approve_job, job_id)
         except JobStateError as exc:
             raise _http_error(exc) from exc
         await notifier.publish("jobs")
@@ -261,7 +261,8 @@ def register_operation_routes(
     @app.post("/api/jobs/{job_id}/review", status_code=202)
     async def resolve_review(job_id: str, body: ReviewBody):
         try:
-            job = core.resolve_review(
+            job = await asyncio.to_thread(
+                core.resolve_review,
                 job_id,
                 body.resolutions,
                 accept_uncertain=body.accept_uncertain,
@@ -348,7 +349,8 @@ def register_operation_routes(
                 else DouyinShareResolver()
             )
             source = await resolver.resolve_creator(source)
-            job = core.capture_douyin_creator(
+            job = await asyncio.to_thread(
+                core.capture_douyin_creator,
                 source,
                 inspirations=body.inspirations,
                 options=CaptureOptions(
@@ -384,7 +386,7 @@ def register_operation_routes(
     @app.post("/api/creators/{creator_id}/sync", status_code=202)
     async def sync_creator(creator_id: str):
         try:
-            job = core.sync_creator(creator_id)
+            job = await asyncio.to_thread(core.sync_creator, creator_id)
         except Exception as exc:
             raise HTTPException(status_code=404, detail="博主不存在") from exc
         await notifier.publish("jobs")
@@ -393,7 +395,7 @@ def register_operation_routes(
     @app.post("/api/creators/{creator_id}/import-skipped", status_code=202)
     async def import_skipped(creator_id: str, body: CreatorImportSkippedBody):
         try:
-            job = core.import_creator_works(creator_id, body.work_ids)
+            job = await asyncio.to_thread(core.import_creator_works, creator_id, body.work_ids)
         except (JobStateError, ValueError, KeyError) as exc:
             raise _http_error(exc) from exc
         await notifier.publish("jobs")
@@ -427,7 +429,8 @@ def register_operation_routes(
     @app.post("/api/creator-imports/{job_id}/selection")
     async def creator_selection(job_id: str, body: CreatorSelectionBody):
         try:
-            result = core.set_creator_work_selection(
+            result = await asyncio.to_thread(
+                core.set_creator_work_selection,
                 job_id,
                 body.decision,
                 ordinals=body.ordinals,
@@ -440,7 +443,9 @@ def register_operation_routes(
     @app.post("/api/creator-imports/{job_id}/confirm", status_code=202)
     async def creator_confirm(job_id: str, body: CreatorConfirmBody):
         try:
-            job = core.confirm_creator_import(job_id, accept_partial=body.accept_partial)
+            job = await asyncio.to_thread(
+                core.confirm_creator_import, job_id, accept_partial=body.accept_partial
+            )
         except JobStateError as exc:
             raise _http_error(exc) from exc
         await notifier.publish("jobs")
@@ -449,7 +454,7 @@ def register_operation_routes(
     @app.post("/api/articles/{entry_id}/reanalyze", status_code=202)
     async def reanalyze_article(entry_id: str, body: ReanalyzeBody):
         try:
-            job = core.reanalyze_entry(entry_id, force=body.force)
+            job = await asyncio.to_thread(core.reanalyze_entry, entry_id, force=body.force)
         except EntryNotFoundError as exc:
             raise _http_error(exc) from exc
         await notifier.publish("jobs")
@@ -458,7 +463,9 @@ def register_operation_routes(
     @app.delete("/api/imports/{job_id}")
     async def delete_import(job_id: str, body: ConfirmBody):
         try:
-            result = operations.delete_import_history(job_id, confirmed=body.confirmed)
+            result = await asyncio.to_thread(
+                operations.delete_import_history, job_id, confirmed=body.confirmed
+            )
         except JobStateError as exc:
             raise _http_error(exc) from exc
         if body.confirmed:
@@ -467,7 +474,7 @@ def register_operation_routes(
 
     @app.post("/api/favorites/cache/clear")
     async def clear_favorites_cache(body: ConfirmBody):
-        result = operations.clear_favorites_cache(confirmed=body.confirmed)
+        result = await asyncio.to_thread(operations.clear_favorites_cache, confirmed=body.confirmed)
         if body.confirmed:
             await notifier.publish("jobs")
         return result
