@@ -47,6 +47,14 @@ class WebAuthManager:
     def _database(self):
         return self.service.database
 
+    def _update_active(self, session_id: str, **changes) -> dict[str, Any] | None:
+        return self._database().compare_and_update_auth_session(
+            session_id, expected_stages=ACTIVE_STAGES, **changes,
+        )
+
+    def _finish_active(self, session_id: str, **changes) -> dict[str, Any]:
+        return self._update_active(session_id, **changes) or self.get(session_id)
+
     def affected_count(self, channel: str) -> int:
         scopes = {"video"} if channel == "video" else {"image_note", "creator", "favorites"}
         return sum(
@@ -81,7 +89,7 @@ class WebAuthManager:
             raise JobStateError("授权会话正在启动，请稍后重试") from None
         try:
             while existing := self._database().latest_auth_session(channel, active_only=True):
-                self._database().update_auth_session(
+                self._update_active(
                     existing["id"],
                     stage="cancelled",
                     error_summary="原授权进程已退出，请重新授权",
@@ -146,14 +154,12 @@ class WebAuthManager:
         """End only sessions whose executors belong to this Web manager."""
         tasks = list(self._tasks.items())
         for session_id, task in tasks:
-            current = self._database().get_auth_session(session_id)
-            if current["stage"] in ACTIVE_STAGES:
-                self._database().update_auth_session(
-                    session_id,
-                    stage="cancelled",
-                    error_summary="Web 服务已关闭，请重新授权",
-                    complete=True,
-                )
+            self._update_active(
+                session_id,
+                stage="cancelled",
+                error_summary="Web 服务已关闭，请重新授权",
+                complete=True,
+            )
             task.cancel()
         if tasks:
             await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
@@ -164,26 +170,27 @@ class WebAuthManager:
         return self._database().get_auth_session(session_id)
 
     def cancel(self, session_id: str) -> dict[str, Any]:
-        session = self._database().get_auth_session(session_id)
-        if session["stage"] not in ACTIVE_STAGES:
-            return session
-        task = self._tasks.get(session_id)
-        if task:
-            task.cancel()
-        return self._database().update_auth_session(
+        session = self._update_active(
             session_id,
             stage="cancelled",
             error_summary="用户选择稍后处理",
             complete=True,
         )
+        if session is None:
+            return self.get(session_id)
+        task = self._tasks.get(session_id)
+        if task:
+            task.cancel()
+        return session
 
     async def _run(self, session_id: str, *, timeout_seconds: int) -> dict[str, Any]:
         session = self._database().get_auth_session(session_id)
         channel = session["channel"]
         try:
-            self._database().update_auth_session(session_id, stage="launching")
+            if self._update_active(session_id, stage="launching") is None:
+                return self.get(session_id)
             if channel == "douyin" and profile_lock_held(self.service.config.browser_profile_dir):
-                return self._database().update_auth_session(
+                return self._finish_active(
                     session_id,
                     stage="profile_locked",
                     error_summary="专用浏览器正被其他采集任务占用，请稍后再授权",
@@ -193,31 +200,29 @@ class WebAuthManager:
                 return await self._run_video(session_id, timeout_seconds=timeout_seconds)
             return await self._run_douyin(session_id, timeout_seconds=timeout_seconds)
         except asyncio.CancelledError:
-            current = self._database().get_auth_session(session_id)
-            if current["stage"] in ACTIVE_STAGES:
-                self._database().update_auth_session(
-                    session_id,
-                    stage="cancelled",
-                    error_summary="用户选择稍后处理",
-                    complete=True,
-                )
+            self._update_active(
+                session_id,
+                stage="cancelled",
+                error_summary="用户选择稍后处理",
+                complete=True,
+            )
             raise
         except BrowserAuthRequiredError as exc:
-            return self._database().update_auth_session(
+            return self._finish_active(
                 session_id,
                 stage="timeout",
                 error_summary=str(exc),
                 complete=True,
             )
         except ExternalToolError as exc:
-            return self._database().update_auth_session(
+            return self._finish_active(
                 session_id,
                 stage="failed",
                 error_summary=str(exc),
                 complete=True,
             )
         except Exception as exc:  # Browser launch is an external boundary.
-            return self._database().update_auth_session(
+            return self._finish_active(
                 session_id,
                 stage="failed",
                 error_summary=type(exc).__name__,
@@ -234,48 +239,50 @@ class WebAuthManager:
         initial = await self.service.check_auth_scope("video", video_url=video_url)
         if self._video_ready(initial, video_url):
             return self._finish_success(session_id, {"video"})
+        if self._update_active(session_id, stage="waiting_login") is None:
+            return self.get(session_id)
         try:
             await self.service.authenticate_video()
         except Exception as exc:
-            return self._database().update_auth_session(
+            return self._finish_active(
                 session_id,
                 stage="failed",
                 error_summary=f"无法打开视频授权浏览器：{type(exc).__name__}",
                 complete=True,
             )
-        self._database().update_auth_session(session_id, stage="waiting_login")
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         poll = self.service.config.auth_guidance.poll_seconds
         while True:
-            current = self._database().get_auth_session(session_id)
-            if current["stage"] not in ACTIVE_STAGES:
-                return current
-            self._database().update_auth_session(session_id, stage="verifying")
+            if self._update_active(session_id, stage="verifying") is None:
+                return self.get(session_id)
             check = await self.service.check_auth_scope("video", video_url=video_url)
             if self._video_ready(check, video_url):
                 return self._finish_success(session_id, {"video"})
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                return self._database().update_auth_session(
+                return self._finish_active(
                     session_id,
                     stage="timeout",
                     error_summary="未在限定时间内完成视频授权",
                     complete=True,
                 )
-            self._database().update_auth_session(session_id, stage="waiting_login")
+            if self._update_active(session_id, stage="waiting_login") is None:
+                return self.get(session_id)
             await self.sleep(min(poll, remaining))
 
     async def _run_douyin(self, session_id: str, *, timeout_seconds: int) -> dict[str, Any]:
         requested = {"image_note", "creator", "favorites"}
-        ready = await self._ready_douyin_scopes(requested)
+        ready = await self._ready_douyin_scopes(session_id, requested)
         if requested <= ready:
             return self._finish_success(session_id, ready)
-        self._database().update_auth_session(session_id, stage="waiting_login")
+        if self._update_active(session_id, stage="waiting_login") is None:
+            return self.get(session_id)
         await self.service.authenticate_douyin(timeout_seconds=timeout_seconds)
-        self._database().update_auth_session(session_id, stage="verifying")
-        ready = await self._ready_douyin_scopes(requested)
+        if self._update_active(session_id, stage="verifying") is None:
+            return self.get(session_id)
+        ready = await self._ready_douyin_scopes(session_id, requested)
         if not ready:
-            return self._database().update_auth_session(
+            return self._finish_active(
                 session_id,
                 stage="failed",
                 error_summary="登录后仍未通过抖音账号验证",
@@ -283,10 +290,12 @@ class WebAuthManager:
             )
         return self._finish_success(session_id, ready)
 
-    async def _ready_douyin_scopes(self, scopes: set[str]) -> set[str]:
+    async def _ready_douyin_scopes(self, session_id: str, scopes: set[str]) -> set[str]:
         ready: set[str] = set()
         for scope in sorted(scopes):
             check = await self.service.check_auth_scope(scope)
+            if self.get(session_id)["stage"] not in ACTIVE_STAGES:
+                return ready
             if check.ok:
                 ready.add(scope)
         return ready
@@ -298,6 +307,8 @@ class WebAuthManager:
         return bool(check.ok)
 
     def _finish_success(self, session_id: str, scopes: set[str]) -> dict[str, Any]:
+        if self._update_active(session_id, stage="succeeded", complete=True) is None:
+            return self.get(session_id)
         retried: list[str] = []
         for job in self._database().list_jobs(status=JobStatus.NEEDS_AUTH, limit=None):
             if job.result.get("auth_scope") not in scopes:
@@ -307,10 +318,9 @@ class WebAuthManager:
             except JobStateError:
                 continue
             retried.append(job.id)
-        return self._database().update_auth_session(
+        return self._database().compare_and_update_auth_session(
             session_id,
-            stage="succeeded",
+            expected_stages={"succeeded"},
             affected_job_count=len(retried),
             retried_job_ids=retried,
-            complete=True,
-        )
+        ) or self.get(session_id)

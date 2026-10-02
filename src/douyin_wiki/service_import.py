@@ -218,67 +218,62 @@ class ImportMixin:
                 / f"{safe_filename(inventory.profile.nickname, max_length=48)}_{creator_id[-8:]}"
             )
         )
-        profile = self._persist_creator_avatar(inventory, folder)
-        inventory = inventory.model_copy(
-            update={
-                "profile": profile,
-                "works": self._persist_creator_previews(inventory, folder),
+        def prepare_media(
+            value: CreatorInventoryResult, target_folder: str
+        ) -> CreatorInventoryResult:
+            return value.model_copy(update={
+                "profile": self._persist_creator_avatar(value, target_folder),
+                "works": self._persist_creator_previews(value, target_folder),
+            })
+
+        with self.vault.entry_operations_locked():
+            with self.vault.reversible_writes():
+                creator, inventory_result = self.database.persist_creator_inventory(
+                    job.id, inventory, creator_id=creator_id, folder_path=folder,
+                    inspirations=job.request.inspirations, sync=action == "sync",
+                    prepare_media=prepare_media,
+                )
+            artifacts_update = {
+                "creator_id": creator.id,
+                "creator_folder": creator.folder_path,
+                "inventory_partial": not inventory.complete,
+                "reported_count": inventory.reported_count,
             }
-        )
-        creator = self.database.upsert_creator(
-            profile,
-            creator_id=creator_id,
-            folder_path=folder,
-            inspirations=job.request.inspirations,
-        )
-        inventory_result = self.database.record_creator_inventory(
-            job.id,
-            creator.id,
-            inventory.works,
-            complete=inventory.complete,
-            sync=action == "sync",
-        )
-        artifacts_update = {
-            "creator_id": creator.id,
-            "creator_folder": creator.folder_path,
-            "inventory_partial": not inventory.complete,
-            "reported_count": inventory.reported_count,
-        }
-        summary = self.database.creator_inventory_summary(job.id)
-        result = {
-            "creator_id": creator.id,
-            "creator_name": creator.nickname,
-            "creator_path": creator.folder_path,
-            "inventory": inventory_result,
-            "selection": summary,
-            "partial": not inventory.complete,
-            "warnings": inventory.warnings,
-            "next_tool": "get_creator_inventory" if summary["total"] else None,
-        }
-        self.database.update_job(job.id, artifacts=artifacts_update)
-        self.refresh_creator_documents(creator.id, action=f"inventory-{action}")
-        if not summary["total"] and inventory.complete:
+            summary = self.database.creator_inventory_summary(job.id)
+            result = {
+                "creator_id": creator.id,
+                "creator_name": creator.nickname,
+                "creator_path": creator.folder_path,
+                "inventory": inventory_result,
+                "selection": summary,
+                "partial": not inventory.complete,
+                "warnings": inventory.warnings,
+                "next_tool": "get_creator_inventory" if summary["total"] else None,
+            }
+            self.database.update_job(job.id, artifacts=artifacts_update)
+            self.refresh_creator_documents(creator.id, action=f"inventory-{action}")
+            if not summary["total"] and inventory.complete:
+                return self.database.update_job(
+                    job.id,
+                    status=JobStatus.COMPLETED,
+                    progress=1,
+                    result={**result, "message": "同步完成：没有发现新作品"},
+                    unlock=True,
+                )
             return self.database.update_job(
                 job.id,
-                status=JobStatus.COMPLETED,
-                progress=1,
-                result={**result, "message": "同步完成：没有发现新作品"},
+                status=JobStatus.NEEDS_SELECTION,
+                progress=0.5,
+                result={
+                    **result,
+                    **(
+                        {"message": "清单不完整，需明确接受 partial 后才能结束本次清点"}
+                        if not summary["total"]
+                        else {}
+                    ),
+                },
                 unlock=True,
             )
-        return self.database.update_job(
-            job.id,
-            status=JobStatus.NEEDS_SELECTION,
-            progress=0.5,
-            result={
-                **result,
-                **(
-                    {"message": "清单不完整，需明确接受 partial 后才能结束本次清点"}
-                    if not summary["total"]
-                    else {}
-                ),
-            },
-            unlock=True,
-        )
 
     def _persist_creator_avatar(self, inventory: CreatorInventoryResult, folder_path: str):
         source_value = inventory.profile.avatar_path
@@ -294,7 +289,7 @@ class ImportMixin:
         )
         target = self.config.vault_path / folder_path / "raw" / f"avatar{suffix}"
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        self.vault.copy_file(source, target)
         return inventory.profile.model_copy(
             update={"avatar_path": str(target.relative_to(self.config.vault_path))}
         )
@@ -316,7 +311,7 @@ class ImportMixin:
                 else ".jpg"
             )
             target = covers / f"{work.work_id}{suffix}"
-            shutil.copy2(source, target)
+            self.vault.copy_file(source, target)
             persisted.append(
                 work.model_copy(
                     update={"thumbnail_path": str(target.relative_to(self.config.vault_path))}

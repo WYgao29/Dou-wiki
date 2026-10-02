@@ -22,6 +22,10 @@ const state = {
   lastOpenedEntryId: "",
   libraryScrollTop: 0,
   readerRequestId: 0,
+  navigationRequestId: 0,
+  libraryNavigationId: 0,
+  libraryRequestId: 0,
+  libraryLoadedQuery: null,
   pendingArticleRequest: 0,
   importsTrigger: null,
   readerObserver: null,
@@ -370,30 +374,43 @@ async function refreshAuthChannelBanners() {
   }
 }
 
+function beginNavigation({preserveLibraryRequests = false} = {}) {
+  if (!preserveLibraryRequests) state.libraryNavigationId += 1;
+  return ++state.navigationRequestId;
+}
+
 async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
+  const requestId = ++state.libraryRequestId;
+  const navigationId = state.libraryNavigationId;
+  const query = state.query;
+  const isCurrent = () => requestId === state.libraryRequestId
+    && navigationId === state.libraryNavigationId && query === state.query;
   if (showLoading) setLibraryLoading();
   const params = new URLSearchParams();
-  if (state.query) params.set("q", state.query);
+  if (query) params.set("q", query);
   try {
     const data = await api(`/api/library${params.size ? `?${params}` : ""}`);
+    if (!isCurrent()) return;
+    if (query && !state.allItems.length) await ensureCommandItems();
+    if (!isCurrent()) return;
     state.items = data.items;
     state.facets = data.facets;
     state.tags = [...new Set(state.tags.map(tag => state.facets.tag_aliases?.[tag] || tag))];
-    if (!state.query) state.allItems = data.items;
-    else if (!state.allItems.length) await ensureCommandItems();
+    if (!query) state.allItems = data.items;
     state.catalogHasItems = Boolean(
-      (!state.query && data.items.length)
+      (!query && data.items.length)
       || data.facets.authors?.length
       || data.facets.content_types?.length
       || data.facets.tags?.length,
     );
     state.libraryLoaded = true;
+    state.libraryLoadedQuery = query;
     refreshAuthChannelBanners();
     renderFilters();
     renderLibrary();
     fillInspirationTargets();
   } catch (error) {
-    setLibraryError(error);
+    if (isCurrent()) setLibraryError(error);
   }
 }
 
@@ -1045,6 +1062,8 @@ function hideLegacyViews() {
 }
 
 function showLibrary(push = true) {
+  const fromLibrary = state.panelPage === "library";
+  beginNavigation({preserveLibraryRequests: fromLibrary});
   const returningFromReader = state.panelPage === "article";
   const entryId = state.currentEntry || state.lastOpenedEntryId;
   state.currentEntry = "";
@@ -1060,6 +1079,9 @@ function showLibrary(push = true) {
   if (push) history.pushState({}, "", currentLibraryURL());
   document.title = "资料库 · 抖库";
   renderLibrary();
+  if (!fromLibrary && (!state.libraryLoaded || state.libraryLoadedQuery !== state.query)) {
+    loadLibrary({showLoading: false});
+  }
   updateChatContext();
   closeDrawers(false);
   if (returningFromReader) {
@@ -1070,6 +1092,7 @@ function showLibrary(push = true) {
 }
 
 function showTags() {
+  beginNavigation();
   state.currentEntry = ""; state.currentArticleItem = null; state.currentTopic = "";
   closeDrawers(false);
   window.Douku.tags.open();
@@ -1137,6 +1160,7 @@ function renderTopicsList() {
 }
 
 async function showTopics(push = true) {
+  beginNavigation();
   state.currentEntry = "";
   state.currentArticleItem = null;
   state.currentTopic = "";
@@ -1339,6 +1363,7 @@ function openTrashBatchDialog(kind) {
 }
 
 async function showTrash(push = true) {
+  beginNavigation();
   state.currentEntry = "";
   state.currentArticleItem = null;
   state.currentTopic = "";
@@ -1503,12 +1528,14 @@ function renderTopicData(value) {
 }
 
 async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
+  const navigationId = beginNavigation();
   const preserve = !push && state.currentTopic === topicId;
   const savedScroll = preserve ? $("#main-content").scrollTop : 0;
   const drawerBefore = state.activeDrawer;
   const focusedSource = sourceFocus || document.activeElement?.dataset.entryId;
   try {
     const value = await api(`/api/topics/${encodeURIComponent(topicId)}`);
+    if (navigationId !== state.navigationRequestId) return;
     state.currentEntry = "";
     state.currentTopic = topicId;
     renderTopicData(value);
@@ -1521,12 +1548,14 @@ async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
     if (push) history.pushState({topicId}, "", `/topics/${encodeURIComponent(topicId)}`);
     document.title = `${value.topic.title} · 抖库`;
     await loadTopics();
+    if (navigationId !== state.navigationRequestId) return;
     updateChatContext();
     closeDrawers();
     $(".library-main").scrollTo({top: savedScroll, behavior: "instant"});
     if (preserve && drawerBefore === "chat") openDrawer("chat");
     if (preserve && focusedSource) $$("#topic-sources-pane input").find((input) => input.dataset.entryId === focusedSource)?.focus({preventScroll: true});
   } catch (error) {
+    if (navigationId !== state.navigationRequestId) return;
     if (error.status === 404) window.Douku.showMissing();
     else toast(error.message);
   }
@@ -1849,6 +1878,7 @@ function hideCardOverlays(source) {
 }
 
 async function openArticle(entryId, push = true, transitionSource = null, citation = null) {
+  beginNavigation();
   const root = $("#article-content");
   if (state.panelPage === "library") state.libraryScrollTop = $("#main-content").scrollTop;
   const preserveReading = !push && state.panelPage === "article" && state.currentEntry === entryId && state.currentArticleItem;
@@ -3269,8 +3299,11 @@ function bindEvents() {
   let searchTimer = 0;
   $("#search-input").addEventListener("input", (event) => {
     state.query = event.target.value.trim();
+    state.libraryRequestId += 1;
+    const navigationId = state.libraryNavigationId;
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(() => {
+      if (navigationId !== state.libraryNavigationId) return;
       writeStateToURL();
       loadLibrary({showLoading: false});
     }, 200);
@@ -3390,6 +3423,7 @@ function bindEvents() {
     if (event.key === "Enter") { event.preventDefault(); if (length) $("#command-results .command-result.active")?.click(); }
   });
   window.addEventListener("douku:route", (event) => {
+    beginNavigation();
     const path = event.detail.path.split("?")[0];
     if (path === "/") { readStateFromURL(); showLibrary(false); loadLibrary({showLoading: false}); return; }
     if (path === "/topics") { showTopics(false); return; }
@@ -3441,6 +3475,7 @@ function bindEvents() {
     if (!event.target.closest("#chat-menu, #chat-menu-toggle")) closeChatMenu();
   }, {capture: true});
   window.addEventListener("popstate", () => {
+    beginNavigation();
     const path = window.location.pathname;
     const match = path.match(/^\/articles\/([^/]+)$/);
     const topicMatch = path.match(/^\/topics\/([^/]+)$/);
@@ -3477,6 +3512,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   readStateFromURL();
   $("#search-input").value = state.query;
   bindEvents();
+  const startupNavigationId = state.navigationRequestId;
   renderPanelTabs(state.currentEntry ? "article" : state.currentTopic ? "topic" : "library");
   renderToolbarState();
   if (document.body.dataset.missing === "1") {
@@ -3484,18 +3520,20 @@ document.addEventListener("DOMContentLoaded", async () => {
   } else {
   await loadLibrary();
   await loadTopics();
-  if (state.currentTopic) await openTopic(state.currentTopic, false);
-  else if (state.currentEntry) await openArticle(state.currentEntry, false);
-  else if (window.location.pathname === "/topics") await showTopics(false);
-  else if (window.location.pathname === "/trash") await showTrash(false);
-  else if (window.location.pathname === "/tags") showTags();
-  else if (window.Douku?.isOperationPath(window.location.pathname)) {
-    window.Douku.navigate(window.location.pathname + window.location.search, false);
-  } else if (window.Douku && !window.Douku.isKnownAppPath(window.location.pathname)) {
-    window.Douku.hideAllViews();
-    window.Douku.setPage("not-found");
-    $("#not-found-view")?.classList.remove("hidden");
-    document.title = "页面不存在 · 抖库";
+  if (startupNavigationId === state.navigationRequestId) {
+    if (state.currentTopic) await openTopic(state.currentTopic, false);
+    else if (state.currentEntry) await openArticle(state.currentEntry, false);
+    else if (window.location.pathname === "/topics") await showTopics(false);
+    else if (window.location.pathname === "/trash") await showTrash(false);
+    else if (window.location.pathname === "/tags") showTags();
+    else if (window.Douku?.isOperationPath(window.location.pathname)) {
+      window.Douku.navigate(window.location.pathname + window.location.search, false);
+    } else if (window.Douku && !window.Douku.isKnownAppPath(window.location.pathname)) {
+      window.Douku.hideAllViews();
+      window.Douku.setPage("not-found");
+      $("#not-found-view")?.classList.remove("hidden");
+      document.title = "页面不存在 · 抖库";
+    }
   }
   }
   refreshAuthChannelBanners();

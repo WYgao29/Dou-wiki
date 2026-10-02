@@ -56,6 +56,7 @@ class OpenAICompatibleChatProvider:
         last_error: Exception | None = None
         for attempt in range(self.settings.max_retries + 1):
             emitted = False
+            completed = False
             try:
                 async with (
                     httpx.AsyncClient(timeout=self.settings.timeout_seconds) as client,
@@ -66,7 +67,10 @@ class OpenAICompatibleChatProvider:
                         if not line.startswith("data:"):
                             continue
                         payload_text = line[5:].strip()
-                        if not payload_text or payload_text == "[DONE]":
+                        if payload_text == "[DONE]":
+                            completed = True
+                            break
+                        if not payload_text:
                             continue
                         payload = json.loads(payload_text)
                         usage = payload.get("usage")
@@ -74,9 +78,19 @@ class OpenAICompatibleChatProvider:
                         content = ""
                         if choices:
                             content = str(choices[0].get("delta", {}).get("content") or "")
+                            finish_reason = choices[0].get("finish_reason")
+                            if finish_reason in {"length", "content_filter"}:
+                                raise ExternalToolError(
+                                    "模型回答未完整生成，请重试。",
+                                    details={"finish_reason": finish_reason},
+                                )
+                            if finish_reason is not None:
+                                completed = True
                         if content or usage:
                             emitted = emitted or bool(content)
                             yield ChatChunk(text=content, usage=usage)
+                    if not completed:
+                        raise httpx.RemoteProtocolError("模型响应在完成标记前结束")
                 return
             except (httpx.HTTPError, json.JSONDecodeError, KeyError) as exc:
                 last_error = exc

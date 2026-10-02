@@ -484,6 +484,8 @@ class TrashMixin:
                 dependency_result, restored_topic_ids = self._restore_entry_projection(
                     entry, data, dependencies
                 )
+                manifest["restored_topic_ids"] = restored_topic_ids
+                manifest["restored_creator_ids"] = dependency_result.get("creator_ids", [])
                 manifest["phase"] = "restored"
                 self._write_trash_manifest(item_dir, manifest)
             except Exception:
@@ -499,20 +501,18 @@ class TrashMixin:
                     self._write_trash_manifest(item_dir, manifest)
                 raise
 
-            warnings: list[str] = []
-            try:
-                shutil.rmtree(item_dir)
-            except Exception as exc:
-                warnings.append(f"资料已恢复，但废纸篓残留清理失败；重启后会重试：{exc}")
-            warnings.extend(
-                self._finalize_restored_entry(
-                    entry,
-                    data,
-                    dependencies,
-                    restored_topic_ids,
-                    dependency_result.get("creator_ids", []),
-                )
+            warnings = self._finalize_restored_entry(
+                entry,
+                data,
+                dependencies,
+                restored_topic_ids,
+                dependency_result.get("creator_ids", []),
             )
+            if not warnings:
+                try:
+                    shutil.rmtree(item_dir)
+                except Exception as exc:
+                    warnings.append(f"资料已恢复，但废纸篓残留清理失败；重启后会重试：{exc}")
             return {
                 "status": "已恢复",
                 "entry_id": entry.id,
@@ -645,8 +645,31 @@ class TrashMixin:
                     report["completed"].append(manifest["trash_id"])
                     continue
                 if phase == "restored":
-                    shutil.rmtree(item_dir)
-                    report["completed"].append(manifest["trash_id"])
+                    if not self._entry_exists(entry.id):
+                        # A later delete supersedes this restoration checkpoint.
+                        shutil.rmtree(item_dir)
+                        report["completed"].append(manifest["trash_id"])
+                        continue
+                    current_entry = self.database.get_entry(entry.id)
+                    current_data = self.database.get_entry_data(entry.id)
+                    restored_topic_ids = manifest.get(
+                        "restored_topic_ids", list(dependencies.get("topics", {}))
+                    )
+                    creator_ids = manifest.get(
+                        "restored_creator_ids",
+                        list({
+                            str(item["creator_id"])
+                            for item in dependencies.get("creator_works", [])
+                            if item.get("creator_id")
+                        }),
+                    )
+                    warnings = self._finalize_restored_entry(
+                        current_entry, current_data, dependencies, restored_topic_ids, creator_ids
+                    )
+                    report["warnings"].extend(warnings)
+                    if not warnings:
+                        shutil.rmtree(item_dir)
+                        report["completed"].append(manifest["trash_id"])
                     continue
                 if phase in {"prepared", "files_moved"}:
                     if self._entry_exists(entry.id):
@@ -699,9 +722,10 @@ class TrashMixin:
                     dependency_result, restored_topic_ids = self._restore_entry_projection(
                         entry, data, dependencies
                     )
+                    manifest["restored_topic_ids"] = restored_topic_ids
+                    manifest["restored_creator_ids"] = dependency_result.get("creator_ids", [])
                     manifest["phase"] = "restored"
                     self._write_trash_manifest(item_dir, manifest)
-                    shutil.rmtree(item_dir)
                     warnings = self._finalize_restored_entry(
                         entry,
                         data,
@@ -709,8 +733,10 @@ class TrashMixin:
                         restored_topic_ids,
                         dependency_result.get("creator_ids", []),
                     )
-                    report["completed"].append(manifest["trash_id"])
                     report["warnings"].extend(warnings)
+                    if not warnings:
+                        shutil.rmtree(item_dir)
+                        report["completed"].append(manifest["trash_id"])
             except Exception as exc:
                 report["warnings"].append(f"废纸篓事务 {item_dir.name} 自动恢复失败：{exc}")
         return report

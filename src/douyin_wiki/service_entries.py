@@ -83,18 +83,28 @@ class EntriesMixin:
                     "updated_at": now,
                 }
             )
-            self.write_entry_documents(
-                updated,
-                data,
-                action="favorite",
-                log_summary="收藏资料" if favorite else "取消收藏",
-                commit_message=(
-                    f"favorite: {entry.video_id} {entry.title}"
-                    if favorite
-                    else f"unfavorite: {entry.video_id} {entry.title}"
-                ),
+            changed: list[Path] = []
+
+            def publish() -> None:
+                changed.extend(
+                    self.write_entry_documents(
+                        updated,
+                        data,
+                        action="favorite",
+                        log_summary="收藏资料" if favorite else "取消收藏",
+                        commit_message=None,
+                    ) or []
+                )
+
+            with self.vault.reversible_writes():
+                persisted = self.database.upsert_entry(
+                    updated, data, publish_documents=publish
+                )
+            self.commit_vault(
+                changed,
+                f"favorite: {entry.video_id} {entry.title}"
+                if favorite else f"unfavorite: {entry.video_id} {entry.title}",
             )
-            persisted = self.database.upsert_entry(updated, data)
             restore_job = None
             if (
                 favorite
@@ -147,26 +157,32 @@ class EntriesMixin:
         return digest, revisions
 
     def refresh_topic(self, topic_id: str) -> ResearchTopic:
-        topic = self.database.get_topic(topic_id)
-        entries = [
-            (self.database.get_entry(source.entry_id), source.enabled) for source in topic.sources
-        ]
-        revision, _ = self.topic_revision(entries)
-        if revision != topic.source_revision:
-            topic = self.database.update_topic_revision(
-                topic_id,
-                source_revision=revision,
-                source_versions={entry.id: entry.updated_at.isoformat() for entry, _ in entries},
-            )
-            self.persist_topic(topic)
-        return topic
+        with self.vault.entry_operations_locked():
+            topic = self.database.get_topic(topic_id)
+            entries = [
+                (self.database.get_entry(source.entry_id), source.enabled)
+                for source in topic.sources
+            ]
+            revision, _ = self.topic_revision(entries)
+            if revision != topic.source_revision:
+                topic = self.database.update_topic_revision(
+                    topic_id,
+                    source_revision=revision,
+                    source_versions={
+                        entry.id: entry.updated_at.isoformat() for entry, _ in entries
+                    },
+                )
+                self.persist_topic(topic)
+            return topic
 
     def persist_topic(self, topic: ResearchTopic) -> list[Path]:
-        artifacts = self.database.list_topic_artifacts(topic.id)
-        entries = {
-            source.entry_id: self.database.get_entry(source.entry_id) for source in topic.sources
-        }
         with self.vault.entry_operations_locked(), self.vault.locked():
+            topic = self.database.get_topic(topic.id)
+            artifacts = self.database.list_topic_artifacts(topic.id)
+            entries = {
+                source.entry_id: self.database.get_entry(source.entry_id)
+                for source in topic.sources
+            }
             changed = self.vault.write_topic(topic, artifacts, entries)
             topics_index = self.vault.write_topics_index(self.database.list_topics())
             changed.append(topics_index)
@@ -423,6 +439,12 @@ class EntriesMixin:
         literal = content.strip()
         if not literal:
             raise ValueError("专题笔记不能为空")
+        with self.vault.entry_operations_locked():
+            return self._save_topic_note_locked(topic_id, literal, title)
+
+    def _save_topic_note_locked(
+        self, topic_id: str, literal: str, title: str
+    ) -> dict[str, Any]:
         topic = self.refresh_topic(topic_id)
         _, revisions = self._topic_context(topic)
         now = utc_now()
@@ -535,6 +557,31 @@ class EntriesMixin:
     ) -> dict[str, Any]:
         if not confirmed:
             raise JobStateError("创建系统提醒前必须传入 confirmed=true，表示用户已明确确认")
+        with self.vault.entry_operations_locked(blocking=False) as acquired:
+            if acquired:
+                return self._confirm_reminder_locked(
+                    entry_id, reminder_id, due_at=due_at, title=title
+                )
+            candidate, status, system_id = self.database.get_reminder(entry_id, reminder_id)
+            if status == "creating":
+                return {
+                    "status": status,
+                    "system_id": system_id,
+                    "candidate": candidate.model_dump(mode="json"),
+                }
+        with self.vault.entry_operations_locked():
+            return self._confirm_reminder_locked(
+                entry_id, reminder_id, due_at=due_at, title=title
+            )
+
+    def _confirm_reminder_locked(
+        self,
+        entry_id: str,
+        reminder_id: str,
+        *,
+        due_at: str | None,
+        title: str | None,
+    ) -> dict[str, Any]:
         entry = self.database.get_entry(entry_id)
         candidate, status, system_id = self.database.get_reminder(entry_id, reminder_id)
         if status == "created":

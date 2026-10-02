@@ -126,14 +126,16 @@ class MaintenanceMixin:
             return entry
         data = self.database.get_entry_data(entry.id)
         chunks, relations, reminders = self.prepare_entry_bundle(entry, data)
-        self.write_entry_documents(
+        return self.persist_entry_documents_and_bundle_locked(
             entry,
             data,
+            chunks,
+            relations,
+            reminders,
             action="repair",
             log_summary="修复不完整的 Markdown 或 SQLite 投影",
             commit_message=f"repair: {entry.video_id} {entry.title}",
         )
-        return self.database.persist_entry_bundle(entry, data, chunks, relations, reminders)
 
     def rebuild_database_from_vault(self, *, apply: bool = False) -> dict[str, Any]:
         if apply:

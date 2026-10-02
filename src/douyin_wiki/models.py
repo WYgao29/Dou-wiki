@@ -608,6 +608,9 @@ class AnalysisResultV2(BaseModel):
 
     @model_validator(mode="after")
     def synchronize_legacy_fields(self) -> AnalysisResultV2:
+        reminder_ids = [item.id for item in self.reminders]
+        if len(reminder_ids) != len(set(reminder_ids)):
+            raise ValueError("提醒候选 id 重复")
         if not self.summary:
             self.summary = self.one_liner
         if not self.core_points:

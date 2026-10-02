@@ -101,7 +101,7 @@ entry_operation_observer: ContextVar[Callable[[], Callable[[], None]] | None] = 
     "entry_operation_observer",
     default=None,
 )
-_document_writes: ContextVar[dict[Path, str | None] | None] = ContextVar(
+_document_writes: ContextVar[dict[Path, bytes | None] | None] = ContextVar(
     "document_writes", default=None
 )
 
@@ -120,7 +120,7 @@ class VaultWriter:
         if _document_writes.get() is not None:
             yield
             return
-        previous: dict[Path, str | None] = {}
+        previous: dict[Path, bytes | None] = {}
         token = _document_writes.set(previous)
         try:
             yield
@@ -129,7 +129,7 @@ class VaultWriter:
                 if content is None:
                     path.unlink(missing_ok=True)
                 else:
-                    self._atomic_write(path, content)
+                    self._atomic_write_bytes(path, content)
             raise
         finally:
             _document_writes.reset(token)
@@ -138,7 +138,11 @@ class VaultWriter:
     def _remember_write(path: Path) -> None:
         previous = _document_writes.get()
         if previous is not None and path not in previous:
-            previous[path] = path.read_bytes().decode("utf-8") if path.exists() else None
+            previous[path] = path.read_bytes() if path.exists() else None
+
+    def copy_file(self, source: Path, target: Path) -> None:
+        """Copy a managed file atomically and include it in publication rollback."""
+        self._atomic_write_bytes(target, source.read_bytes())
 
     @contextmanager
     def locked(self) -> Iterator[None]:
@@ -917,28 +921,106 @@ class VaultWriter:
                 continue
         if not relative:
             return False
-        add = subprocess.run(
-            ["git", "add", "--", *relative],
-            cwd=self.vault_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if add.returncode != 0:
+        index_lock: Path | None = None
+        try:
+            index_result = subprocess.run(
+                ["git", "rev-parse", "--git-path", "index"],
+                cwd=self.vault_path, capture_output=True, text=True, check=True,
+            )
+            index_path = Path(index_result.stdout.strip())
+            if not index_path.is_absolute():
+                index_path = self.vault_path / index_path
+            lock_path = index_path.with_name(index_path.name + ".lock")
+            # Git respects this lock too, so neither a user's staging operation
+            # nor another publisher can change the snapshot while it is rebased.
+            descriptor = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            index_lock = lock_path
+            os.close(descriptor)
+            with tempfile.TemporaryDirectory(prefix="douyin-wiki-git-") as directory:
+                return self._commit_with_temporary_indexes(
+                    relative, message, index_path, lock_path, Path(directory)
+                )
+        except (OSError, subprocess.CalledProcessError):
             return False
-        diff = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"], cwd=self.vault_path, check=False
+        finally:
+            if index_lock is not None:
+                index_lock.unlink(missing_ok=True)
+
+    def _commit_with_temporary_indexes(
+        self,
+        paths: list[str],
+        message: str,
+        index_path: Path,
+        index_lock: Path,
+        temporary: Path,
+    ) -> bool:
+        def git(*args: str, index: Path | None = None, data: bytes | None = None) -> bytes:
+            environment = os.environ.copy()
+            if index is not None:
+                environment["GIT_INDEX_FILE"] = str(index)
+            result = subprocess.run(
+                ["git", *args], cwd=self.vault_path, env=environment,
+                input=data, capture_output=True, check=True,
+            )
+            return result.stdout
+
+        original_index = temporary / "original.index"
+        if index_path.exists():
+            original_index.write_bytes(index_path.read_bytes())
+        else:
+            git("read-tree", "--empty", index=original_index)
+        original_tree = git("write-tree", index=original_index).decode().strip()
+        head = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"], cwd=self.vault_path,
+            capture_output=True, text=True, check=False,
         )
-        if diff.returncode == 0:
+        old_head = head.stdout.strip() if head.returncode == 0 else ""
+        head_tree = old_head or git("mktree", data=b"").decode().strip()
+
+        working_index = temporary / "working.index"
+        working_index.write_bytes(original_index.read_bytes())
+        git("add", "--", *paths, index=working_index)
+        diff_options = ("diff", "--binary", "--full-index", "--no-renames", "--cached")
+        generated_patch = git(*diff_options, original_tree, "--", *paths, index=working_index)
+        if not generated_patch:
             return False
-        commit = subprocess.run(
-            ["git", "commit", "-m", message],
-            cwd=self.vault_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return commit.returncode == 0
+        staged_patch = git(*diff_options, head_tree, index=original_index)
+
+        commit_index = temporary / "commit.index"
+        git("read-tree", head_tree, index=commit_index)
+        # The patch's base is the original index. Three-way application removes
+        # pre-existing user staging from the commit and rejects overlapping edits.
+        git("apply", "--cached", "--3way", "--whitespace=nowarn",
+            index=commit_index, data=generated_patch)
+        commit_tree = git("write-tree", index=commit_index).decode().strip()
+        if commit_tree == git("rev-parse", f"{head_tree}^{{tree}}").decode().strip():
+            return False
+
+        # Normal commit preserves user hooks and signing configuration. Hooks
+        # can change its tree, so rebase the user staging onto the actual commit.
+        git("commit", "-m", message, index=commit_index)
+        new_head = git("rev-parse", "HEAD").decode().strip()
+        try:
+            actual_tree = git("rev-parse", f"{new_head}^{{tree}}").decode().strip()
+            rebased_index = temporary / "rebased.index"
+            git("read-tree", actual_tree, index=rebased_index)
+            # A post-commit hook can leave additional staged changes in the
+            # temporary index. Preserve those along with the user's old staging.
+            hook_patch = git(*diff_options, new_head, index=commit_index)
+            for patch in (hook_patch, staged_patch):
+                if patch:
+                    git("apply", "--cached", "--3way", "--whitespace=nowarn",
+                        index=rebased_index, data=patch)
+            index_lock.write_bytes(rebased_index.read_bytes())
+            os.replace(index_lock, index_path)
+        except (OSError, subprocess.CalledProcessError):
+            if old_head:
+                git("update-ref", "-m", "rollback failed index publication", "HEAD",
+                    old_head, new_head)
+            else:
+                git("update-ref", "-d", "HEAD", new_head)
+            raise
+        return True
 
     def load_entries(self) -> list[tuple[EntryRecord, dict[str, Any]]]:
         """Rehydrate the rebuildable knowledge cache from tracked Markdown files."""
@@ -1898,12 +1980,15 @@ class VaultWriter:
         return frontmatter, match.group("body")
 
     def _atomic_write(self, path: Path, content: str) -> None:
+        self._atomic_write_bytes(path, content.encode("utf-8"))
+
+    def _atomic_write_bytes(self, path: Path, content: bytes) -> None:
         self._reject_vault_symlinks(path, field="write_path")
         self._remember_write(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            with os.fdopen(descriptor, "wb") as handle:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())

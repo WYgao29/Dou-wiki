@@ -203,7 +203,10 @@ def _patch_toml_value(
             None,
         )
         insertion = int(following["start"]) if following else len(lines)
-    return [*lines[:insertion], f"{key} = {rendered}\n", *lines[insertion:]]
+    prefix = list(lines[:insertion])
+    if prefix and not prefix[-1].endswith(("\n", "\r")):
+        prefix[-1] += "\n"
+    return [*prefix, f"{key} = {rendered}\n", *lines[insertion:]]
 
 
 def _toml_records(lines: list[str]) -> list[dict[str, object]]:

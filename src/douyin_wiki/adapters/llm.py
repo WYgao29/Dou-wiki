@@ -24,6 +24,7 @@ from ..models import (
     AnalysisResult,
     InspirationInput,
     OCRObservation,
+    ReminderCandidate,
     ReviewIssue,
     TimelineChapter,
     TranscriptSegment,
@@ -102,6 +103,14 @@ def _soft_merge_analysis_partials(
     title = next((item for item in titles if item and not item.startswith("跳过")), None)
     if title is None:
         title = titles[0] if titles and titles[0] else "分段汇总（降级）"
+    unique_reminders: dict[str, dict[str, Any]] = {}
+    for reminder in reminders:
+        content = ReminderCandidate.model_validate(reminder).model_dump(mode="json", exclude={"id"})
+        fingerprint = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        unique_reminders.setdefault(
+            fingerprint,
+            {**content, "id": "reminder-" + hashlib.sha256(fingerprint.encode()).hexdigest()},
+        )
     return AnalysisResult(
         title=title[:200],
         one_liner=reason[:120],
@@ -113,7 +122,7 @@ def _soft_merge_analysis_partials(
         tags=list(dict.fromkeys(tags)),
         concepts=list(dict.fromkeys(concepts)),
         entities=entities,
-        reminders=reminders,
+        reminders=list(unique_reminders.values()),
         content_card={"kind": "other", "notes": list(dict.fromkeys(notes))},
     ).model_dump(mode="json")
 

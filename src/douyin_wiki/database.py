@@ -20,6 +20,7 @@ from .models import (
     ChatSession,
     Citation,
     CreatorInventoryItem,
+    CreatorInventoryResult,
     CreatorInventoryWork,
     CreatorProfile,
     CreatorRecord,
@@ -925,32 +926,61 @@ class Database:
         account_hint: str | None = None,
         complete: bool = False,
     ) -> dict[str, Any]:
-        current = self.get_auth_session(session_id)
-        now = iso_now()
-        updates = {
-            "stage": stage or current["stage"],
-            "error_summary": (
-                error_summary if error_summary is not None else current["error_summary"]
-            ),
-            "affected_job_count": (
-                affected_job_count
-                if affected_job_count is not None
-                else current["affected_job_count"]
-            ),
-            "retried_job_ids_json": json.dumps(
-                retried_job_ids if retried_job_ids is not None else current["retried_job_ids"],
-                ensure_ascii=False,
-            ),
-            "account_hint": account_hint if account_hint is not None else current["account_hint"],
-            "updated_at": now,
-            "completed_at": now if complete else current["completed_at"],
-        }
+        updated = self.compare_and_update_auth_session(
+            session_id, expected_stages=None, stage=stage, error_summary=error_summary,
+            affected_job_count=affected_job_count, retried_job_ids=retried_job_ids,
+            account_hint=account_hint, complete=complete,
+        )
+        assert updated is not None
+        return updated
+
+    def compare_and_update_auth_session(
+        self,
+        session_id: str,
+        *,
+        expected_stages: set[str] | None,
+        stage: str | None = None,
+        error_summary: str | None = None,
+        affected_job_count: int | None = None,
+        retried_job_ids: list[str] | None = None,
+        account_hint: str | None = None,
+        complete: bool = False,
+    ) -> dict[str, Any] | None:
+        """Change an auth phase only when the caller still owns its active state."""
         with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM auth_sessions WHERE id=?", (session_id,)).fetchone()
+            if row is None:
+                raise JobStateError(f"auth session not found: {session_id}")
+            current = self._auth_session_from_row(row)
+            if expected_stages is not None and current["stage"] not in expected_stages:
+                return None
+            now = iso_now()
+            updates = {
+                "stage": stage or current["stage"],
+                "error_summary": (
+                    error_summary if error_summary is not None else current["error_summary"]
+                ),
+                "affected_job_count": (
+                    affected_job_count
+                    if affected_job_count is not None
+                    else current["affected_job_count"]
+                ),
+                "retried_job_ids_json": json.dumps(
+                    retried_job_ids if retried_job_ids is not None else current["retried_job_ids"],
+                    ensure_ascii=False,
+                ),
+                "account_hint": (
+                    account_hint if account_hint is not None else current["account_hint"]
+                ),
+                "updated_at": now,
+                "completed_at": now if complete else current["completed_at"],
+            }
             conn.execute(
                 """UPDATE auth_sessions
                    SET stage=?, error_summary=?, affected_job_count=?,
                        retried_job_ids_json=?, account_hint=?, updated_at=?, completed_at=?
-                   WHERE id=?""",
+                   WHERE id=? AND stage=?""",
                 (
                     updates["stage"],
                     updates["error_summary"],
@@ -960,9 +990,13 @@ class Database:
                     updates["updated_at"],
                     updates["completed_at"],
                     session_id,
+                    current["stage"],
                 ),
             )
-        return self.get_auth_session(session_id)
+            updated = conn.execute(
+                "SELECT * FROM auth_sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            return self._auth_session_from_row(updated)
 
     @staticmethod
     def _auth_session_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -1451,8 +1485,27 @@ class Database:
         folder_path: str,
         inspirations: list[InspirationInput] | None = None,
     ) -> CreatorRecord:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if active := _ACTIVE_CLAIM.get():
+                self.assert_job_claim(conn, active[0])
+            return self._upsert_creator_conn(
+                conn, profile, creator_id=creator_id, folder_path=folder_path,
+                inspirations=inspirations,
+            )
+
+    def _upsert_creator_conn(
+        self,
+        conn: sqlite3.Connection,
+        profile: CreatorProfile,
+        *,
+        creator_id: str,
+        folder_path: str,
+        inspirations: list[InspirationInput] | None = None,
+    ) -> CreatorRecord:
         now = iso_now()
-        existing = self.find_creator_by_sec_uid(profile.sec_uid)
+        row = conn.execute("SELECT * FROM creators WHERE sec_uid=?", (profile.sec_uid,)).fetchone()
+        existing = self._creator_from_row(row) if row else None
         merged_inspirations = list(existing.inspirations) if existing else []
         seen = {item.model_dump_json() for item in merged_inspirations}
         for inspiration in inspirations or []:
@@ -1461,49 +1514,49 @@ class Database:
                 seen.add(inspiration.model_dump_json())
         created_at = existing.created_at.isoformat() if existing else now
         stable_folder = existing.folder_path if existing else folder_path
-        with self.connect() as conn:
-            conn.execute(
-                """INSERT INTO creators
-                   (id, sec_uid, canonical_url, original_url, nickname, folder_path, uid,
-                    unique_id, signature, avatar_path, inspirations_json, reported_work_count,
-                    last_synced_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(sec_uid) DO UPDATE SET
-                     canonical_url=excluded.canonical_url,
-                     nickname=excluded.nickname,
-                     uid=COALESCE(excluded.uid, creators.uid),
-                     unique_id=COALESCE(excluded.unique_id, creators.unique_id),
-                     signature=excluded.signature,
-                     avatar_path=COALESCE(excluded.avatar_path, creators.avatar_path),
-                     inspirations_json=excluded.inspirations_json,
-                     reported_work_count=excluded.reported_work_count,
-                     updated_at=excluded.updated_at""",
-                (
-                    existing.id if existing else creator_id,
-                    profile.sec_uid,
-                    profile.canonical_url,
-                    existing.original_url if existing else profile.original_url,
-                    profile.nickname,
-                    stable_folder,
-                    profile.uid,
-                    profile.unique_id,
-                    profile.signature,
-                    profile.avatar_path,
-                    json.dumps(
-                        [item.model_dump(mode="json") for item in merged_inspirations],
-                        ensure_ascii=False,
-                    ),
-                    profile.reported_work_count,
-                    (
-                        existing.last_synced_at.isoformat()
-                        if existing and existing.last_synced_at
-                        else None
-                    ),
-                    created_at,
-                    now,
+        conn.execute(
+            """INSERT INTO creators
+               (id, sec_uid, canonical_url, original_url, nickname, folder_path, uid,
+                unique_id, signature, avatar_path, inspirations_json, reported_work_count,
+                last_synced_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(sec_uid) DO UPDATE SET
+                 canonical_url=excluded.canonical_url,
+                 nickname=excluded.nickname,
+                 uid=COALESCE(excluded.uid, creators.uid),
+                 unique_id=COALESCE(excluded.unique_id, creators.unique_id),
+                 signature=excluded.signature,
+                 avatar_path=COALESCE(excluded.avatar_path, creators.avatar_path),
+                 inspirations_json=excluded.inspirations_json,
+                 reported_work_count=excluded.reported_work_count,
+                 updated_at=excluded.updated_at""",
+            (
+                existing.id if existing else creator_id,
+                profile.sec_uid,
+                profile.canonical_url,
+                existing.original_url if existing else profile.original_url,
+                profile.nickname,
+                stable_folder,
+                profile.uid,
+                profile.unique_id,
+                profile.signature,
+                profile.avatar_path,
+                json.dumps(
+                    [item.model_dump(mode="json") for item in merged_inspirations],
+                    ensure_ascii=False,
                 ),
-            )
-        return self.find_creator_by_sec_uid(profile.sec_uid)  # type: ignore[return-value]
+                profile.reported_work_count,
+                (
+                    existing.last_synced_at.isoformat()
+                    if existing and existing.last_synced_at
+                    else None
+                ),
+                created_at,
+                now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM creators WHERE sec_uid=?", (profile.sec_uid,)).fetchone()
+        return self._creator_from_row(row)
 
     def get_creator(self, creator_id: str) -> CreatorRecord:
         with self.connect() as conn:
@@ -1555,111 +1608,127 @@ class Database:
         complete: bool,
         sync: bool,
     ) -> dict[str, Any]:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self.assert_job_claim(conn, job_id)
+            return self._record_creator_inventory_conn(
+                conn, job_id, creator_id, works, complete=complete, sync=sync,
+            )
+
+    def _record_creator_inventory_conn(
+        self,
+        conn: sqlite3.Connection,
+        job_id: str,
+        creator_id: str,
+        works: list[CreatorInventoryWork],
+        *,
+        complete: bool,
+        sync: bool,
+    ) -> dict[str, Any]:
         now = iso_now()
         seen_ids = {work.work_id for work in works}
         new_ids: list[str] = []
         changed_ids: list[str] = []
         missing_ids: list[str] = []
-        with self.connect() as conn:
-            existing_rows = {
-                row["work_id"]: row
-                for row in conn.execute(
-                    "SELECT * FROM creator_works WHERE creator_id=?", (creator_id,)
-                ).fetchall()
-            }
-            conn.execute("DELETE FROM creator_run_items WHERE job_id=?", (job_id,))
-            ordinal = 0
-            for work in works:
-                previous = existing_rows.get(work.work_id)
-                entry_row = conn.execute(
-                    "SELECT id FROM entries WHERE video_id=?", (work.work_id,)
-                ).fetchone()
-                entry_id = (
-                    entry_row["id"] if entry_row else (previous["entry_id"] if previous else None)
-                )
-                if entry_id:
-                    decision = CreatorWorkDecision.IMPORTED.value
-                elif previous:
-                    decision = previous["decision"]
-                else:
-                    decision = CreatorWorkDecision.PENDING.value
-                    new_ids.append(work.work_id)
-                if previous and any(
-                    (
-                        previous["title"] != work.title,
-                        previous["source_kind"] != work.source_kind.value,
-                        previous["canonical_url"] != work.canonical_url,
-                    )
-                ):
-                    changed_ids.append(work.work_id)
-                conn.execute(
-                    """INSERT INTO creator_works
-                       (creator_id, work_id, source_kind, canonical_url, original_url, title,
-                        published_at, duration_seconds, thumbnail_path, is_pinned, decision,
-                        availability, missing_sync_count, entry_id, last_job_id,
-                        first_seen_at, last_seen_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', 0, ?, ?, ?, ?)
-                       ON CONFLICT(creator_id, work_id) DO UPDATE SET
-                         source_kind=excluded.source_kind,
-                         canonical_url=excluded.canonical_url,
-                         title=excluded.title,
-                         published_at=COALESCE(excluded.published_at, creator_works.published_at),
-                         duration_seconds=COALESCE(
-                           excluded.duration_seconds, creator_works.duration_seconds),
-                         thumbnail_path=COALESCE(
-                           excluded.thumbnail_path, creator_works.thumbnail_path),
-                         is_pinned=excluded.is_pinned,
-                         decision=excluded.decision,
-                         availability='available', missing_sync_count=0,
-                         entry_id=COALESCE(excluded.entry_id, creator_works.entry_id),
-                         last_seen_at=excluded.last_seen_at""",
-                    (
-                        creator_id,
-                        work.work_id,
-                        work.source_kind.value,
-                        work.canonical_url,
-                        work.original_url,
-                        work.title,
-                        work.published_at.isoformat() if work.published_at else None,
-                        work.duration_seconds,
-                        work.thumbnail_path,
-                        int(work.is_pinned),
-                        decision,
-                        entry_id,
-                        previous["last_job_id"] if previous else None,
-                        previous["first_seen_at"] if previous else now,
-                        now,
-                    ),
-                )
-                include = not sync or previous is None
-                if include:
-                    ordinal += 1
-                    conn.execute(
-                        """INSERT INTO creator_run_items
-                           (job_id, creator_id, work_id, ordinal, is_new)
-                           VALUES (?, ?, ?, ?, ?)""",
-                        (job_id, creator_id, work.work_id, ordinal, int(previous is None)),
-                    )
-            if complete:
-                for work_id, previous in existing_rows.items():
-                    if work_id in seen_ids:
-                        continue
-                    missing_count = int(previous["missing_sync_count"] or 0) + 1
-                    availability = (
-                        CreatorWorkAvailability.SOURCE_UNAVAILABLE.value
-                        if missing_count >= 2
-                        else CreatorWorkAvailability.POSSIBLY_UNAVAILABLE.value
-                    )
-                    conn.execute(
-                        """UPDATE creator_works SET missing_sync_count=?, availability=?
-                           WHERE creator_id=? AND work_id=?""",
-                        (missing_count, availability, creator_id, work_id),
-                    )
-                    missing_ids.append(work_id)
-            conn.execute(
-                "UPDATE creators SET last_synced_at=?, updated_at=? WHERE id=?",
-                (now, now, creator_id),
+        existing_rows = {
+            row["work_id"]: row
+            for row in conn.execute(
+                "SELECT * FROM creator_works WHERE creator_id=?", (creator_id,)
+            ).fetchall()
+        }
+        conn.execute("DELETE FROM creator_run_items WHERE job_id=?", (job_id,))
+        ordinal = 0
+        for work in works:
+            previous = existing_rows.get(work.work_id)
+            entry_row = conn.execute(
+                "SELECT id FROM entries WHERE video_id=?", (work.work_id,)
+            ).fetchone()
+            entry_id = (
+                entry_row["id"] if entry_row else (previous["entry_id"] if previous else None)
             )
+            if entry_id:
+                decision = CreatorWorkDecision.IMPORTED.value
+            elif previous:
+                decision = previous["decision"]
+            else:
+                decision = CreatorWorkDecision.PENDING.value
+                new_ids.append(work.work_id)
+            if previous and any(
+                (
+                    previous["title"] != work.title,
+                    previous["source_kind"] != work.source_kind.value,
+                    previous["canonical_url"] != work.canonical_url,
+                )
+            ):
+                changed_ids.append(work.work_id)
+            conn.execute(
+                """INSERT INTO creator_works
+                   (creator_id, work_id, source_kind, canonical_url, original_url, title,
+                    published_at, duration_seconds, thumbnail_path, is_pinned, decision,
+                    availability, missing_sync_count, entry_id, last_job_id,
+                    first_seen_at, last_seen_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', 0, ?, ?, ?, ?)
+                   ON CONFLICT(creator_id, work_id) DO UPDATE SET
+                     source_kind=excluded.source_kind,
+                     canonical_url=excluded.canonical_url,
+                     title=excluded.title,
+                     published_at=COALESCE(excluded.published_at, creator_works.published_at),
+                     duration_seconds=COALESCE(
+                       excluded.duration_seconds, creator_works.duration_seconds),
+                     thumbnail_path=COALESCE(
+                       excluded.thumbnail_path, creator_works.thumbnail_path),
+                     is_pinned=excluded.is_pinned,
+                     decision=excluded.decision,
+                     availability='available', missing_sync_count=0,
+                     entry_id=COALESCE(excluded.entry_id, creator_works.entry_id),
+                     last_seen_at=excluded.last_seen_at""",
+                (
+                    creator_id,
+                    work.work_id,
+                    work.source_kind.value,
+                    work.canonical_url,
+                    work.original_url,
+                    work.title,
+                    work.published_at.isoformat() if work.published_at else None,
+                    work.duration_seconds,
+                    work.thumbnail_path,
+                    int(work.is_pinned),
+                    decision,
+                    entry_id,
+                    previous["last_job_id"] if previous else None,
+                    previous["first_seen_at"] if previous else now,
+                    now,
+                ),
+            )
+            include = not sync or previous is None
+            if include:
+                ordinal += 1
+                conn.execute(
+                    """INSERT INTO creator_run_items
+                       (job_id, creator_id, work_id, ordinal, is_new)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (job_id, creator_id, work.work_id, ordinal, int(previous is None)),
+                )
+        if complete:
+            for work_id, previous in existing_rows.items():
+                if work_id in seen_ids:
+                    continue
+                missing_count = int(previous["missing_sync_count"] or 0) + 1
+                availability = (
+                    CreatorWorkAvailability.SOURCE_UNAVAILABLE.value
+                    if missing_count >= 2
+                    else CreatorWorkAvailability.POSSIBLY_UNAVAILABLE.value
+                )
+                conn.execute(
+                    """UPDATE creator_works SET missing_sync_count=?, availability=?
+                       WHERE creator_id=? AND work_id=?""",
+                    (missing_count, availability, creator_id, work_id),
+                )
+                missing_ids.append(work_id)
+        conn.execute(
+            "UPDATE creators SET last_synced_at=?, updated_at=? WHERE id=?",
+            (now, now, creator_id),
+        )
         return {
             "new_work_ids": new_ids,
             "changed_work_ids": changed_ids,
@@ -1667,6 +1736,40 @@ class Database:
             "inventory_count": len(works),
             "selection_count": ordinal,
         }
+
+    def persist_creator_inventory(
+        self,
+        job_id: str,
+        inventory: CreatorInventoryResult,
+        *,
+        creator_id: str,
+        folder_path: str,
+        inspirations: list[InspirationInput],
+        sync: bool,
+        prepare_media: Callable[[CreatorInventoryResult, str], CreatorInventoryResult],
+    ) -> tuple[CreatorRecord, dict[str, Any]]:
+        """Publish a creator inventory under its worker's writer reservation."""
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self.assert_job_claim(conn, job_id)
+            row = conn.execute(
+                "SELECT * FROM creators WHERE sec_uid=?", (inventory.profile.sec_uid,)
+            ).fetchone()
+            folder = row["folder_path"] if row else folder_path
+            prepared = prepare_media(inventory, folder)
+            # Media copies may take long enough for the original lease to expire.
+            self.assert_job_claim(conn, job_id)
+            creator = self._upsert_creator_conn(
+                conn, prepared.profile, creator_id=creator_id, folder_path=folder,
+                inspirations=inspirations,
+            )
+            result = self._record_creator_inventory_conn(
+                conn, job_id, creator.id, prepared.works, complete=prepared.complete, sync=sync,
+            )
+            self.assert_job_claim(conn, job_id)
+            row = conn.execute("SELECT * FROM creators WHERE id=?", (creator.id,)).fetchone()
+            persisted = self._creator_from_row(row)
+        return persisted, result
 
     def list_creator_works(self, creator_id: str) -> list[CreatorWorkRecord]:
         with self.connect() as conn:
@@ -2349,14 +2452,27 @@ class Database:
                 )
         return {"creator_ids": list(dict.fromkeys(restored_creators))}
 
-    def upsert_entry(self, entry: EntryRecord, data: dict[str, Any]) -> EntryRecord:
+    def upsert_entry(
+        self,
+        entry: EntryRecord,
+        data: dict[str, Any],
+        *,
+        publish_documents: Callable[[], None] | None = None,
+    ) -> EntryRecord:
+        """Update metadata without rebuilding the existing search and reminder projections."""
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if active := _ACTIVE_CLAIM.get():
+                self.assert_job_claim(conn, active[0])
             self._merge_created_reminder_states_conn(conn, entry.id, data)
             self._upsert_entry_conn(conn, self._entry_values(entry, data))
             if entry.status == "active":
                 self._remember_tags_conn(conn, entry.tags, entry.created_at.isoformat())
-        return self.get_entry(entry.id)
+            if publish_documents is not None:
+                publish_documents()
+            row = conn.execute("SELECT * FROM entries WHERE id=?", (entry.id,)).fetchone()
+            persisted = self._entry_from_row(row)
+        return persisted
 
     @staticmethod
     def _merge_created_reminder_states_conn(

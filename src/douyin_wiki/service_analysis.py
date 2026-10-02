@@ -299,15 +299,17 @@ class AnalysisMixin:
             }
         )
         chunks, relations, reminders = self.prepare_entry_bundle(entry, data)
-        self.write_entry_documents(
+        return self.persist_entry_documents_and_bundle_locked(
             entry,
             data,
+            chunks,
+            relations,
+            reminders,
             action="analysis",
             log_summary=f"由 {producer} 提交重分析",
             commit_message=f"analysis: {entry.video_id} {producer}",
+            require_existing=True,
         )
-        self.database.persist_entry_bundle(entry, data, chunks, relations, reminders)
-        return self.database.get_entry(entry_id)
 
     def reanalyze_entry(
         self,
@@ -427,17 +429,45 @@ class AnalysisMixin:
                 result = await self.analysis.analyze(
                     segments, ocr_items, entry.inspirations, metadata, **kwargs
                 )
-            self.validate_analysis_evidence(
-                result,
-                {**current_data, **artifacts, "metadata": metadata},
-            )
             artifacts["analysis"] = result.model_dump(mode="json")
-            self.database.update_job(
-                job.id, artifacts={"analysis": artifacts["analysis"]}, progress=0.84
-            )
 
-        validated = AnalysisResult.model_validate(artifacts["analysis"])
-        self.validate_analysis_evidence(validated, {**current_data, **artifacts})
+        try:
+            validated = AnalysisResult.model_validate(artifacts["analysis"])
+            evidence_context = {**current_data, **artifacts}
+            if self.config.analysis_mode == AnalysisMode.PROVIDER:
+                audit: list[dict[str, Any]] = []
+                validated, removed = self.prune_unverified_analysis_evidence(
+                    validated, evidence_context, audit=audit
+                )
+                artifacts["analysis_evidence_audit"] = audit
+                if removed:
+                    artifacts["analysis_evidence_warning"] = (
+                        f"模型生成的 {removed} 条无法核实的证据或内容已移除"
+                    )
+            self.validate_analysis_evidence(validated, evidence_context)
+        except (ValueError, JobStateError):
+            if self.config.analysis_mode == AnalysisMode.PROVIDER:
+                self.database.update_job(
+                    job.id,
+                    artifacts={"llm_checkpoints": {}},
+                    remove_artifacts={"analysis", "analysis_candidate"},
+                )
+            raise
+        artifacts["analysis"] = validated.model_dump(mode="json")
+        self.database.update_job(
+            job.id,
+            artifacts={
+                "analysis": artifacts["analysis"],
+                "llm_checkpoints": {},
+                "analysis_evidence_audit": artifacts.get("analysis_evidence_audit", []),
+                **(
+                    {"analysis_evidence_warning": artifacts["analysis_evidence_warning"]}
+                    if artifacts.get("analysis_evidence_warning")
+                    else {}
+                ),
+            },
+            progress=0.84,
+        )
         normalized = validated.model_dump(mode="json")
         normalized["contradictions"] = self.normalize_contradictions(
             normalized.get("contradictions", []), entry.id
@@ -488,9 +518,14 @@ class AnalysisMixin:
             )
             source_kind = latest_data.get("metadata", {}).get("source_kind", SourceKind.VIDEO.value)
             creator_folder = str(latest_data.get("creator", {}).get("folder_path") or "")
+            warnings = (
+                [artifacts["analysis_evidence_warning"]]
+                if artifacts.get("analysis_evidence_warning")
+                else []
+            )
             return self.database.update_job(
                 job.id,
-                status=JobStatus.COMPLETED,
+                status=JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED,
                 progress=1,
                 artifacts={"llm_checkpoints": {}},
                 result={
@@ -504,6 +539,7 @@ class AnalysisMixin:
                     "summary": updated.summary,
                     "reused_transcript": source_kind == SourceKind.VIDEO.value,
                     "reused_ocr": True,
+                    "warnings": warnings,
                 },
                 unlock=True,
             )
@@ -566,6 +602,11 @@ class AnalysisMixin:
         audit: list[dict[str, Any]] | None = None,
     ) -> tuple[AnalysisResult, int]:
         """Keep only model citations that pass the existing source evidence checks."""
+        # Compatibility claims describe the same atoms, including their repaired
+        # locators. Never carry a separate pre-pruning snapshot into publication.
+        analysis = AnalysisResult.model_validate(
+            {**analysis.model_dump(mode="python"), "claims": []}
+        )
         try:
             self.validate_analysis_evidence(analysis, context)
             return analysis, 0
@@ -677,11 +718,13 @@ class AnalysisMixin:
                 removed += 1
                 record("reminder", reminder, reason)
 
-        cleaned = analysis.model_copy(
-            update={
+        cleaned = AnalysisResult.model_validate(
+            {
+                **analysis.model_dump(mode="python"),
                 "chapters": chapters,
                 "knowledge_atoms": atoms,
                 "reminders": reminders,
+                "claims": [],
             }
         )
         self.validate_analysis_evidence(cleaned, context)
