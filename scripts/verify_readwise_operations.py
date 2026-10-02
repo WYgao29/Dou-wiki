@@ -17,9 +17,9 @@ sys.path.insert(0, str(ROOT))
 from douyin_wiki.models import CaptureRequest, JobStatus  # noqa: E402
 from douyin_wiki.webapp.app import WEB_VERSION, create_app  # noqa: E402
 from scripts.verify_readwise_library import populate  # noqa: E402
+from tests.support.web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
 from tests.test_creator import FakeCreatorAdapter, inventory_result  # noqa: E402
 from tests.test_favorites import scan, snapshot  # noqa: E402
-from tests.test_web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
 from tests.test_web_operation import FakeAuthDownloader, FakeDouyinAuth  # noqa: E402
 
 
@@ -126,6 +126,15 @@ async def verify():
                         return
                     if url.path.endswith("/events"):
                         await r.fulfill(content_type="text/event-stream", body=": fixture\n\n")
+                        return
+                    if url.path == "/api/imports/classify":
+                        assert request.method == "POST"
+                        assert json.loads(request.post_data)["text"] == (
+                            "看看这个视频 https://v.douyin.com/test/"
+                        )
+                        await r.fulfill(
+                            content_type="application/json", body='{"kind":"work"}'
+                        )
                         return
                     response = client.request(
                         request.method,
@@ -377,7 +386,17 @@ async def verify():
                 await page.wait_for_selector("#imports-single-view:not(.hidden)")
                 await page.keyboard.press("Meta+k")
                 await page.fill("#command-input", "没有匹配文章")
-                assert await page.locator(".command-result").count() == 7
+                await page.wait_for_selector("#command-results .command-help")
+                assert await page.locator(".command-result").count() == 0
+                await page.fill("#command-input", "")
+                assert set(
+                    await page.locator(".command-result").evaluate_all(
+                        "nodes => nodes.map(node => node.dataset.commandId)"
+                    )
+                ) == {
+                    "single", "creators", "favorites", "jobs", "tags", "topics",
+                    "trash", "settings", "chat", "theme", "shortcuts",
+                }
                 await page.locator("[data-command-id='theme']").click()
                 assert await page.evaluate("document.documentElement.dataset.theme") == "light"
                 await page.keyboard.press("Meta+k")
@@ -389,7 +408,9 @@ async def verify():
                 await page.fill("#command-input", ">对话")
                 await page.locator("[data-command-id='chat']").click()
                 await page.wait_for_function("()=>document.activeElement.id==='chat-input'")
-                assert any(m["path"] == "/api/chat/sessions" for m in mutations)
+                assert not any(m["path"] == "/api/chat/sessions" for m in mutations)
+                assert await page.evaluate("state.currentSession") == ""
+                assert await page.locator(".chat-welcome").is_visible()
 
                 for path, ready, name in [
                     ("/imports", "#imports-view:not(.hidden)", "imports"),
@@ -440,6 +461,10 @@ async def verify():
                         await page.locator("#topic-sources-pane input").first.check()
                         await wait_count("#topic-sources-pane h2", "2 / 2")
                         assert await page.locator("#topic-sources-pane").is_visible()
+                        await page.wait_for_function(
+                            "() => document.activeElement.type === 'checkbox'"
+                            " && Boolean(document.activeElement.closest('#topic-sources-pane'))"
+                        )
                         assert await page.evaluate("document.activeElement.type") == "checkbox"
                         await shot("mobile-topic-sources")
                     if width < 960:

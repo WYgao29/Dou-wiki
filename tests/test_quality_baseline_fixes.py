@@ -23,9 +23,9 @@ from douyin_wiki.models import (
 from douyin_wiki.time_utils import utc_now
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.worker import Worker
+from tests.support.web import TopicFakeProvider, _web_fixture, local_client
 from tests.test_creator import DirectResolver
 from tests.test_image_note import make_service
-from tests.test_web import TopicFakeProvider, _web_fixture, local_client
 
 
 async def capture(service, work_id="7672717300746907078"):

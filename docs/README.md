@@ -21,7 +21,7 @@
 
 ## 维护记录
 
-[2026-10-01 仓库审计](audits/2026-10-01-repository-audit.md)与[文件清单](audits/2026-10-01-repository-inventory.json)记录审计开始时的基准和判断依据；后续改动不覆盖原清单。[清理与 Agent 规则实施计划](superpowers/plans/2026-10-01-repository-cleanup.md)记录所选范围、验证与回退，未选择的事项继续保留。
+[2026-10-01 仓库审计](audits/2026-10-01-repository-audit.md)与[文件清单](audits/2026-10-01-repository-inventory.json)记录审计开始时的基准和判断依据；后续改动不覆盖原清单。[清理与 Agent 规则实施计划](superpowers/plans/2026-10-01-repository-cleanup.md)记录所选范围、验证与回退；首批及通用接入框架已提交为 `7ccfba3`，O1–O6 及仓库外回退工具的两项修复已验收。[2026-10-02 收尾记录](superpowers/plans/2026-10-01-repository-cleanup.md#提交收尾2026-10-02)说明本轮提交、发行包同步、证据位置和提交后的回退边界。
 
 ## 文件维护
 

@@ -5,7 +5,7 @@ from html.parser import HTMLParser
 import pytest
 
 from douyin_wiki.webapp.app import create_app
-from tests.test_web import _web_fixture, local_client
+from tests.support.web import _web_fixture, local_client
 
 
 class ShellMarkup(HTMLParser):

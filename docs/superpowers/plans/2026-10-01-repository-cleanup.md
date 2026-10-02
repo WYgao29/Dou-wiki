@@ -1,16 +1,16 @@
 # 仓库清理与目录整理 Implementation Plan
 
-> **执行范围：** 默认由当前 Agent 执行，不委派子 Agent。首批 N1–N4、O7、O8 及审核修正已完成。用户随后明确 E1 为通用自助接入文档框架，不配置固定客户端；O1–O6 未选择。技能启用遵循全局规则，不因读取本计划而自动启用。
+> **执行范围：** 默认由当前 Agent 执行，不委派子 Agent。首批 N1–N4、O7、O8、审核修正及 E1 通用自助接入框架已提交为 `7ccfba3`。O1–O6 与回退工具复审修复已验收，2026-10-02 按用户要求补记修复、同步发行包并提交 O1–O6；结果及提交后回退边界见下方收尾记录。真实客户端仍由调用方自行配置。技能启用遵循全局规则，不因读取本计划而自动启用。
 
 **Goal:** 解决已确认的发行和文档问题，建立仓库维护与 MCP 调用的独立规则入口，按需整理局部职责，保持现有功能、对外接口与用户未提交改动。
 
-**Architecture:** 保留 Python src 布局、Service mixin、原生 JS/CSS 和入口路径。根 AGENTS.md 服务于仓库维护者，docs/agents/ 提供通用自助步骤、参数和验收契约；gateway-agents.md 继续承载唯一共用业务流程。调用 Agent 自行发现客户端能力并转换原生配置，全部生效及运行文件位于仓库外；不维护客户端注册表或专用适配代码。共享聊天传输、Web 版本常量、测试夹具仍为独立可选任务。
+**Architecture:** 保留 Python src 布局、Service mixin、原生 JS/CSS 和入口路径。根 AGENTS.md 服务于仓库维护者，docs/agents/ 提供通用自助步骤、参数和验收契约；gateway-agents.md 继续承载唯一共用业务流程。调用 Agent 自行发现客户端能力并转换原生配置，全部生效及运行文件位于仓库外；不维护客户端注册表或专用适配代码。共享聊天传输位于 adapters/chat.py，Web 版本常量位于 webapp/version.py，Web 测试支持位于 tests/support/web.py；旧导入与行为保持。
 
 **Tech Stack:** Python 3.12（支持 `>=3.12,<3.14`）、uv/Hatchling、Typer、MCP、FastAPI/Uvicorn、Jinja2、Pydantic、SQLite、Playwright、原生 JS/CSS、macOS LaunchAgent。
 
 **Spec:** [审计与目标结构](../../audits/2026-10-01-repository-audit.md)，[文件清单](../../audits/2026-10-01-repository-inventory.json)。
 
-**Status:** 首批 N1–N4 + O7 + O8、审核修正和第二批 E1 通用自助接入框架已完成（2026-10-01），基准仍为 `81ce1faf37be5bd5a96cd3049eabc1cf288f2559`；未提交、未发布。真实客户端没有配置，O1–O6 未选择。原首批 Superpowers 流程已结束，后续按全局启用规则和用户当前范围执行。
+**Status:** 首批、E1 及审核修正已于 2026-10-01 提交为 `7ccfba33c9974a9374db8079f6e2768c31ceae24`。O1–O6 以该提交为实施基准，2026-10-02 将源码、支持文件与补记文档一并纳入收尾提交，提交标识以 Git 历史及仓库外收尾记录为准；发行包同步更新，未发布、未代配真实客户端。原审计基准 `81ce1fa` 与 JSON 快照保留历史语义。
 
 ## Global Constraints
 
@@ -38,7 +38,7 @@
 
 ## 两轮内容的具体执行顺序
 
-用户已确认并执行首批 **N1–N4 + O7 + O8**。随后明确第二批目标为通用自助接入框架：由调用 Agent 阅读项目文档并在仓库外自行配置。当前补齐 E1 文档与索引并同步发行包；wheel 仅更新 README 元数据，不配置某个客户端，不修改 src/ 或 tests/。可选重构仍按 O1–O6 分别选择，默认由当前 Agent 执行。
+用户已确认并执行首批 **N1–N4 + O7 + O8**。随后明确第二批目标为通用自助接入框架：由调用 Agent 阅读项目文档并在仓库外自行配置。当前补齐 E1 文档与索引并同步发行包；wheel 仅更新 README 元数据，不配置某个客户端，不修改 src/ 或 tests/。上述为前两批当时的选择。用户本轮已另行选择全部 O1–O6，仍由当前 Agent 执行；结果见下方“O1–O6 实施与验收”。
 
 | 批次 | 具体操作与文件范围 | 完成判据 | 批准范围 |
 | --- | --- | --- | --- |
@@ -62,11 +62,11 @@ A/B 可合为一次批准。实施顺序为阶段 0 → 阶段 2 → 阶段 1 �
 | N3 必要：字体 README | Inter 行内路径不存在 | 指向实际资源与复用方式，不复制字体 | 路径存在、4 个输出哈希匹配、字表/许可完整 | 回退文档补丁 |
 | N4 必要：UI 状态与脚本索引 | 已完成规格仍标“实施中”，验证列表缺标签脚本 | 明确历史规格/当前权威关系，补齐 8 个入口与模块职责 | 链接/路径、现有文档测试；历史测量保留日期语义 | 回退文档补丁 |
 | O1 可选：116 个缓存/Finder 文件 | 可再生，共约 3.83 MiB | 只清单中明确缓存，不递归清全部忽略文件 | 原源码、配置、证据哈希不变 | 相应工具自然再生 |
-| O2 可选且待确认：审查/截图 | 混合再生截图与历史恢复材料 | 保留或整组归档；不能单删旧源码、补丁、比较记录 | 归档清单/SHA、固定提交可读、试恢复 | 按原相对路径恢复整组 |
+| O2 可选、本轮已选择：审查/截图 | 混合再生截图与历史恢复材料 | 保留或整组归档；不能单删旧源码、补丁、比较记录 | 归档清单/SHA、固定提交可读、试恢复 | 按原相对路径恢复整组 |
 | O3 可选：`adapters/chat.py` | Service 反向依赖 Web 聊天 | 提取纯传输，保留旧导入，Web 留上下文构建 | Web/专题/接口、聊天浏览器回归 | 撤销独立源码补丁/提交 |
 | O4 可选：`webapp/version.py` | 操作服务为版本导入 app | 提取常量，app 继续导出原值 | 健康信息、模板缓存参数及原导入 | 撤销常量抽取补丁 |
 | O5 可选：`tests/support/web.py` | 脚本/测试直接导入测试文件夹具 | 先抽 Web helper，保留脚本路径/断言 | 收集不减少、完整离线回归、8 个消费者脚本 | 整组撤销 helper 与调用者 |
-| O6 可选且待确认：`_chunk_segments` | 跟踪内容只有定义 | 只处理该私有 helper，不删除 LLM 模块 | 重查引用/动态名称及分析回归 | 原样恢复函数 |
+| O6 可选、本轮已选择：`_chunk_segments` | 跟踪内容只有定义 | 只处理该私有 helper，不删除 LLM 模块 | 重查引用/动态名称及分析回归 | 原样恢复函数 |
 | K1 保留：`replace_reminders` | 内部无调用，但为公开方法 | 外部消费者未知，不删除 Python 接口 | 如需弃用另立兼容方案 | 当前不变 |
 | K2 待确认、默认保留：品牌 PNG | UI 无引用，但文档要求保留、静态 URL 可访问 | 不自动删除；历史资产策略需单独决定 | 明确决定前不行动 | 当前不变 |
 | K3 待确认、默认保留：Pi/Obsidian | 本地用途未知，Pi 有旧人工复核步骤 | N1 只排除打包；仍使用时另行更新提示，不公开配置 | 对照当前 Gateway/MCP 流程 | 授权更新时保留原副本 |
@@ -79,7 +79,7 @@ A/B 可合为一次批准。实施顺序为阶段 0 → 阶段 2 → 阶段 1 �
 **Files:** 只读取当前工作状态、候选清单与规则。
 **Interfaces:** 输入为明确选择的 ID；输出为阶段路径清单和回退材料。
 
-- [x] 用户确认所选批次或 ID；当前首批建议 N1–N4 + O7 + O8，O1–O6 及 E1 不自动包含，K1–K4 保留。
+- [x] 用户已确认首批 N1–N4 + O7 + O8、随后明确 E1 文档框架，本轮明确全部 O1–O6；各批授权分别记录，K1–K4 保留。
 - [x] 重新核对 HEAD/分支、索引/工作区差异、未跟踪/忽略候选，与审计快照比对；新用户改动保留，不覆盖。
 - [x] 分别保存本阶段原文件、索引差异、工作区差异；混有用户修改时仅做可检查的局部修改。禁止 blanket git add、git clean、reset --hard 或自动 stash。
 - [x] 文档/打包配置可在当前工作区精确改动；可选源码阶段在隔离 worktree 按确认基准及必要补丁验证。现有画面检索 worktree 不复用、不修改。
@@ -125,27 +125,28 @@ A/B 可合为一次批准。实施顺序为阶段 0 → 阶段 2 → 阶段 1 �
 **Files:** 只处理确认时仍存在且类型匹配的清单路径。
 **Interfaces:** 保持应用、正式测试、本地配置和历史恢复契约。
 
-- [ ] O1：从清单挑选 116 个缓存/Finder 路径，重查类型、归属及内容，精确清理；不执行 git clean -fdx，不进入 .venv 或其他 worktree。
-- [ ] O2：先确认保留期限和归档位置；对 56 个质量材料和 140 个截图/记录列清单，分清当前可再生截图与历史比较证据，不按年龄删除。
-- [ ] 如归档，保留原项目相对结构、两份旧代码、探针/补丁/XML/清单，以及固定历史基准 `4c9c3a3ddf7397c3cdac5149e81b5d52ffceff59` 和当前基准；验证归档 SHA，再在独立目录试恢复。
-- [ ] 试恢复能读取 round2/3/4 探针所需原路径。若要求复现，在临时 Vault 环境执行对应探针，不访问真实用户数据。
-- [ ] 归档验收完成且移除原路径明确获选后才移除，保留恢复说明；不能去重不同配置槽位。
-- [ ] 核对源码、配置、正式测试、保留证据和用户工作状态不变。
+- [x] O1：从清单挑选 116 个缓存/Finder 路径，重查类型、归属及内容，精确清理；不执行 git clean -fdx，不进入 .venv 或其他 worktree。
+- [x] O2：本轮选择仓库外长期整组归档，无到期自动删除；对 56 个质量材料和 140 个截图/记录列清单，分清当前可再生截图与历史比较证据，不按年龄删除。
+- [x] 如归档，保留原项目相对结构、两份旧代码、探针/补丁/XML/清单，以及固定历史基准 `4c9c3a3ddf7397c3cdac5149e81b5d52ffceff59` 和当前基准；验证归档 SHA，再在独立目录试恢复。
+- [x] 试恢复能读取 round2/3/4 探针所需原路径。若要求复现，在临时 Vault 环境执行对应探针，不访问真实用户数据。
+- [x] 归档验收完成且移除原路径明确获选后才移除，保留恢复说明；不能去重不同配置槽位。
+- [x] 核对源码、配置、正式测试、保留证据和用户工作状态不变。
 
 回退：缓存自然再生；历史材料按归档清单还原。没有可验证恢复来源的文件继续保留。
 
 ## 阶段 4：局部源码边界（O3/O4 独立选择）
 
 **Files O3:** Create `src/douyin_wiki/adapters/chat.py`；Modify `webapp/chat.py`、`webapp/app.py`、`service_entries.py`；核对 `tests/test_web.py` 的 monkeypatch。\
-**Files O4:** Create `src/douyin_wiki/webapp/version.py`；Modify `webapp/app.py`、`web_operation.py`。\
+**Files O4:** Create `src/douyin_wiki/webapp/version.py`；Modify `webapp/app.py`、`webapp/__init__.py`、`web_operation.py`、`tests/test_interfaces.py`。\
 **Interfaces:** 保留 `ChatChunk(text: str="", usage: dict[str,int|None]|None=None)`、`ChatProvider.model/configured`、`stream(messages: list[dict[str,str]]) -> AsyncIterator[ChatChunk]`、`OpenAICompatibleChatProvider(settings: LLMSettings)` 及旧 webapp.chat 导入路径；ChatContextBuilder 留原处。WEB_VERSION 保持 `"0.2.43"`，app 仍导出该常量。
 
-- [ ] O3：在隔离环境记录 `pytest -q -m 'not live' tests/test_web.py tests/test_topics.py tests/test_interfaces.py` 基线；特别核对 test_web.py:1362,1373,1398 的密钥注入。
-- [ ] O3：提取纯 HTTP/SSE provider、protocol、chunk；Service 直接依赖 adapters；原 webapp.chat 兼容导出同名对象。测试注入路径可随实现迁移，不能删除旧行为断言或改变密钥/错误/流式语义。
-- [ ] O3：重跑定向行为测试、Ruff、verify_readwise_chat.py；检查 Service→webapp.chat 依赖已消除、注册入口与关键负载保持。完整离线集在所有所选代码修改完成后统一运行。
-- [ ] O4：记录现有 Web/operation 基线，迁移常量；app.WEB_VERSION 保持，WebOperationService 直接从 version 模块读取，缓存参数不变。
-- [ ] O4：运行 `pytest -q -m 'not live' tests/test_web.py tests/test_web_operation.py tests/test_operation.py`、Ruff；检查健康信息、模板和旧导入版本值一致。
-- [ ] 两项分别交付最小补丁/可选独立提交，不捎带拆分路由、数据库或采集流水线。
+- [x] O3：在隔离环境记录 `pytest -q -m 'not live' tests/test_web.py tests/test_topics.py tests/test_interfaces.py` 基线；特别核对 test_web.py:1362,1373,1398 的密钥注入。
+- [x] O3：提取纯 HTTP/SSE provider、protocol、chunk；Service 直接依赖 adapters；原 webapp.chat 兼容导出同名对象。测试注入路径可随实现迁移，不能删除旧行为断言或改变密钥/错误/流式语义。
+- [x] O3：定向集合由最终完整离线回归覆盖；通过 Ruff 与 verify_readwise_chat.py；检查 Service→webapp.chat 依赖已消除、注册入口与关键负载保持。完整离线集在所有所选代码修改完成后统一运行。
+- [x] O4：记录现有 Web/operation 基线，迁移常量；app.WEB_VERSION 保持，WebOperationService 直接从 version 模块读取，缓存参数不变。
+- [x] O4：对应 Web/operation 定向集合由最终完整离线回归覆盖，并通过 Ruff；检查健康信息、模板和旧导入版本值一致。
+- [x] O4：独立安装验收发现 webapp/__init__.py 提前加载 app；新增独立进程回归，确认先失败再通过，以延迟导出保留 create_app/run_web 原对象及 dir 可见性；读取版本不加载 app。
+- [x] 两项分别交付最小补丁/可选独立提交，不捎带拆分路由、数据库或采集流水线。
 
 回退：只撤销对应补丁/提交，没有数据迁移，不重建或回滚用户状态库。
 
@@ -154,10 +155,10 @@ A/B 可合为一次批准。实施顺序为阶段 0 → 阶段 2 → 阶段 1 �
 **Files:** Create `tests/support/__init__.py`、`tests/support/web.py`；Modify `tests/test_web.py`、导入其夹具的全部测试及 8 个 `scripts/verify_readwise_*.py`。保留 tests/__init__.py、脚本 ROOT 推导、路径和输出目录。
 **Interfaces:** 原样提取 FakeChatProvider、ConfigurableFakeProvider、TopicFakeProvider、`local_client(app, **kwargs)`、`_web_fixture(tmp_path: Path) -> tuple[AppConfig, DouyinWikiService]`；收藏/博主夹具及其他测试命名暂不动。
 
-- [ ] 用导入清单列出全部调用者，记录 `pytest --collect-only -q -m 'not live'` 的 nodeid/参数化数量和现有离线基线。
-- [ ] 抽取上述 helper 到 support，更新调用者；必要时旧测试模块兼容导出 helper，保持断言原样。
-- [ ] 重新收集，测试及参数化不减少；Ruff、完整非 live 回归及 8 个脚本通过。所有脚本均用被迁移夹具，因此属于相称验证。
-- [ ] 不顺带改名 round2/quality 文件，不移动验证脚本；如历史脚本预期冲突，定位并记录，不靠删除断言验收。
+- [x] 用导入清单列出全部调用者，记录 `pytest --collect-only -q -m 'not live'` 的 nodeid/参数化数量和现有离线基线。
+- [x] 抽取上述 helper 到 support，更新调用者；必要时旧测试模块兼容导出 helper，保持断言原样。
+- [x] 重新收集，测试及参数化不减少；Ruff、完整非 live 回归及 8 个脚本通过。所有脚本均用被迁移夹具，因此属于相称验证。
+- [x] 不顺带改名 round2/quality 文件，不移动验证脚本；如历史脚本预期冲突，定位并记录，不靠删除断言验收。
 
 回退：整组撤销 support 和调用者导入补丁，保留迁移前基线。
 
@@ -166,9 +167,9 @@ A/B 可合为一次批准。实施顺序为阶段 0 → 阶段 2 → 阶段 1 �
 **Files:** Modify `adapters/llm.py` 的 _chunk_segments；公开 replace_reminders 不在删除范围。
 **Interfaces:** provider、配置、模块路径和公开方法不变。
 
-- [ ] 重新检查引用、配置、装饰器和动态名称，没有新消费者且明确获选才删除这一 helper。
-- [ ] 跑现有 test_media.py、test_media_models.py、test_analysis_v2.py、test_transcript_quality.py 的非 live 测试及 Ruff，不新增“函数不存在”测试。
-- [ ] 交付独立最小补丁；发现消费者即原样恢复。
+- [x] 重新检查引用、配置、装饰器和动态名称，没有新消费者且明确获选才删除这一 helper。
+- [x] 跑现有 test_media.py、test_media_models.py、test_analysis_v2.py、test_transcript_quality.py 的非 live 测试及 Ruff，不新增“函数不存在”测试。
+- [x] 交付独立最小补丁；发现消费者即原样恢复。
 
 回退：恢复函数或撤销对应提交。
 
@@ -226,10 +227,53 @@ A/B 可合为一次批准。实施顺序为阶段 0 → 阶段 2 → 阶段 1 �
 
 旧包和原文档已复制并校验，dist 两个文件已替换，dist/.gitignore 保持。[执行记录与回退材料](../../../.superpowers/sdd/2026-10-01-repository-cleanup/)保存基准、差异补丁、最终包哈希和验证日志。回退脚本默认只核对，只有显式 --apply 且当前文件仍匹配交付哈希时才恢复；不操作 Git 索引或历史。最终包按包括本记录的文件状态构建，运行源码和 wheel 相同则复用已通过的 CLI 证据。
 
-首批收尾时 O1–O6 和原实际客户端接入 E1 均未执行。随后 E1 按用户澄清改为通用文档框架；O1–O6 仍未选择。未委派 Agent，不把文档限制当作已落实的客户端权限或并发隔离。
+首批收尾时 O1–O6 和原实际客户端接入 E1 均未执行。随后 E1 按用户澄清改为通用文档框架；O1–O6 当时未选择；用户本轮已另行明确并完成。未委派 Agent，不把文档限制当作已落实的客户端权限或并发隔离。
+
+## O1–O6 实施与验收（2026-10-01）
+
+用户明确要求先提交既有工作再处理 O1–O6。首个 commit 为 `7ccfba33c9974a9374db8079f6e2768c31ceae24`；本轮代码在独立 worktree 和仓库外验证环境实施，通过验收后将局部补丁同步原仓库，当时不追加提交、不推送或发布。该次交付保留原仓库索引，未改 uv.lock、依赖或产品版本，未委派 Agent。2026-10-02 的追加提交另见收尾记录。
+
+| 项目 | 实际结果 | 验证与回退 |
+| --- | --- | --- |
+| O1 | 精确清理原清单的 116 个缓存/Finder 文件，4,017,926 bytes；先保存原文件 | SHA/类型复核；自然再生或从 o1-cache.tar.gz 恢复 |
+| O2 | 整组归档 56 个质量材料和 140 个截图/比较记录，共 196 个、27,381,016 bytes，验收后移除原件 | 两组归档逐文件 SHA、试恢复、round2/3/4 所需旧路径及固定历史提交可读；按原相对路径恢复，长期保留 |
+| O3 | 纯 HTTP/SSE provider、protocol、chunk 原样移入 adapters/chat.py；Service 直接依赖它，webapp/chat.py 保留上下文与同名兼容导出 | 原 AST、密钥/错误/流式语义、旧导入对象一致；回退本组补丁 |
+| O4 | WEB_VERSION 移入 webapp/version.py；app 继续导出，包入口改为延迟导出原 create_app/run_web，WebOperationService 不再加载 app 获取版本 | 值仍为 0.2.43；独立进程回归 RED→GREEN、健康信息/模板/旧导入通过；回退本组补丁 |
+| O5 | 五个 Web helper 原样抽入 tests/support/web.py，更新 10 个正式测试模块和 8 个脚本；合并重复 local_client | 原 667 个非 live nodeid 与既有正式测试函数 AST 保持，另加 O4 独立进程回归；8 个脚本通过；整组回退 support 和调用者 |
+| O6 | 删除唯一跟踪定义的私有 _chunk_segments，23 行；其余 LLM 实现保持 | 重查全部跟踪内容、配置与脚本无运行消费者；媒体/分析回归由完整离线集覆盖，函数之外 AST 保持；原样恢复函数 |
+
+验证环境使用 `uv sync --offline --frozen --extra dev --extra embeddings`，与现用 .venv 分离。最初仅 dev 环境的完整基线为 666 通过、1 失败：既有用例直接导入 sentence_transformers，缺少 embeddings extra。补齐隔离依赖后，所选 Web/operation/媒体/分析集合及该用例的定向基线 171 项通过，首轮完整回归 667 项通过。独立安装随后发现 O4 的包初始化依赖，新增独立进程回归先失败再修正；最终完整离线回归为 **668 通过、1 项 live 未运行**。原 667 个 nodeid 与参数化保留，只新增这一项；Ruff 覆盖 src/tests/scripts 通过，八个浏览器入口在最终源码上重跑通过。最终只改文档时复用已覆盖全部代码的完整集证据。
+
+浏览器验收发现五个既有脚本存在过时预期；在原提交上复现并核对当前实现后修正，产品 JS/CSS、路由和负载保持。资料库改用当前保留文案并增加数据库 favorite/KEEP 断言，手机标签使用卡片；阅读器分别检查模拟 503 错误和真实 404 缺页；聊天等待首个 SSE 片段，用同文章会话检查历史切换竞态，并操作当前确认对话框；操作脚本模拟短链分类，检查当前命令筛选和空白聊天草稿，等待异步来源焦点恢复后保留原断言；快捷键选择器限定资料库页面。既有正式测试断言未删改，脚本没有减少断言，也未通过改产品行为让旧预期通过。
+
+wheel/sdist 按最终源码和文档重建，包成员、全量运行文件与源码/文档 SHA、许可/字体/Swift、入口与独立安装 CLI help 验收通过，dist 旧包先备份再替换，版本仍为 0.1.5。SHA 和完整验证记录在仓库外，避免把包哈希写入自身包含的文档。未运行 live 账号/真实媒体模型测试，未配置真实客户端或操作系统服务。
+
+清理阶段原仓库另有 218 个非环境文件保持，现用 .venv 的 42,371 项文件/目录/链接元数据及安装配置保持。原 JSON、前几批回退目录、本地 Pi/Obsidian 配置、品牌资产、公开 replace_reminders、画面检索分支/worktree 保留。当前阶段截图来自独立 worktree，另存外部验证目录，不覆写已归档的历史截图。
+
+本机长期归档与本轮验证/回退材料位于 `/Users/weisengao/Library/Application Support/douyin-wiki/integration-maintenance/2026-10-01-o1-o6-etwtkq2_`；这是维护记录位置，不是其他机器的安装或运行前提。`archive-manifest.json` 保存归档与全部原文件 SHA、原相对路径、mtime 和 mode；`restore_archive.py` 默认只核对，`--apply` 才恢复，遇到后来内容冲突即停止。
+
+`progress.md`、原仓库基准、最终差异补丁、交付后哈希、旧发行包和 `rollback_changes.py` 一并保留。该脚本针对本轮最初的未提交交付，只处理清单路径，先核对交付后 SHA、HEAD 和索引，发现后来改动即停止；提交后的回退方式见下方收尾记录。归档恢复单独执行，不回退用户数据。当前 Agent 完成整组自审与契约核对，没有宣称独立 Agent 复审或生产状态探针通过。
+
+## 回退工具复审修复（2026-10-01）
+
+复审发现两项 P2：恢复目标的父目录为符号链接时，旧工具可能写到仓库外；Git、文件及归档保护使用 `assert`，在 `PYTHONOPTIMIZE=1` 或 `-O` 下会失效。已修复仓库外的 `rollback_changes.py` 和 `restore_archive.py`：拒绝绝对路径、上行路径及根目录内的父/叶符号链接，核对解析后的目标仍在所选根目录内，并在每次写入前复核；保护条件改用显式判断和异常。默认只核对、显式 `--apply` 与成功 JSON 保持。
+
+修复前真实恢复回归为 39 失败、27 通过，修复后 **66 项通过**，覆盖普通模式、环境优化和 `-O`。原项目两工具共 6 次只读核对通过，两组真实归档的 312 个文件在仓库外试恢复，SHA、mode 和 mtime 均符合清单；没有对原项目执行 `--apply`。产品源码、项目文档、发行包、原归档、HEAD/索引、现用环境和安装配置在该次修复中保持。
+
+[修复记录与可重复验证](</Users/weisengao/Library/Application Support/douyin-wiki/integration-maintenance/2026-10-01-o1-o6-etwtkq2_/recovery-guard-fix-e9awvxx4/README.md>)保存前后工具、副本、差异补丁、回归源码、日志和完整状态对比。修复前脚本只作为历史复现材料；当前工具及这些材料继续位于仓库外。
+
+## 提交收尾（2026-10-02）
+
+用户明确要求“补记修复 → 同步发行包 → 提交 O1–O6”。本次补齐本计划、审计报告和文档索引；O1–O6 的源码、脚本与测试逐文件 SHA 仍匹配已验收交付，复用此前 668 项离线回归和八个浏览器入口的证据。本次另核对文档链接/锚点、既有文档测试、Ruff 和发行包全量成员，不重复完整功能回归。
+
+最新文档纳入重建的 sdist；wheel 的全部运行文件和 README 元数据不变，逐字节核对后复用。版本仍为 0.1.5，34 个项目文件纳入 O1–O6 收尾提交；`dist/` 保持忽略，两个发行包不纳入 Git。外部回退工具、回归和归档不移入代码区；新出现且与源码匹配的忽略字节码保留，现用 `.venv`、安装配置及原恢复材料保持。
+
+[收尾与回退记录](</Users/weisengao/Library/Application Support/douyin-wiki/integration-maintenance/2026-10-01-o1-o6-etwtkq2_/commit-closeout-20261002-jxowzaz5/README.md>)保存本次入口状态、旧包和文档副本、检查日志、最终包 SHA 及实际提交标识，原有清单和历史报告不覆盖。该本机路径只供维护追溯。
+
+提交后，先核对工作区及后续改动，再用 `git revert <本轮 O1–O6 提交>` 回退跟踪文件。发行包不受 Git 控制，需从回退后的源码重新构建并验收，或核对原交付清单后恢复与 `7ccfba3` 对应的仓库外 `backup/dist/`；本次备份的包对应 O1–O6 首次交付，不应与回退后的旧源码混用。旧 `rollback_changes.py` 的清单锁定提交前 HEAD/文件 SHA，提交后应拒绝恢复，不能绕过检查或改写历史清单。O1/O2 归档可按原相对目录单独恢复，遇到后来文件或符号链接冲突即停止。
 
 ## 确认范围
 
-用户已确认并完成首批 N1–N4 + O7 + O8，即阶段 0、1、2、7；随后要求 E1 通用自助接入文档框架。本批不代配真实客户端，后续由调用 Agent 按文档在仓库外自行接入。O1 收益小可保留，O2 默认保留证据，O3/O4/O5 各自单独选择。品牌资产、公开方法、Pi/Obsidian 设置默认保留。大规模重排源码目录、改前端框架、合并采集流水线、删除分支/worktree、重写历史均不在本次范围。
+用户已确认并完成首批 N1–N4 + O7 + O8 和 E1 通用自助接入文档框架，已提交为 `7ccfba3`；本轮明确选择全部 O1–O6，由当前 Agent 完成。真实客户端后续由调用 Agent 按文档在仓库外自行接入。品牌资产、公开方法、Pi/Obsidian 设置默认保留。大规模重排源码目录、改前端框架、合并采集流水线、删除分支/worktree、重写历史均不在本次范围。
 
 本次静态通过不替代后续功能验收；历史 667 项通过不作为新改动证据。每阶段只有文件范围、接口约束、验证与回退材料都满足才报告完成。

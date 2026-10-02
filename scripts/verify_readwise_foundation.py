@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from douyin_wiki.models import CaptureRequest, JobStatus  # noqa: E402
 from douyin_wiki.webapp.app import WEB_VERSION, create_app  # noqa: E402
 from scripts.verify_readwise_cleanup import contrast  # noqa: E402
-from tests.test_web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
+from tests.support.web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
 
 
 async def verify():

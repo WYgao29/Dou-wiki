@@ -11,9 +11,9 @@ from playwright.async_api import async_playwright
 
 from douyin_wiki.models import CaptureRequest, JobStatus
 from douyin_wiki.webapp.app import create_app
+from tests.support.web import FakeChatProvider, _web_fixture, local_client
 from tests.test_favorites import A, scan, snapshot
 from tests.test_tags import source
-from tests.test_web import FakeChatProvider, _web_fixture, local_client
 
 
 @pytest.fixture

@@ -10,9 +10,9 @@ import pytest
 from douyin_wiki.models import JobStatus
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.webapp.catalog import split_frontmatter
+from tests.support.web import _web_fixture, local_client
 from tests.test_favorites import A, scan, snapshot
 from tests.test_tags import source
-from tests.test_web import _web_fixture, local_client
 
 
 def test_pages_and_library_do_not_write_tag_vocabulary(tmp_path):

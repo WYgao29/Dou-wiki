@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import httpx
-from fastapi.testclient import TestClient
 
 from douyin_wiki.config import LLMSettings
 from douyin_wiki.models import (
@@ -13,12 +12,7 @@ from douyin_wiki.models import (
     ReviewIssue,
 )
 from douyin_wiki.webapp.app import WEB_VERSION, create_app
-from tests.test_web import ConfigurableFakeProvider, _web_fixture
-
-
-def local_client(app, **kwargs):
-    headers = {"Origin": "http://testserver", **(kwargs.pop("headers", {}) or {})}
-    return TestClient(app, headers=headers, **kwargs)
+from tests.support.web import ConfigurableFakeProvider, _web_fixture, local_client
 
 
 def test_model_health_reports_actual_provider_reachability(tmp_path, monkeypatch) -> None:

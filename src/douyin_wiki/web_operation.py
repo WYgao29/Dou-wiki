@@ -560,7 +560,7 @@ class WebOperationService:
         return self.present(self.core.get_job(job.id))
 
     def system_health(self) -> dict[str, Any]:
-        from douyin_wiki.webapp.app import WEB_VERSION
+        from douyin_wiki.webapp.version import WEB_VERSION
 
         heartbeat = self.core.database.get_worker_heartbeat()
         raw_heartbeat = heartbeat.get("at") if heartbeat else None

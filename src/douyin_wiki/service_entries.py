@@ -338,7 +338,7 @@ class EntriesMixin:
         topic = await asyncio.to_thread(self.refresh_topic, topic_id)
         contexts, revisions = self._topic_context(topic)
         if provider is None:
-            from .webapp.chat import OpenAICompatibleChatProvider
+            from .adapters.chat import OpenAICompatibleChatProvider
 
             provider = OpenAICompatibleChatProvider(self.config.llm)
         system = (

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from douyin_wiki.models import JobStatus
 from douyin_wiki.webapp.app import WEB_VERSION, create_app
-from tests.test_web import _web_fixture
-from tests.test_web_operation import FakeAuthDownloader, FakeDouyinAuth, local_client
+from tests.support.web import _web_fixture, local_client
+from tests.test_web_operation import FakeAuthDownloader, FakeDouyinAuth
 
 
 def test_job_detail_exposes_result_warnings_and_review_aligns(tmp_path) -> None:

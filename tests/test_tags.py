@@ -9,7 +9,7 @@ from douyin_wiki.models import CaptureRequest, JobStatus
 from douyin_wiki.tags import duplicate_groups
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.webapp.catalog import split_frontmatter
-from tests.test_web import _web_fixture, local_client
+from tests.support.web import _web_fixture, local_client
 from tests.test_web_shell import ShellMarkup
 
 

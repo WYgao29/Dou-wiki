@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from douyin_wiki.webapp.app import create_app  # noqa: E402
 from scripts.verify_readwise_library import populate  # noqa: E402
-from tests.test_web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
+from tests.support.web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
 
 
 def png(width=480, height=240):
@@ -181,6 +181,13 @@ async def verify():
                     if url.path.endswith("/events"):
                         await request_route.fulfill(
                             content_type="text/event-stream", body=": fixture\n\n"
+                        )
+                        return
+                    if url.path == "/api/articles/dy-208" and mode == "error":
+                        await request_route.fulfill(
+                            status=503,
+                            content_type="application/json",
+                            body='{"detail":"模拟阅读器载入失败"}',
                         )
                         return
                     if url.path == "/api/articles/dy-208" and mode == "slow":
@@ -379,8 +386,8 @@ async def verify():
                 await key("Escape")
                 await page.wait_for_timeout(1000)
                 assert await page.locator("#library-view").is_visible()
-                mode = "normal"
-                await page.evaluate("window.Douku.navigate('/articles/no-such-entry')")
+                mode = "error"
+                await page.evaluate("window.Douku.navigate('/articles/dy-208')")
                 await page.wait_for_selector("#article-content .error-state")
                 assert (
                     "这篇资料无法打开"
@@ -388,6 +395,12 @@ async def verify():
                 )
                 await page.locator("#article-content .error-state button").click()
                 assert await page.locator("#library-view").is_visible()
+                mode = "normal"
+                await page.evaluate("window.Douku.navigate('/articles/no-such-entry')")
+                await page.wait_for_selector("#not-found-view:not(.hidden)")
+                assert "页面不存在" in await page.title()
+                await page.evaluate("window.Douku.navigate('/')")
+                await page.wait_for_selector("#library-view:not(.hidden)")
 
                 await article("dy-209")
                 assert not await page.locator("#reader-actions .favorite-button").count()

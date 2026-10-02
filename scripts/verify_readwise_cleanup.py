@@ -19,9 +19,9 @@ from douyin_wiki.models import CaptureRequest, JobStatus  # noqa: E402
 from douyin_wiki.webapp.app import WEB_VERSION, create_app  # noqa: E402
 from scripts.verify_readwise_library import populate  # noqa: E402
 from scripts.verify_readwise_reader import reader_fixture  # noqa: E402
+from tests.support.web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
 from tests.test_creator import FakeCreatorAdapter, inventory_result  # noqa: E402
 from tests.test_favorites import scan, snapshot  # noqa: E402
-from tests.test_web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
 from tests.test_web_operation import FakeAuthDownloader, FakeDouyinAuth  # noqa: E402
 
 
@@ -153,7 +153,7 @@ async def verify():
                             await page.evaluate("t => window.DoukuTheme.set(t)", theme)
                             await page.wait_for_timeout(200)
                             if width == 1440 and name in {"library", "gallery"}:
-                                shortcut = page.locator(".search-box kbd")
+                                shortcut = page.locator("#library-view .search-box kbd")
                                 assert await shortcut.evaluate(
                                     "e => getComputedStyle(e).display"
                                 ) in {"inline-flex", "flex"}

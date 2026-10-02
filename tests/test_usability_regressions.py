@@ -13,9 +13,9 @@ from douyin_wiki.models import CaptureRequest, JobStatus
 from douyin_wiki.vault import VaultWriter
 from douyin_wiki.webapp.app import ChangeNotifier, _change_origin, create_app
 from douyin_wiki.webapp.rendering import _strip_empty_inspiration
+from tests.support.web import _web_fixture, local_client
 from tests.test_favorites import A, B, scan, snapshot
 from tests.test_tags import source
-from tests.test_web import _web_fixture, local_client
 
 
 def test_merge_undo_restores_files_membership_index_pins_and_aliases(tmp_path):

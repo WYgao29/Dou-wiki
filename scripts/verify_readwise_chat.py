@@ -22,7 +22,7 @@ from douyin_wiki.webapp.app import WEB_VERSION, create_app  # noqa: E402
 from douyin_wiki.webapp.chat import ChatChunk  # noqa: E402
 from scripts.verify_readwise_library import populate  # noqa: E402
 from scripts.verify_readwise_reader import reader_fixture  # noqa: E402
-from tests.test_web import _web_fixture  # noqa: E402
+from tests.support.web import _web_fixture  # noqa: E402
 
 ANSWER = (
     "核心结论：用问题串联资料，在回顾中形成自己的判断。\n\n"
@@ -153,7 +153,9 @@ async def verify():
                     await page.press("#chat-input", "Enter")
                     await page.wait_for_selector(".message.is-streaming")
                     await page.wait_for_function(
-                        "() => document.querySelector('.is-streaming').textContent.length > 0"
+                        "text => document.querySelector('.is-streaming')"
+                        ".textContent.includes(text)",
+                        arg=ANSWER[:26],
                     )
                     cursor = await page.locator(".is-streaming").evaluate("""e => {
                       const s=getComputedStyle(e,'::after');
@@ -255,15 +257,24 @@ async def verify():
                     assert "当前文章（优先）" in "\n".join(
                         x["content"] for x in provider.prompts[-1]
                     )
-                    library_id = library["session"]["id"]
+                    alternate_response = await client.post(
+                        "/api/chat/sessions",
+                        json={"scope": "entry", "context_entry_id": "dy-208"},
+                    )
+                    alternate_response.raise_for_status()
+                    alternate_id = alternate_response.json()["id"]
+                    await page.evaluate("loadSessions(false)")
+                    assert not await page.locator(
+                        f"#session-select option[value='{library['session']['id']}']"
+                    ).count()
 
                     async def delayed_history(r):
                         await asyncio.sleep(0.3)
                         await r.continue_()
 
-                    history_route = f"**/api/chat/sessions/{library_id}"
+                    history_route = f"**/api/chat/sessions/{alternate_id}"
                     await page.route(history_route, delayed_history)
-                    await page.select_option("#session-select", library_id)
+                    await page.select_option("#session-select", alternate_id)
                     await page.select_option("#session-select", article["session"]["id"])
                     await page.wait_for_timeout(400)
                     assert (
@@ -316,8 +327,9 @@ async def verify():
                     }
                     assert "当前专题边界" in "\n".join(x["content"] for x in provider.prompts[-1])
                     await screenshot("topic-light")
-                    page.once("dialog", lambda dialog: dialog.accept())
                     await page.locator(".save-inspiration", has_text="保存为专题笔记").last.click()
+                    await page.wait_for_selector("#destructive-dialog[open]")
+                    await page.click("#confirm-destructive")
                     await page.wait_for_selector(".toast", state="visible")
                     await page.wait_for_function(
                         "() => document.querySelector('.topic-artifacts')"

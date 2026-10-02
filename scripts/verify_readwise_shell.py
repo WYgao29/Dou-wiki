@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from douyin_wiki.webapp.app import create_app  # noqa: E402
-from tests.test_web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
+from tests.support.web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
 
 
 async def verify():

@@ -9,7 +9,7 @@ import httpx
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.webapp.catalog import LibraryCatalog
 from douyin_wiki.webapp.rendering import render_article
-from tests.test_web import _web_fixture, local_client
+from tests.support.web import _web_fixture, local_client
 
 LONG_ID = "7604970362420645155"
 LONG_URL = f"https://www.douyin.com/video/{LONG_ID}"

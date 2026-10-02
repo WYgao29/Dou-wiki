@@ -23,7 +23,7 @@
 | `src/douyin_wiki/adapters/` | 下载、媒体、模型、向量和系统提醒适配 |
 | `src/douyin_wiki/webapp/` | 本机 Web、Jinja2 模板和原生 JS/CSS；资源 URL、加载顺序及字体许可属于运行交付 |
 | `src/douyin_wiki/resources/` | 动态加载的运行资源，包括 Vision OCR Swift 文件 |
-| `tests/` | 正式回归测试；保留 `tests/__init__.py` 和跨文件引用 |
+| `tests/` | 正式回归测试；`support/web.py` 共用 Web 夹具和假 provider；保留 `tests/__init__.py` 和跨文件引用 |
 | `scripts/` | 浏览器验证入口与字体来源、字表、许可、哈希 |
 | `docs/` | 使用、架构、设计与维护记录；`docs/agents/` 放通用 MCP 自助接入规范，客户端生效配置、运行文件及验收记录均在仓库外 |
 | `dist/` | 可重新生成的发行包；替换前备份并核对包成员，不发布本地提示或缓存 |

@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from douyin_wiki.models import EntryRecord, RetentionPolicy  # noqa: E402
 from douyin_wiki.webapp.app import create_app  # noqa: E402
-from tests.test_web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
+from tests.support.web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
 
 
 def populate(config, service):
@@ -211,7 +211,10 @@ async def verify():
                 await page.wait_for_selector(
                     ".library-item[data-entry-id='dy-123'] .favorite-button.active"
                 )
-                assert "永久保留" in await page.locator("#info-pane").inner_text()
+                assert "媒体会一直保留在本机。" in await page.locator("#info-pane").inner_text()
+                saved_entry = service.database.get_entry("dy-123")
+                assert saved_entry.favorite is True
+                assert saved_entry.retention == RetentionPolicy.KEEP
                 await key("End")
                 assert await focused() == "dy-209"
                 before = len(mutations)
@@ -359,9 +362,9 @@ async def verify():
                 await page.click("#nav-toggle")
                 await page.click("#all-tags-button")
                 assert not await page.locator("#main-content").evaluate("e => e.inert")
-                await page.wait_for_selector("#tags-view:not(.hidden) #tags-rows tr")
+                await page.wait_for_selector("#tags-view:not(.hidden) #tags-cards .tag-card")
                 assert await page.locator("#tags-search").is_visible()
-                await page.locator("#tags-rows tr a").first.click()
+                await page.locator("#tags-cards .tag-card a").first.click()
                 await page.wait_for_selector("#library-view:not(.hidden)")
                 assert await page.locator("#view-title").inner_text() != "资料库"
                 await page.set_viewport_size({"width": 1440, "height": 900})

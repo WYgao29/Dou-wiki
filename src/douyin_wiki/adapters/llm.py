@@ -1545,29 +1545,6 @@ def _nearby_ocr(
     return nearby
 
 
-def _chunk_segments(
-    segments: list[TranscriptSegment], *, max_chars: int, max_items: int | None = None
-) -> list[list[TranscriptSegment]]:
-    if not segments:
-        return [[]]
-    chunks: list[list[TranscriptSegment]] = []
-    current: list[TranscriptSegment] = []
-    size = 0
-    for segment in segments:
-        if current and (
-            size + len(segment.text) > max_chars
-            or (max_items is not None and len(current) >= max_items)
-        ):
-            chunks.append(current)
-            current = []
-            size = 0
-        current.append(segment)
-        size += len(segment.text)
-    if current:
-        chunks.append(current)
-    return chunks
-
-
 def _parse_json_content(content: str) -> dict[str, Any]:
     cleaned = content.strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)

@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from watchfiles import awatch
 
+from ..adapters.chat import ChatProvider, OpenAICompatibleChatProvider
 from ..adapters.llm import FallbackAnalysisProvider, OpenAICompatibleProvider
 from ..adapters.share import extract_douyin_url
 from ..config import (
@@ -52,10 +53,9 @@ from ..time_utils import beijing_iso, format_beijing, parse_clock_to_ms
 from ..vault import entry_operation_observer
 from ..web_operation import WebOperationService
 from .catalog import CONTENT_TYPE_LABELS, LibraryCatalog
-from .chat import ChatContextBuilder, ChatProvider, OpenAICompatibleChatProvider
+from .chat import ChatContextBuilder
 from .rendering import render_article, render_chat
-
-WEB_VERSION = "0.2.43"
+from .version import WEB_VERSION
 
 ANALYSIS_MODE_INFO = {
     "gateway": {

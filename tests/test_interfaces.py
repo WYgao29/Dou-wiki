@@ -4,6 +4,8 @@ import asyncio
 import importlib.metadata
 import json
 import plistlib
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +24,28 @@ from douyin_wiki.worker import Worker
 
 def test_package_version_matches_metadata() -> None:
     assert douyin_wiki.__version__ == importlib.metadata.version("douyin-wiki")
+
+
+def test_web_version_import_is_lightweight_and_keeps_package_exports() -> None:
+    code = """
+import sys
+from douyin_wiki.webapp.version import WEB_VERSION
+assert WEB_VERSION == "0.2.43"
+assert "douyin_wiki.webapp.app" not in sys.modules
+import douyin_wiki.webapp as webapp
+assert {"create_app", "run_web"} <= set(dir(webapp))
+from douyin_wiki.webapp import create_app, run_web
+from douyin_wiki.webapp import app
+assert create_app is app.create_app
+assert run_web is app.run_web
+"""
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_mcp_exposes_public_tools() -> None:
