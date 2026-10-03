@@ -1,6 +1,6 @@
 # Gateway token 优化设计规格
 
-日期：2026-10-03。状态：架构设计与本书面规格均已获用户确认；[实施计划](../plans/2026-10-03-gateway-token-optimization.md)待审阅，实现尚未开始。
+日期：2026-10-03。状态：架构设计、本书面规格和[实施计划](../plans/2026-10-03-gateway-token-optimization.md)均已获用户确认，代码已在 `codex/gateway-token-optimization` 实现，正在完成隔离验收；交付记录见实施计划。主线集成与真实客户端切换尚未执行。
 
 本规格基于工作区对应提交 `400cf269f0cd375547833a074acfc1107c2c82eb` 核对。生产服务是否已加载该版本未核验。实现后的业务流程仍以 [Gateway Agent 接入指南](../../gateway-agents.md) 为唯一共用入口，本文件记录开发设计，不代替现行调用契约。
 
@@ -187,7 +187,7 @@ CLI `gateway context`、`gateway submit-correction`、`gateway submit-analysis` 
 - 引用与传统提交得到同等标准分析；推断保持推断；提醒原文还原不改变用户确认条件；回执没有大块 artifacts。
 - 旧 schema、调用参数、默认返回和 CLI 仍可使用；历史重新分析直接进入分析；客户端无新参数时使用完整旧流程。
 
-实施收尾运行对应新回归，以及既有接口、图文、重新分析、Unicode 与引文边界回归；完成项目要求的 `uv run ruff check src tests`、`uv run pytest -q -m 'not live'`。先确认验证环境，现用 `.venv` 不盲目同步；可使用已满足依赖的独立环境或 `uv run --no-sync`。本次仅交付设计文档，不启动真实网络、账号或完整功能回归。
+实施收尾运行对应新回归，以及既有接口、图文、重新分析、Unicode 与引文边界回归；完成项目要求的 `uv run ruff check src tests`、`uv run pytest -q -m 'not live'`。先确认验证环境，现用 `.venv` 不盲目同步；可使用已满足依赖的独立环境或 `uv run --no-sync`。真实账号、模型用量与生产客户端切换不属于本轮仓库验收。
 
 ## 12. 收益与完成判据
 
@@ -199,4 +199,4 @@ CLI `gateway context`、`gateway submit-correction`、`gateway submit-analysis` 
 
 完成判据为：旧协议回归通过；原始材料保留；补丁可还原完整校正稿；来源引用得到可校验的原文与定位；版本及并发保护生效；简短回执不重传正文；视频、图文与重新分析闭环通过；重复 OCR 和少量校正场景的完整往返量确实减少。真实客户端是否已启用单独记录，仓库验收不代替生产接入验收。
 
-下一节点：[实施计划](../plans/2026-10-03-gateway-token-optimization.md)已按 writing-plans 编写，待用户审阅；默认由当前 Agent 执行，启用 Superpowers 不授权子 Agent。书面规格确认不直接启动实现。
+交付记录：[实施计划](../plans/2026-10-03-gateway-token-optimization.md)包含实施提交、验证与收益材料。当前 Agent 执行与自审，未委派子 Agent。

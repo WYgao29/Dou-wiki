@@ -10,6 +10,13 @@ Web、CLI 和 MCP 共用 `DouyinWikiService`。Web 是日常操作入口，CLI �
 | `provider` | 本地 Worker 调用配置的 OpenAI-compatible 模型接口 |
 | `local` | 本地启发式分析，不调用模型 |
 
+Gateway 的传输版本由原工具上的可选 `gateway_protocol` 控制，默认 1 保持旧形状，
+显式 2 使用分阶段上下文、OCR 投影、增量校正、证据引用和简短状态。它独立于 `analysis_version=2`。
+`gateway_sources.py` 只处理材料及原始范围，`gateway_protocol.py` 构造 schema、确定性材料版本和回执；
+`service_analysis.py` 读取快照、检查阶段/版本，保留数据库并发比较，并将引用展开为标准模型后校验原始材料。
+原稿、OCR、校正稿和标准分析存储不变，编号不进入 Vault；provider/local、Web 和 ASR/OCR 适配器不走新传输逻辑。
+调用顺序与错误恢复见 [Gateway 指南](gateway-agents.md#紧凑协议gateway_protocol2)。
+
 ```mermaid
 flowchart TD
     entry[Web / CLI / MCP] --> service[Service 创建持久任务]

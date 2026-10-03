@@ -294,6 +294,12 @@ uv run douyin-wiki gateway submit-analysis JOB_ID analysis.json \
   --producer hermes --model MODEL_NAME
 ```
 
+显式选择紧凑传输时，三条命令加 `--gateway-protocol 2`，两条提交命令再加
+`--context-revision`（来自刚读取的本阶段上下文）。校正 JSON 仍支持列表或含 `corrections` 的字典，
+协议 2 只提交修改段，`[]` 表示已检查；分析文件仍是纯分析字典，可使用 `source_refs`。
+默认协议 1 的文件和调用保持兼容。MCP 四个 Gateway 工具使用同样的可选参数，完整流程见
+[紧凑协议](docs/gateway-agents.md#紧凑协议gateway_protocol2)。
+
 已入库条目也可以接受结构化重分析，且不会改写用户灵感：
 
 ```bash

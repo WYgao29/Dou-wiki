@@ -9,6 +9,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .config import load_config
 from .errors import DouyinWikiError
+from .gateway_protocol import GatewayProtocol, compact_job_payload, validate_gateway_protocol
 from .localization import (
     add_display_labels,
     parse_creator_decision,
@@ -33,7 +34,11 @@ INSTRUCTIONS = """这是抖库，本地抖音知识库默认由当前 Gateway Ag
 “待 AI 处理”后：调用 get_analysis_context；根据原话上下文及对应 OCR 用当前模型直接校正，
 只修复识别错误、不扩写，无依据的数字或金额保留原表述；再调用 submit_transcript_correction，
 如 source_kind=image_note 且 phase=analysis，则直接根据 analysis_schema 调用
-submit_gateway_analysis；视频校正后直接提交分析，不调用独立复核模型。历史任务若显示
+submit_gateway_analysis；视频校正后重新读取分析上下文再提交，不调用独立复核模型。
+四个 Gateway 读取/提交工具默认 gateway_protocol=1；显式选 2 可读取分阶段紧凑材料，
+校正只提交改动片段（无改动为 []），分析可用 source_refs；两次提交都携带本阶段 context_revision。
+版本 2 用 get_job 获取简短状态，阶段变化后重新取上下文；业务契约以 Gateway 接入指南为准。
+历史任务若显示
 “需要人工复核”，仅在用户明确要求继续该任务时调用 retry_job，不自动重跑；显示“需要登录授权”时
 先调用 get_auth_status，再根据 auth_scope
 提示用户运行
@@ -70,9 +75,7 @@ class DouyinWikiMCP(MCPServer):
                         "details": cause.details,
                     }
                 }
-                raise ToolError(
-                    json.dumps(payload, ensure_ascii=False, default=str)
-                ) from cause
+                raise ToolError(json.dumps(payload, ensure_ascii=False, default=str)) from cause
             raise
 
 
@@ -240,9 +243,11 @@ def sync_creator(creator_id: str, gateway_context: dict[str, Any] | None = None)
 
 
 @mcp.tool()
-def get_job(job_id: str) -> dict[str, Any]:
-    """读取任务进度、疑点、错误和提醒候选。"""
-    return _payload(_service().get_job(job_id))
+def get_job(job_id: str, gateway_protocol: GatewayProtocol = 1) -> dict[str, Any]:
+    """读取任务状态；默认完整记录，gateway_protocol=2 返回简短状态与 next_tool。"""
+    protocol = validate_gateway_protocol(gateway_protocol)
+    job = _service().get_job(job_id)
+    return _payload(compact_job_payload(job) if protocol == 2 else job)
 
 
 @mcp.tool()
@@ -281,9 +286,12 @@ def acknowledge_job_event(event_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-def get_analysis_context(job_id: str) -> dict[str, Any]:
-    """读取分析所需的逐字稿或图文正文、逐图 OCR、灵感、既有知识和输出 schema。"""
-    return _payload(_service().get_analysis_context(job_id))
+def get_analysis_context(job_id: str, gateway_protocol: GatewayProtocol = 1) -> dict[str, Any]:
+    """默认完整材料；版本 2 按 phase 返回校正稿输入或分析来源、schema 与 context_revision。"""
+    protocol = validate_gateway_protocol(gateway_protocol)
+    if protocol == 1:
+        return _payload(_service().get_analysis_context(job_id))
+    return _payload(_service().get_analysis_context(job_id, gateway_protocol=protocol))
 
 
 @mcp.tool()
@@ -293,17 +301,25 @@ def submit_transcript_correction(
     producer: str,
     model: str = "agent",
     review_issues: list[dict[str, Any]] | None = None,
+    gateway_protocol: GatewayProtocol = 1,
+    context_revision: str | None = None,
 ) -> dict[str, Any]:
-    """校对阶段提交全部原稿 ID（未修改也须回传），不可缺段；原始 ASR 永不覆盖。"""
-    return _payload(
-        _service().submit_transcript_correction(
-            job_id,
-            [TranscriptCorrection.model_validate(item) for item in corrections],
-            producer=producer,
-            model=model,
-            review_issues=[ReviewIssue.model_validate(item) for item in (review_issues or [])],
-        )
+    """默认回传全部 ID；版本 2 只提交改动段或 []，携带当前 context_revision；原稿保留。"""
+    protocol = validate_gateway_protocol(gateway_protocol)
+    extra = (
+        {"gateway_protocol": protocol, "context_revision": context_revision}
+        if protocol == 2
+        else {}
     )
+    job = _service().submit_transcript_correction(
+        job_id,
+        [TranscriptCorrection.model_validate(item) for item in corrections],
+        producer=producer,
+        model=model,
+        review_issues=[ReviewIssue.model_validate(item) for item in (review_issues or [])],
+        **extra,
+    )
+    return _payload(compact_job_payload(job) if protocol == 2 else job)
 
 
 @mcp.tool()
@@ -312,11 +328,24 @@ def submit_gateway_analysis(
     analysis: dict[str, Any],
     producer: str,
     model: str = "agent",
+    gateway_protocol: GatewayProtocol = 1,
+    context_revision: str | None = None,
 ) -> dict[str, Any]:
-    """Gateway Agent 提交符合 analysis_schema 的结果并让 Worker 确定性入库。"""
-    return _payload(
-        _service().submit_gateway_analysis(job_id, analysis, producer=producer, model=model)
+    """按当前 analysis_schema 提交；版本 2 支持 source_refs，需本阶段 context_revision。"""
+    protocol = validate_gateway_protocol(gateway_protocol)
+    extra = (
+        {"gateway_protocol": protocol, "context_revision": context_revision}
+        if protocol == 2
+        else {}
     )
+    job = _service().submit_gateway_analysis(
+        job_id,
+        analysis,
+        producer=producer,
+        model=model,
+        **extra,
+    )
+    return _payload(compact_job_payload(job) if protocol == 2 else job)
 
 
 @mcp.tool()
@@ -411,11 +440,7 @@ def create_topic(
     instructions: str = "",
 ) -> dict[str, Any]:
     """从明确选定的文章创建研究专题；标题、目标与指令均逐字保存。"""
-    return _payload(
-        _service().create_topic(
-            title, entry_ids, goal=goal, instructions=instructions
-        )
-    )
+    return _payload(_service().create_topic(title, entry_ids, goal=goal, instructions=instructions))
 
 
 @mcp.tool()
@@ -431,9 +456,7 @@ def list_topics() -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def set_topic_sources(
-    topic_id: str, sources: list[dict[str, Any]]
-) -> dict[str, Any]:
+def set_topic_sources(topic_id: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
     """按传入顺序设置专题来源及 enabled 启用状态；停用后立即退出问答范围。"""
     return _payload(_service().set_topic_sources(topic_id, sources))
 
@@ -447,9 +470,7 @@ def search_topic(
 ) -> list[dict[str, Any]]:
     """只在专题当前启用来源内检索；不会回退到全库。"""
     return _payload(
-        _service().search_topic(
-            topic_id, query, include_stale=include_stale, limit=limit
-        )
+        _service().search_topic(topic_id, query, include_stale=include_stale, limit=limit)
     )
 
 
@@ -477,11 +498,7 @@ def save_topic_note(
     confirmed: bool = False,
 ) -> dict[str, Any]:
     """用户明确确认后，把内容逐字保存为专题笔记；AI 不自动写入。"""
-    return _payload(
-        _service().save_topic_note(
-            topic_id, content, title=title, confirmed=confirmed
-        )
-    )
+    return _payload(_service().save_topic_note(topic_id, content, title=title, confirmed=confirmed))
 
 
 @mcp.tool()

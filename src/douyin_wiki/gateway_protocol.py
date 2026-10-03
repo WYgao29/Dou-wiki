@@ -367,6 +367,7 @@ def require_context_revision(job: JobRecord, revision: str | None) -> None:
 
 def _batch_contexts(job: JobRecord) -> dict[str, Any]:
     allowed = {
+        "id",
         "parent_job_id",
         "batch_silent",
         "collection_id",

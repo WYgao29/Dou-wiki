@@ -16,6 +16,7 @@
 | `role` | 未指定时使用 `query`；`capture_analysis` 仅开放用户所需流程的工具，范围见 Gateway 指南 |
 | `gateway` | 每个实例的独立标识，长度 1–64 字符，与现有 GatewayContext 约束一致；根据客户端、主机和实例身份生成并保存，重启复用，不按客户端名称写死 |
 | `rules_sources` | 本入口、自助步骤、本文及 Gateway 指南的绝对路径、加载方式与内容 SHA |
+| `gateway_protocol` | 调用方选择的传输版本，默认 1；四个 Gateway 工具 schema 明确支持枚举 1/2 时才可显式选 2，与 `analysis_version` 独立 |
 
 所有路径都应解析环境变量、用户目录和符号链接后再比较。解释器启动路径保留其虚拟环境入口，不把 `.venv/bin/python` 替换成符号链接指向的系统 Python；真实路径仅用于核对来源和文件边界。`external_root`、原生配置、Vault、Profile、规则快照及其写入目标不得位于 `repo_root` 内；多个实例的工作和重试状态不共用同一目录。查询角色指业务工具范围，服务初始化仍可能在目标 Vault 中补齐模板与索引，因此首次查询也先使用测试 Vault。
 
@@ -98,6 +99,7 @@ provider = "fallback"
   "browser_profile_path": "<BROWSER_PROFILE_PATH>",
   "role": "query",
   "gateway": "<UNIQUE_INSTANCE_ID>",
+  "gateway_protocol": {"supported": [], "selected": 1, "verified": false},
   "rules": {"load_method": "<ACTUAL_METHOD>", "sources": []},
   "allowed_tools": [],
   "checks": {
@@ -117,5 +119,10 @@ provider = "fallback"
 ```
 
 `verified` 表示所选角色的必要检查实际通过；`limited` 表示可使用的部分通过，但存在无法强制限制工具、没有后台续跑等明确限制；`blocked` 表示必需能力或路径不满足，尚不能完成接入。只完成查询时，不能把采集和会话回传标为通过。已有配置未修改时，回退字段记录“复用，无配置变更”。
+
+支持与选择的协议由实际 MCP schema 和隔离验收填写；`gateway_protocol` 是调用参数与客户端记录，
+不新增服务端权限配置。协议 2 须验证阶段上下文、空/增量校正、材料版本、引用还原与简短回执；
+只有查询角色时标明提交流程未验收。旧服务不支持 2 时记录 `[1]` 并使用完整流程，不能用真实业务试探。
+具体顺序、失败处理与静默规则仍以 [Gateway 指南](../gateway-agents.md#紧凑协议gateway_protocol2)为准。
 
 `target_binding` 记录实际 MCP 进程与所记录 Vault / Profile 的对应证据。切换或回退配置时，将 `connection_recreated`、`target_binding`、`query` 及受影响的能力重新标为 `pending`，复核通过后再填写结果；隔离验收作为历史记录保留。使用监控的实例还须复核 `monitor_binding`，没有监控的查询实例保持 `not_requested`。客户端实际启动记录、进程信息和目标证据保存在仓库外，不记录凭据。

@@ -68,7 +68,7 @@ flowchart LR
    图文不会出现此阶段，而会直接进入“内容分析”。
 4. 新任务校正后直接进入内容分析，不调用独立复核模型，也不要求用户逐条校对。若历史任务仍显示
    “需要人工复核”，仅在用户明确要求继续该任务时调用 `retry_job`，不可自动重跑历史任务。
-5. 进入“内容分析”后，再次读取上下文，严格按 v2 `analysis_schema` 一次完成分类和
+5. 进入“内容分析”后，再次读取上下文，严格按本次 `analysis_schema` 一次完成分类和
    分析，并调用 `submit_gateway_analysis`。视频原话、图文正文、OCR、AI 推断和用户灵感不得混写；
    事实、数字、日期、参数与方法尽可能写成带时间戳或 `image_index` 的 `knowledge_atoms`。
 6. 收到“已完成”或“已完成（有提示）”后，把一句话、AI 推断、提醒候选和原作品
@@ -82,6 +82,75 @@ flowchart LR
 创建人工复核疑点；当前 Agent 应根据上下文和对应 OCR 保守校正。OCR 未出现对应内容不等于冲突，
 两个来源相同也不保证正确。历史未解决疑点只在用户明确要求继续时重试。
 
+## 紧凑协议（gateway_protocol=2）
+
+服务保留默认协议 1，调用方显式选择整数 `2` 才启用紧凑传输。它与分析结果的
+`analysis_version=2` 是两个独立字段。先检查 MCP tool input schema：`get_job`、
+`get_analysis_context`、`submit_transcript_correction`、`submit_gateway_analysis` 应都有
+可选 `gateway_protocol`，枚举为 `[1,2]`，默认 `1`。旧服务没有该能力时使用完整旧流程，
+不得用真实提交试探支持情况，也不能把增量补丁按协议 1 重放。
+
+| 阶段 / 工具 | 协议 2 的材料与行为 |
+| --- | --- |
+| `get_analysis_context`，`phase=transcript_correction` | 完整原稿 `transcript`、OCR 投影、正文、逐字灵感、`correction_schema` 和材料版本；不检索既有知识 |
+| `submit_transcript_correction` | 完整检查原稿，只提交有改动段的 `{id,text}`；`[]` 表示已检查且无需修改，也会生成完整校正稿并进入分析 |
+| `get_analysis_context`，`phase=analysis` | `sources` 是分析输入正文，含有效校正稿、OCR、图文正文与定位；附既有知识和紧凑 `analysis_schema`，不重复发送全文副本 |
+| `submit_gateway_analysis` | 接收紧凑 schema；可用编号恢复证据原文，也可使用显式引文；经原始材料校验后由 Worker 入库 |
+| `get_job` 与两个提交回执 | 简短状态、`result` 摘要与链接、路由、错误及确认原因；不携带 `artifacts`、全文或 schema |
+
+两次提交都必须带本阶段读取的 `context_revision`。校正成功后重新读取分析上下文，不能
+因 `status` 相同而复用校正阶段版本。相同快照重读、重连可重建相同版本；材料、阶段或
+任务更新后旧版本失效。版本绑定材料，不提供身份授权或排他领取；事件归属规则照常执行。
+
+`sources` 每项为 `{kind,text,locations}`，同一 OCR 文字可以带多个实际位置。
+位置中的 `source_ref` 在当前任务版本内有效：音频 `a:<segment_id>:<unit_index>`、
+OCR `o:<observation_index>:<line_index>`、正文 `p:<unit_index>`。下标从 0 开始，
+图片 `image_index` 仍从 1 开始。音频句子使用所属 ASR 段的实际时间，不能把单元位置当成更精确的句子时间。
+
+`chapters[].evidence[]`、`knowledge_atoms[]`、`reminders[]` 可填写非空 `source_refs`。
+服务端分别恢复 `quote` 与证据类型、`quote/provenance` 与定位、`source_quote`。
+引用应有序、无重复、同类且连续；音频可跨相邻段，OCR 只能在同一原始 observation 内跨行，
+正文可跨连续段落。不能跳过正文、跨图片或将音频/OCR 混成一组编号；混合来源继续用显式引文格式。
+若同时提供引文、来源或定位，须与恢复结果一致；省略这些字段时由编号推导，不要填默认 `audio` 或 `null` 占位。
+
+非推断知识原子必须有编号，或有非空显式引文与合法定位。推断仍用
+`atom_type=inference`、`provenance=ai_inference`，不能附编号。视频正文仅用于理解与提醒，
+不能作为视频章节或知识原子证据；图文没有 chapters 时间轴，图片证据须有实际 `image_index`。
+来源可定位不代表支持论断，Agent 仍须按原材料判断；既有知识不能充当本作品证据。
+
+OCR 投影只去除附近精确重复字幕，并合并 60 秒内重复画面文字；原始字符、出现位置与后半片独有内容保留，
+同文不会跨图片删除。没有全片 6000 字、20 条或图片数量截尾。客户端容量不足时报告限制，
+不能遗漏后半片或图片完成分析；不改变 ASR/OCR 后端与采样方式。
+
+以下示例中的任务、ID 与版本均须来自当前上下文；示例事实不能直接用于实际作品：
+
+```json
+{"job_id":"实际 job_id","gateway_protocol":2}
+```
+
+```json
+{"job_id":"实际 job_id","gateway_protocol":2,"context_revision":"当前校正上下文的版本","corrections":[],"producer":"my-agent"}
+```
+
+```json
+{"job_id":"实际 job_id","gateway_protocol":2,"context_revision":"当前分析上下文的版本","producer":"my-agent","analysis":{"title":"实际作品标题","knowledge_atoms":[{"id":"atom-1","statement":"从原文判断的实际事实","source_refs":["a:0:0"]}]}}
+```
+
+错误沿用 `invalid_job_state` 信封：`details.reason=context_revision_required` 表示缺版本，
+`context_revision_mismatch` 表示版本失效，`invalid_source_ref` 表示引用格式、范围或字段冲突。
+格式错误修正后可用仍有效的版本重新提交；版本失效必须重读当前阶段。错误只带必要路径、编号或当前版本，
+不重传完整材料。成功后重放按阶段限制拒绝；丢失回执时先用紧凑 `get_job` 判断是否已推进。
+
+等 Agent 的有效阶段 `next_tool=get_analysis_context`；已入队或处理中为 `list_job_events`；
+完成后为 `null`，不要反复取完整材料。长视频 `reason/duration_minutes`、授权 `auth_scope` 与
+错误说明保留。`favorites_context/creator_context` 的父任务和 `batch_silent` 保留；静默子任务
+照常完成校正分析，成功处理或投递后才确认事件，不因紧凑回执自动确认。
+
+紧凑协议减少应用往返正文，不保证固定计费 token 节省。实际用量取决于客户端如何保留历史和使用缓存；
+真实客户端选择的协议、工具能力、材料版本与隔离验收记录写在仓库外，不能只凭服务端已实现就记录已启用。
+
+## 兼容协议示例（默认 gateway_protocol=1）
+
 以下是 MCP 工具参数的最小示例。`job_id`、片段 `id` 和原会话路由须替换为刚读取的实际值；
 视频先读 `get_analysis_context.phase`，图文和重新分析若直接返回 `analysis` 就跳过校正。
 这里的示例文本只说明字段结构，不能直接当作作品分析结果提交。
@@ -90,7 +159,7 @@ flowchart LR
 {"share_text":"https://www.douyin.com/video/7689429622975314067","inspirations":[],"gateway_context":{"gateway":"my-agent","channel":"chat","conversation_id":"conversation-123"}}
 ```
 
-上面是 `capture_douyin`。视频的 `submit_transcript_correction` 使用原始逐字稿中的全部实际 ID，
+上面是 `capture_douyin`。协议 1 的视频 `submit_transcript_correction` 使用原始逐字稿中的全部实际 ID，
 每项 `text` 必须保留完整内容；未修改的片段也必须显式回传原文。缺段、重复 ID、未知 ID
 都会拒绝；仅当原稿为空时允许 `corrections=[]`。进入 `analysis` 后不可再次提交校对。
 并发提交遇到任务已更新时，重新读取上下文和阶段，不要盲目重放旧结果。旧客户端仍可传 `review_issues`，但仅作为校正说明保留，

@@ -1,13 +1,31 @@
+import json
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
+from typer.testing import CliRunner
 
+from douyin_wiki import cli, mcp_server
 from douyin_wiki.errors import JobStateError
 from douyin_wiki.gateway_protocol import context_revision
 from douyin_wiki.gateway_sources import build_source_catalog, expand_source_references
-from douyin_wiki.models import AnalysisMode, JobStatus, ReviewIssue, TranscriptCorrection
-from tests.support.gateway import make_gateway_job
+from douyin_wiki.mcp_server import mcp
+from douyin_wiki.models import (
+    AnalysisMode,
+    GatewayContext,
+    JobStatus,
+    ReviewIssue,
+    TranscriptCorrection,
+)
+from douyin_wiki.worker import Worker
+from tests.support.gateway import (
+    make_gateway_job,
+    make_video_gateway_service,
+    run_gateway_roundtrip,
+)
+from tests.test_image_note import make_service as make_note_service
 
 
 def test_patch_preserves_unsubmitted_segments_and_raw_artifacts(service):
@@ -653,3 +671,358 @@ def test_malformed_reference_shape_uses_small_state_error(service, refs):
     assert error.value.details["reason"] == "invalid_source_ref"
     assert "input" not in str(error.value.details)
     assert service.database.get_job(job.id) == job
+
+
+@pytest.mark.asyncio
+async def test_mcp_compact_correction_ack_does_not_repeat_artifacts(service, monkeypatch):
+    job = make_gateway_job(service)
+    monkeypatch.setattr(mcp_server, "_SERVICE", service)
+    context = await mcp.call_tool("get_analysis_context", {"job_id": job.id, "gateway_protocol": 2})
+    result = await mcp.call_tool(
+        "submit_transcript_correction",
+        {
+            "job_id": job.id,
+            "corrections": [],
+            "producer": "test-agent",
+            "gateway_protocol": 2,
+            "context_revision": context.structured_content["context_revision"],
+        },
+    )
+    ack = result.structured_content
+    assert ack["phase"] == "analysis" and ack["phase_label"] == "内容分析"
+    assert ack["next_tool"] == "get_analysis_context"
+    assert {"artifacts", "request", "analysis_schema", "ocr"}.isdisjoint(ack)
+    assert json.loads(result.content[0].text) == ack
+
+
+@pytest.mark.asyncio
+async def test_mcp_advertises_optional_protocol_and_rejects_nonintegers(service, monkeypatch):
+    names = {
+        "get_job",
+        "get_analysis_context",
+        "submit_transcript_correction",
+        "submit_gateway_analysis",
+    }
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+    for name in names:
+        schema = tools[name].input_schema
+        assert schema["properties"]["gateway_protocol"]["enum"] == [1, 2]
+        assert schema["properties"]["gateway_protocol"]["default"] == 1
+        assert "gateway_protocol" not in schema.get("required", [])
+
+    def forbidden_service():
+        raise AssertionError("非法版本不应访问服务")
+
+    monkeypatch.setattr(mcp_server, "_service", forbidden_service)
+    for value in [True, 2.0, "2", 3]:
+        with pytest.raises(ToolError):
+            await mcp.call_tool("get_job", {"job_id": "invalid", "gateway_protocol": value})
+
+
+@pytest.mark.asyncio
+async def test_mcp_legacy_default_keeps_full_payload_and_stub_calls(service, monkeypatch):
+    job = make_gateway_job(service)
+    monkeypatch.setattr(mcp_server, "_SERVICE", service)
+    full = await mcp.call_tool("get_job", {"job_id": job.id})
+    assert "artifacts" in full.structured_content and full.structured_content["id"] == job.id
+
+    def old_context(job_id):
+        return {"job_id": job_id, "old_context": True}
+
+    def old_correction(job_id, corrections, *, producer, model, review_issues):
+        assert len(corrections) == 2
+        return job
+
+    def old_analysis(job_id, analysis, *, producer, model):
+        return job
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_SERVICE",
+        SimpleNamespace(
+            get_job=lambda job_id: job,
+            get_analysis_context=old_context,
+            submit_transcript_correction=old_correction,
+            submit_gateway_analysis=old_analysis,
+        ),
+    )
+    assert (await mcp.call_tool("get_analysis_context", {"job_id": job.id})).structured_content[
+        "old_context"
+    ]
+    args = {"job_id": job.id, "producer": "old-agent"}
+    assert (
+        "artifacts"
+        in (
+            await mcp.call_tool(
+                "submit_transcript_correction",
+                {
+                    **args,
+                    "corrections": [
+                        {"id": row["id"], "text": row["text"]}
+                        for row in job.artifacts["transcript_raw"]
+                    ],
+                },
+            )
+        ).structured_content
+    )
+    assert (
+        "artifacts"
+        in (
+            await mcp.call_tool("submit_gateway_analysis", {**args, "analysis": {"title": "资料"}})
+        ).structured_content
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_kind", ["video", "image_note"])
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_mcp_video_note_and_reanalysis_complete_with_references(
+    tmp_path, monkeypatch, source_kind, protocol
+):
+    service = (
+        make_video_gateway_service(tmp_path)
+        if source_kind == "video"
+        else make_note_service(tmp_path, mode=AnalysisMode.GATEWAY)
+    )
+    monkeypatch.setattr(mcp_server, "_SERVICE", service)
+    response = await mcp.call_tool(
+        "capture_douyin",
+        {
+            "share_text": "https://v.douyin.com/uvHsRpXIn8s/",
+            "gateway_context": {"gateway": "test-agent", "conversation_id": "thread-1"},
+        },
+    )
+    job_id = response.structured_content["id"]
+    paused = await Worker(service).run_once()
+    assert paused.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    args = {"job_id": job_id, "gateway_protocol": protocol}
+    ctx = (await mcp.call_tool("get_analysis_context", args)).structured_content
+    if source_kind == "video":
+        assert ctx["phase"] == "transcript_correction"
+        corrections = (
+            []
+            if protocol == 2
+            else [{"id": row["id"], "text": row["text"]} for row in ctx["transcript_raw"]]
+        )
+        await mcp.call_tool(
+            "submit_transcript_correction",
+            {
+                **args,
+                "corrections": corrections,
+                "producer": "test-agent",
+                **({"context_revision": ctx["context_revision"]} if protocol == 2 else {}),
+            },
+        )
+        ctx = (await mcp.call_tool("get_analysis_context", args)).structured_content
+    assert ctx["phase"] == "analysis"
+    if protocol == 2:
+        source = next(
+            row
+            for row in ctx["sources"]
+            if row["kind"] == ("audio" if source_kind == "video" else "image_ocr")
+        )
+        location = source["locations"][0]
+        atom = {"id": "k", "statement": "原文", "source_refs": [location["source_ref"]]}
+        quote = source["text"]
+    else:
+        row = ctx["transcript_corrected"][0] if source_kind == "video" else ctx["ocr"][0]
+        quote = row["text"]
+        atom = {
+            "id": "k",
+            "statement": "原文",
+            "quote": quote,
+            "provenance": "audio" if source_kind == "video" else "image_ocr",
+            **(
+                {"timestamp_ms": row["start_ms"]}
+                if source_kind == "video"
+                else {"image_index": row["image_index"]}
+            ),
+        }
+    await mcp.call_tool(
+        "submit_gateway_analysis",
+        {
+            **args,
+            "analysis": {"title": "资料", "knowledge_atoms": [atom]},
+            "producer": "test-agent",
+            **({"context_revision": ctx["context_revision"]} if protocol == 2 else {}),
+        },
+    )
+    completed = await Worker(service).run_once()
+    assert completed.id == job_id and completed.status == JobStatus.COMPLETED
+    stored = service.database.get_entry_data(completed.result["entry_id"])
+    assert stored["analysis"]["knowledge_atoms"][0]["quote"] == quote
+    assert "source_refs" not in json.dumps(stored, ensure_ascii=False)
+    if source_kind == "image_note":
+        assert stored["analysis"]["knowledge_atoms"][0]["image_index"] == 1
+    downloader = service.downloader if source_kind == "video" else service.image_note_downloader
+    download_count = downloader.calls
+
+    def forbidden_material(*args, **kwargs):
+        raise AssertionError("重新分析不能重复媒体处理")
+
+    monkeypatch.setattr(service.ocr, "recognize", forbidden_material)
+    rerun = service.reanalyze_entry(
+        completed.result["entry_id"],
+        force=True,
+        gateway_context=GatewayContext(gateway="test-agent"),
+    )
+    resumed = await Worker(service).run_once()
+    assert resumed.id == rerun.id and resumed.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    ctx = (
+        await mcp.call_tool(
+            "get_analysis_context", {"job_id": rerun.id, "gateway_protocol": protocol}
+        )
+    ).structured_content
+    assert ctx["phase"] == "analysis"
+    await mcp.call_tool(
+        "submit_gateway_analysis",
+        {
+            "job_id": rerun.id,
+            "gateway_protocol": protocol,
+            "analysis": {"title": "重新分析"},
+            "producer": "test-agent",
+            **({"context_revision": ctx["context_revision"]} if protocol == 2 else {}),
+        },
+    )
+    assert (await Worker(service).run_once()).status == JobStatus.COMPLETED
+    assert downloader.calls == download_count
+
+
+@pytest.mark.asyncio
+async def test_mcp_replay_checks_phase_and_keeps_batch_silent(service, monkeypatch):
+    job = make_gateway_job(
+        service,
+        artifacts={
+            "favorites_context": {"parent_job_id": "parent-f", "batch_silent": True},
+            "creator_context": {
+                "id": "creator-1",
+                "parent_job_id": "parent-c",
+                "batch_silent": True,
+            },
+        },
+    )
+    monkeypatch.setattr(mcp_server, "_SERVICE", service)
+    revision = context_revision(job)
+    submit = {
+        "job_id": job.id,
+        "corrections": [],
+        "producer": "test-agent",
+        "gateway_protocol": 2,
+        "context_revision": revision,
+    }
+    await mcp.call_tool("submit_transcript_correction", submit)
+    state = (
+        await mcp.call_tool("get_job", {"job_id": job.id, "gateway_protocol": 2})
+    ).structured_content
+    assert state["phase"] == "analysis" and state["context_revision"] != revision
+    assert state["favorites_context"]["batch_silent"] and state["creator_context"]["batch_silent"]
+    assert state["creator_context"]["id"] == "creator-1"
+    with pytest.raises(ToolError) as error:
+        await mcp.call_tool("submit_transcript_correction", submit)
+    assert json.loads(str(error.value))["error"]["code"] == "invalid_job_state"
+    ctx = (
+        await mcp.call_tool("get_analysis_context", {"job_id": job.id, "gateway_protocol": 2})
+    ).structured_content
+    assert ctx["creator_context"]["parent_job_id"] == "parent-c"
+    ack = (
+        await mcp.call_tool(
+            "submit_gateway_analysis",
+            {
+                "job_id": job.id,
+                "gateway_protocol": 2,
+                "context_revision": ctx["context_revision"],
+                "analysis": {"title": "资料"},
+                "producer": "test-agent",
+            },
+        )
+    ).structured_content
+    assert ack["next_tool"] == "list_job_events" and ack["context_revision"] is None
+    events = service.list_job_events()
+    assert events and all(event.acknowledged_at is None for event in events)
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_cli_protocol_options_preserve_old_json_formats(
+    service, monkeypatch, tmp_path, protocol, wrapped
+):
+    job = make_gateway_job(service)
+    monkeypatch.setattr(cli, "_service", lambda config_path: service)
+    runner = CliRunner()
+    options = ["--gateway-protocol", str(protocol)] if protocol == 2 else []
+    response = runner.invoke(cli.app, ["gateway", "context", job.id, *options])
+    assert response.exit_code == 0, response.output
+    assert (
+        "correction_schema" in response.output
+        if protocol == 2
+        else "transcript_raw" in response.output
+    )
+    corrections = (
+        []
+        if protocol == 2
+        else [{"id": row["id"], "text": row["text"]} for row in job.artifacts["transcript_raw"]]
+    )
+    path = tmp_path / "correction.json"
+    path.write_text(
+        json.dumps({"corrections": corrections} if wrapped else corrections), encoding="utf-8"
+    )
+    revision_options = ["--context-revision", context_revision(job)] if protocol == 2 else []
+    result = runner.invoke(
+        cli.app,
+        [
+            "gateway",
+            "submit-correction",
+            job.id,
+            str(path),
+            "--producer",
+            "test-agent",
+            *options,
+            *revision_options,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    updated = service.database.get_job(job.id)
+    assert "artifacts" not in result.output if protocol == 2 else "artifacts" in result.output
+    path.write_text(json.dumps({"title": "资料", "one_liner": "分析摘要"}), encoding="utf-8")
+    revision_options = ["--context-revision", context_revision(updated)] if protocol == 2 else []
+    result = runner.invoke(
+        cli.app,
+        [
+            "gateway",
+            "submit-analysis",
+            job.id,
+            str(path),
+            "--producer",
+            "test-agent",
+            *options,
+            *revision_options,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert service.database.get_job(job.id).status == JobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_compact_roundtrip_reduces_repeated_material_without_changing_analysis(tmp_path):
+    legacy, legacy_exchanges = await run_gateway_roundtrip(
+        make_video_gateway_service(tmp_path / "v1"), gateway_protocol=1
+    )
+    compact, compact_exchanges = await run_gateway_roundtrip(
+        make_video_gateway_service(tmp_path / "v2"), gateway_protocol=2
+    )
+    assert compact == legacy
+
+    def size(exchanges):
+        return sum(
+            len(json.dumps(item["request"], ensure_ascii=False, separators=(",", ":")).encode())
+            + len(item["response_text"].encode())
+            for item in exchanges
+        )
+
+    assert len(legacy_exchanges) == len(compact_exchanges) == 6
+    assert size(compact_exchanges) < size(legacy_exchanges)
+    context = compact_exchanges[3]["response_structured"]
+    assert "o:120:0" in [
+        loc["source_ref"] for row in context["sources"] for loc in row["locations"]
+    ]
+    assert compact["knowledge_atoms"][0]["timestamp_ms"] == 70000

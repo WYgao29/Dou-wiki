@@ -10,7 +10,7 @@
 
 **Spec:** [已确认的设计规格](../specs/2026-10-03-gateway-token-optimization-design.md)。执行前同时读取规格与本计划。
 
-**Status:** 2026-10-03 书面规格已获用户确认；本实施计划待用户审阅，实现尚未开始。源码基准为 `400cf26`，设计文档提交为 `b77a0d2`；执行起点必须包含本计划及已确认规格。
+**Status:** 2026-10-03 设计、书面规格与实施计划均已获用户确认；任务 1–4 已提交，任务 5 整体离线验收已通过，整体自审待完成。实施分支 `codex/gateway-token-optimization` 从 `70717b9` 开始；现用服务环境与真实客户端未切换。
 
 ## Global Constraints
 
@@ -52,7 +52,7 @@
 - Produces: 冻结 dataclass `SourceCatalog(sources: list[dict[str, Any]], ocr: list[dict[str, Any]], refs: dict[str, SourceSpan], containers: dict[str, str])`。`sources`/`ocr` 是规格的传输结构，后两项仅供本地还原。
 - Produces: `build_source_catalog(artifacts: Mapping[str, Any], *, phase: Literal["transcript_correction", "analysis"]) -> SourceCatalog`。
 
-- [ ] **Step 1: 写失败测试，固定附近字幕过滤与后半片覆盖**
+- [x] **Step 1: 写失败测试，固定附近字幕过滤与后半片覆盖**
 
 在 `tests/test_gateway_context.py` 中导入 `deepcopy` 与 `build_source_catalog`，加入：
 
@@ -89,21 +89,21 @@ def test_ocr_projection_filters_nearby_subtitles_and_keeps_late_material():
 | `test_source_units_preserve_original_characters_and_ranges` | 段 7，时间 0–5000，text 为 `"ΟΣ。" + "a" * 260` | `assert "".join(row["text"] for row in catalog.sources) == text`；音频单元长度 `[3, 256, 4]`，定位均为 0–5000 |
 | `test_projection_has_no_global_count_or_size_limit` | 30 个不同 OCR 观测，总文字超过 6000，末条在 130000 ms；图文变体含 30 张图 | `assert len(catalog.ocr) == 30`；末条及图片 30 的定位存在 |
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_context.py`。Expected: 新模块缺失导致导入失败；已有测试不作修改来掩盖失败。
 
-- [ ] **Step 3: 实现接口与确定性材料处理**
+- [x] **Step 3: 实现接口与确定性材料处理**
 
 按规格第 6/8 节实现 NFKC/空白/casefold 比较、至少 4 字的 ±5000 ms 匹配、从上次保留文字计时的 60000 ms 合并、图内去重及原位置列表。无时间戳的观测不跨帧合并；时间缺失不填造定位。原始列表不修改，OCR 长行不截短。
 
 来源编号采用 `a:<segment_id>:<unit_index>`、`o:<observation_index>:<line_index>`、`p:<unit_index>`。音频 canonical container 按原段顺序用换行连接，OCR container 为每个原始 observation.text，正文 container 为原 post_text。SourceSpan 的半开 `[start, end)` 指向这些原文；音频/正文单元最多 256 个 Python 字符，OCR 行保持原长。纯标点可作为阅读材料，但不能支持合法引用。音频连续引用之间仅加入该 canonical container 已有分隔符，不生成新内容。
 
-- [ ] **Step 4: 验证 GREEN 与本地路径保留**
+- [x] **Step 4: 验证 GREEN 与本地路径保留**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_context.py tests/test_service.py::test_adjacent_ocr_lines_are_deduplicated_only_in_model_input`。Expected: 全部 PASS；sources 单元、位置与原始字符保真，旧 `_nearby_ocr` 行为通过。
 
-- [ ] **Step 5: 提交独立交付**
+- [x] **Step 5: 提交独立交付**
 
 `git add -- src/douyin_wiki/gateway_sources.py tests/test_gateway_context.py`；`git commit -m "feat: add gateway source projection"`。
 
@@ -122,7 +122,7 @@ Run: `uv run --no-sync pytest -q tests/test_gateway_context.py tests/test_servic
 - Produces: Service `get_analysis_context(self, job_id: str, *, gateway_protocol: GatewayProtocol = 1) -> dict[str, Any]`。
 - Test helper: `make_gateway_job(service: DouyinWikiService, *, phase: str = "transcript_correction", source_kind: str = "video", artifacts: dict[str, Any] | None = None) -> JobRecord`。设置 Gateway 模式，以现有 create_job/update_job 创建待处理快照；默认两段原稿为“第一段原话。”（ID 0，0–5000）和“原始第二段。”（ID 1，5000–9000），用 TranscriptSegment.model_dump 保存完整字段。analysis 视频默认复制为校正稿；图文默认无逐字稿。默认灵感“逐字保留的灵感”，gateway 为 test-agent/conversation_id 为 thread-1；artifacts 按调用方覆盖。
 
-- [ ] **Step 1: 写失败测试，验证阶段材料与读取无副作用**
+- [x] **Step 1: 写失败测试，验证阶段材料与读取无副作用**
 
 ```python
 def test_correction_context_omits_analysis_and_does_not_lookup_prior_claims(service, monkeypatch):
@@ -152,11 +152,11 @@ def test_correction_context_omits_analysis_and_does_not_lookup_prior_claims(serv
 | `test_compact_receipt_keeps_auth_and_confirmation_explanations` | waiting_confirmation 的 result 为 reason=ai_analysis_confirmation_required、duration_minutes=31.0；需要授权的任务有原 error_code/error_message/auth_scope；各解释保留，不返回原始材料或自动确认 |
 | `test_legacy_context_and_non_gateway_behavior_remain` | 省略版本与显式 1 相等，含原旧 schema；provider/local 请求版本 2 拒绝；1 的原返回不受影响 |
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_context.py`。Expected: 新接口不存在或版本参数尚未支持，任务 1 的测试继续通过。
 
-- [ ] **Step 3: 实现纯协议处理与 Service 读取分支**
+- [x] **Step 3: 实现纯协议处理与 Service 读取分支**
 
 GatewayProtocol 使用 Pydantic BeforeValidator 保持 MCP 能力枚举与严格整数语义。传输模型复用现有现代字段与 ContentCard/嵌套类型，只覆写引用相关结构，不复制或修改全局持久化模型。删 schema 展示 title 时保留 properties.title；删除无引用定义前遍历 `$ref`。validate_compact_analysis_shape 验证原输入，不把默认 provenance 误当作客户端显式字段。
 
@@ -166,11 +166,11 @@ Service 的版本 1 保留原构造分支。版本 2 保留既有状态检查并
 
 compact_job_payload 不访问数据库；按规格第 9 节选择结果与路由，结果仍放在 result 对象，错误保留 error_code/error_message，必要确认信息为 reason/duration_minutes。校正成功后的 awaiting 状态可读新 analysis 版本，分析提交后的 queued 状态不引导重复取上下文，completed 的 next_tool 为 None。此任务不修改 MCP/CLI 签名，不提前广告新协议。
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_context.py tests/test_content_tags.py tests/test_interfaces.py`。Expected: 新读取行为与旧接口/标签测试全部 PASS。
 
-- [ ] **Step 5: 提交独立交付**
+- [x] **Step 5: 提交独立交付**
 
 `git add -- src/douyin_wiki/gateway_protocol.py src/douyin_wiki/service_analysis.py tests/support/gateway.py tests/test_gateway_context.py`；`git commit -m "feat: add compact gateway contexts and revisions"`。
 
@@ -184,7 +184,7 @@ Run: `uv run --no-sync pytest -q tests/test_gateway_context.py tests/test_conten
 - Produces: Service `submit_transcript_correction(self, job_id: str, corrections: list[TranscriptCorrection], *, producer: str, model: str = "agent", review_issues: list[ReviewIssue] | None = None, gateway_protocol: GatewayProtocol = 1, context_revision: str | None = None) -> JobRecord`。
 - 保留完整 transcript_corrected、原始 transcript_raw、真实 transcript_edits 和 correction_producer/model；不改变数据库更新或事件公开签名。
 
-- [ ] **Step 1: 写失败测试，固定省略片段保真**
+- [x] **Step 1: 写失败测试，固定省略片段保真**
 
 ```python
 def test_patch_preserves_unsubmitted_segments_and_raw_artifacts(service):
@@ -215,19 +215,19 @@ def test_patch_preserves_unsubmitted_segments_and_raw_artifacts(service):
 | `test_patch_replay_and_image_note_correction_are_rejected` | 成功后同请求重放、图文调用；拒绝，不产生第二次校正/新复核 |
 | `test_legacy_full_correction_and_notes_remain_compatible` | 旧全量输入、旧 review_issues；完整结果兼容且仍不阻塞新任务 |
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_submission.py`。Expected: Service 不接收新提交参数或仍以全量规则拒绝补丁。
 
-- [ ] **Step 3: 接入补丁与既有原子更新**
+- [x] **Step 3: 接入补丁与既有原子更新**
 
 新参数只增加在现有 keyword-only 区域。版本 1 保留全覆盖规则；版本 2 检查 Gateway 模式、现有阶段、原稿 ID 唯一与当前版本，再按 ID 构建完整校正稿。缺项用原段，明确提交的项沿用 strip/非空校验。保留现有 notes、edits、producer/model、expected_updated_at、expected_statuses、unlock 与事件发送。任何验证失败均发生在数据库更新之前。
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_submission.py tests/test_interfaces.py tests/test_auto_correction.py tests/test_correction_recovery.py`。Expected: 补丁、并发与旧提交全部 PASS；provider 校正恢复不变。
 
-- [ ] **Step 5: 提交独立交付**
+- [x] **Step 5: 提交独立交付**
 
 `git add -- src/douyin_wiki/service_analysis.py tests/test_gateway_submission.py`；`git commit -m "feat: accept revision-bound gateway correction patches"`。
 
@@ -241,7 +241,7 @@ Run: `uv run --no-sync pytest -q tests/test_gateway_submission.py tests/test_int
 - Produces: `expand_source_references(analysis: dict[str, Any], catalog: SourceCatalog, *, source_kind: Literal["video", "image_note"]) -> dict[str, Any]`；返回新字典，不改输入或 artifacts，移除所有传输 source_refs。
 - Produces: Service `submit_gateway_analysis(self, job_id: str, analysis: dict[str, Any], *, producer: str, model: str = "agent", gateway_protocol: GatewayProtocol = 1, context_revision: str | None = None) -> JobRecord`。
 
-- [ ] **Step 1: 写失败测试，固定原文展开与输入不变**
+- [x] **Step 1: 写失败测试，固定原文展开与输入不变**
 
 ```python
 def test_refs_expand_to_exact_original_quote_without_mutating_input(service):
@@ -274,11 +274,11 @@ def test_refs_expand_to_exact_original_quote_without_mutating_input(service):
 | `test_compact_facts_require_refs_or_located_quote` | 2 的事实无引文或视频正文 fact refs 拒绝；1 保持旧模型兼容行为；图文 chapters 拒绝 |
 | `test_analysis_revision_and_compare_and_set_prevent_stale_requeue` | 缺失/过期版本、校验后更新/取消；本提交不写 analysis，不覆写并发修改，不把取消任务入队 |
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_submission.py`。Expected: 展开函数缺失或分析提交不支持版本/引用；任务 3 的校正测试继续通过。
 
-- [ ] **Step 3: 实现引用与分析提交分支**
+- [x] **Step 3: 实现引用与分析提交分支**
 
 在来源模块验证 refs 有序、唯一、同类、同容器、连续且为当前 catalog 暴露的原文。跨音频段取 canonical container 的连续范围；仅空白/标点间隔不代表跳过正文。图文位置来自原图；无定位的 OCR 不成为章节或知识原子证据。混合来源走现有显式引文路径。
 
@@ -286,11 +286,11 @@ Run: `uv run --no-sync pytest -q tests/test_gateway_submission.py`。Expected: �
 
 Service 的 2 分支依次执行 mode/阶段/版本、紧凑形状、catalog/展开、标准模型、标签、原始 artifacts 证据校验、矛盾归一化与 expected_updated_at 入队。1 保留现有分支，禁止为 1 新增无引文事实限制。无效输入不清理原分析、不新建任务、不写引用表。
 
-- [ ] **Step 4: 验证 GREEN 与既有证据回归**
+- [x] **Step 4: 验证 GREEN 与既有证据回归**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_submission.py tests/test_analysis_v2.py tests/test_evidence_quote_boundaries.py tests/test_unicode_evidence.py tests/test_content_tags.py`。Expected: 引用、标准字段等价、旧证据边界与标签限制全部 PASS。
 
-- [ ] **Step 5: 提交独立交付**
+- [x] **Step 5: 提交独立交付**
 
 `git add -- src/douyin_wiki/gateway_sources.py src/douyin_wiki/service_analysis.py tests/test_gateway_submission.py`；`git commit -m "feat: resolve gateway evidence references before validation"`。
 
@@ -305,7 +305,7 @@ Run: `uv run --no-sync pytest -q tests/test_gateway_submission.py tests/test_ana
 - Test helper: `make_video_gateway_service(tmp_path: Path) -> DouyinWikiService`，复用 tests.conftest 的假适配器与 hash Embedding；图文复用 tests.test_image_note.make_service。
 - Test helper: `async run_gateway_roundtrip(service: DouyinWikiService, *, gateway_protocol: Literal[1, 2]) -> tuple[dict[str, Any], list[dict[str, Any]]]`，顺序执行 fake Worker 与六次 MCP 上下文/提交调用，返回最终标准分析和 exchanges。每次 exchange 固定为 `{tool, request, response_text, response_structured}`；不触发外部模型，不并行切换全局 _SERVICE。
 
-- [ ] **Step 1: 写失败测试，验证工具级真实回执与旧默认**
+- [x] **Step 1: 写失败测试，验证工具级真实回执与旧默认**
 
 本机核对的 `mcp.call_tool` 返回 CallToolResult，`.structured_content` 为字典、`.content[0].text` 为其 JSON 文本。通过真实 call_tool 验证，不能只直调包装函数：
 
@@ -340,37 +340,37 @@ async def test_mcp_compact_correction_ack_does_not_repeat_artifacts(service, mon
 | `test_cli_protocol_options_preserve_old_json_formats` | CliRunner 与 fake _service：旧 JSON 列表/字典和三个旧命令有效；2 用显式选项传版本/快照，analysis 文件仍是纯分析字典，输出简短回执 |
 | `test_compact_roundtrip_reduces_repeated_material_without_changing_analysis` | 两个隔离服务使用相同 30 段原稿（每段 3000 ms）、120 个重复 OCR 帧（0–59500 ms）及 70000 ms 的末段图表，只改一段及相同事实；`assert compact_analysis == legacy_analysis`，六次业务交换请求+所选响应表示的字节总量严格下降；编号/定位/参数开销计入 |
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_submission.py -k 'mcp or cli or roundtrip'`。Expected: 工具/CLI 尚不接收版本 2 参数；此前 Service 与来源测试继续通过。
 
-- [ ] **Step 3: 接入四工具与三个 CLI 命令**
+- [x] **Step 3: 接入四工具与三个 CLI 命令**
 
 默认分支保留旧 Service 调用的 kwargs 与完整返回；只有 2 分支添加新参数并使用 compact_job_payload。MCP 经现有 _payload 保留中文标签；CLI 经现有 _print 展示。参数采用 GatewayProtocol，CLI 整数也调用严格验证。context_revision 由显式 CLI 选项传入，不改变旧 JSON 文件的解释，不从旧 JSON 静默切换协议。结构化错误经当前 DouyinWikiMCP 处理。
 
 更新 INSTRUCTIONS 与工具说明，使全量/增量条件及两阶段 schema 明确；规则正文继续以 Gateway 指南为权威，不维护特定客户端的常驻脚本或修改其配置。此时才在四工具 schema 中广告枚举 1/2。
 
-- [ ] **Step 4: 验证适配层 GREEN**
+- [x] **Step 4: 验证适配层 GREEN**
 
 Run: `uv run --no-sync pytest -q tests/test_gateway_context.py tests/test_gateway_submission.py tests/test_interfaces.py tests/test_image_note.py tests/test_favorites_interfaces.py tests/test_creator.py`。Expected: 两版本闭环、CLI、图文和批量原流程全部 PASS。失败时只按具体失败扩大相关检查。
 
-- [ ] **Step 5: 更新业务文档与隔离验收说明**
+- [x] **Step 5: 更新业务文档与隔离验收说明**
 
 Gateway 指南补能力检测、版本 2 的实际工具参数/示例、空补丁、refs 与版本错误、回执丢失及静默处理；旧流程继续可查。接入契约记录实际协议支持与所选版本、说明配置/验收在仓库外，不增设假权限字段。架构、docs 索引、README 与 CHANGELOG 说明实际实现和兼容行为；规格与计划标明交付状态。不要将未核验的真实客户端写成已启用。
 
-- [ ] **Step 6: 保存可复现的应用负载测量**
+- [x] **Step 6: 保存可复现的应用负载测量**
 
 在仓库外维护目录保存 run_gateway_roundtrip 的合成输入、两版本 exchanges、运行环境与基准提交，以及 JSON/Markdown 汇总。逐次记录 request 字符/UTF-8 字节、content 文本字节、structured 表示字节、schema 字节、OCR 行数、修改段数、来源覆盖和实际重试；记录四工具定义/服务 instructions 增量。
 
 MCP 文本与 structured 是同一结果的两种表示，分别报告，不假定客户端把两者都送给模型。无 Gateway usage 时标明 token_usage 未获取，不写 0 或承诺节省比例。真实账号、客户端切换、服务重启、发布/发行包替换均留给另行授权的接入/交付工作。
 
-- [ ] **Step 7: 完成必要回归与交付核对**
+- [x] **Step 7: 完成必要回归与交付核对**
 
 Run: `uv run --no-sync ruff check src tests`；`uv run --no-sync pytest -q -m 'not live'`；`git diff --check`。Expected: ruff 无错误、完整离线集 PASS、无空白错误。验证环境缺依赖时先在独立环境补齐，不修改现用服务环境；不得用跳过失败用例获得通过。
 
 逐条核对规格第 12 节完成判据：原始材料、标准分析、版本/原子更新、回执、两版视频/图文/重新分析、完整往返下降；复核新增 API 默认值、source_refs 不入 Vault、原 ASR/OCR/provider/Web 未被改动。测试已通过后只在有新改动或未解疑点时重跑。
 
-- [ ] **Step 8: 提交并报告仓库交付结果**
+- [x] **Step 8: 提交并报告仓库交付结果**
 
 逐路径 stage 本任务生产/测试/文档文件，核对暂存差异后 `git commit -m "feat: expose compact gateway protocol with verified compatibility"`。报告实现提交、必要测试结果、应用负载测量和真实客户端状态；默认不部署、不发布、不创建新 chat，也不触发生产任务。若独立 worktree 留有交付物则保留，确认无需保留后才按原生工具归档。
 
@@ -378,4 +378,22 @@ Run: `uv run --no-sync ruff check src tests`；`uv run --no-sync pytest -q -m 'n
 
 本计划覆盖规格第 1–12 节：任务 1 对应第 6/8 节材料与编号，任务 2 对应第 3–5/9 节，任务 3 对应第 7 节，任务 4 对应第 8 节提交与第 5 节并发，任务 5 对应公开接入、第 10–12 节及完整闭环。R1–R5 已分别落到具名测试。各后续任务使用上游 Interfaces 中相同的函数名、参数与类型。
 
-当前交付仅为实施计划。用户审阅确认后，沿用“当前 Agent 执行”的方式进入 executing-plans；不得把前一节点的规格确认视为已经批准本计划或开始实现。若用户修改范围，先调整对应规格/任务和验收，再执行。
+用户已确认本计划，当前 Agent 按 executing-plans 在独立 worktree 中执行；未委派子 Agent。实际实施与验收记录如下；若继续修改范围，先调整对应规格与验收。
+
+## 实施与隔离验收（2026-10-03）
+
+执行起点 `70717b9`，worktree 为 `/Users/weisengao/.codex/worktrees/gateway-token-optimization/douyin-wiki`。现用 MCP/Worker 引用主仓库 `.venv/bin/python`；验证使用新 worktree 的独立环境，按 uv.lock 安装 dev 与 embeddings 可选依赖，未同步现用环境、改生产 Vault/Profile 或切换客户端。
+
+| 任务 | 实施提交 | 必要验证 |
+| --- | --- | --- |
+| 来源投影 | `e54ccfc` | 11 passed；附近字幕、60 秒边界、乱序/无时间、逐图与全片材料保真 |
+| 阶段上下文/版本/回执 | `93f88fa` | 75 passed；现代字段、schema 约束、稳定版本与旧读取兼容 |
+| 增量校正 | `e346a03` | 42 passed；缺项原样、空补丁、非法 ID、版本和并发保护 |
+| 引用展开与提交 | `c979d00` | 169 passed；真实原文、Unicode/跨段、OCR 来源、冲突与旧证据回归 |
+| MCP/CLI 接入 | 本记录所在实现提交 | 124 passed；两版视频/图文/重新分析、CLI 格式、静默与完整往返 |
+
+任务 4 同时调整 gateway_protocol 的引用格式错误信封，使空/非字符串/非列表编号也返回 `invalid_job_state` 与 `invalid_source_ref`，不携带原始输入。任务 5 保留实际 creator_context.id 路由字段，并将“六次工具交换”明确为四次上下文/提交加首尾两次状态查询。Skill helper 原文件没有执行权限，使用本 worktree 下内容相同的临时可执行副本；不修改安装的 Skill。整体审查由当前 Agent 按 requesting-code-review 清单完成，沿用用户不委派约定。
+
+应用负载测量与复现脚本、合成输入、原始 exchanges、标准分析及环境记录放在[仓库外验收目录](/Users/weisengao/.codex/maintenance/douyin-wiki/gateway-token-optimization-2026-10-03/README.md)。同一 90 秒视频包含 30 段原稿、120 个重复 OCR 帧及 70 秒独有图表，只改一段；每版六次调用、两次状态查询、无重试。请求+MCP 文本响应由 766,982 B 降为 293,241 B（61.77%），两版标准分析一致；30/30 段原话和 241/241 个 OCR 位置保留，投影为 3 行。四工具定义增加 639 B，服务 instructions 增加 380 B，单独记录其开销。文本与 structured 是同一结果的两种表示，分别报告，不相加；本合成输入含大量短句，来源逐句定位使单次分析上下文文本从 148,092 B 增至 234,449 B；因此只以完整往返衡量总收益，不宣称每次读取都缩小。未获得实际计费 token usage，不能将应用字节比例当成计费节省。
+
+整体离线回归：857 passed / 1 live deselected；`uv run --no-sync ruff check src tests` 和差异空白检查通过。最终自审：待完成。真实客户端协议 2 启用状态：未核验。交付物保留在实现分支，主线合并、客户端切换、服务重启和发行包替换不在本轮执行范围内。

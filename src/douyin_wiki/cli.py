@@ -17,6 +17,7 @@ from .config import (
     normalize_llm_base_url,
 )
 from .errors import DouyinWikiError
+from .gateway_protocol import compact_job_payload, validate_gateway_protocol
 from .localization import (
     localize_for_user,
     parse_creator_decision,
@@ -604,8 +605,23 @@ def review_resolve(
 
 
 @gateway_app.command("context")
-def gateway_context(job_id: str, config_path: Path | None = None) -> None:
-    _print(_service(config_path).get_analysis_context(job_id))
+def gateway_context(
+    job_id: str,
+    config_path: Path | None = None,
+    gateway_protocol: int = 1,
+) -> None:
+    protocol = _gateway_protocol_option(gateway_protocol)
+    if protocol == 1:
+        _print(_service(config_path).get_analysis_context(job_id))
+    else:
+        _print(_service(config_path).get_analysis_context(job_id, gateway_protocol=protocol))
+
+
+def _gateway_protocol_option(value: int) -> int:
+    try:
+        return validate_gateway_protocol(value)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--gateway-protocol") from error
 
 
 @gateway_app.command("monitor-events", hidden=True)
@@ -631,19 +647,27 @@ def gateway_submit_correction(
     producer: Annotated[str, typer.Option(help="Gateway/Agent 名称")],
     model: Annotated[str, typer.Option(help="生成校正的模型")] = "agent",
     config_path: Path | None = None,
+    gateway_protocol: int = 1,
+    context_revision: str | None = None,
 ) -> None:
+    protocol = _gateway_protocol_option(gateway_protocol)
     payload = json.loads(json_file.read_text(encoding="utf-8"))
     corrections_data = payload.get("corrections", []) if isinstance(payload, dict) else payload
     issues_data = payload.get("review_issues", []) if isinstance(payload, dict) else []
-    _print(
-        _service(config_path).submit_transcript_correction(
-            job_id,
-            [TranscriptCorrection.model_validate(item) for item in corrections_data],
-            producer=producer,
-            model=model,
-            review_issues=[ReviewIssue.model_validate(item) for item in issues_data],
-        )
+    extra = (
+        {"gateway_protocol": protocol, "context_revision": context_revision}
+        if protocol == 2
+        else {}
     )
+    job = _service(config_path).submit_transcript_correction(
+        job_id,
+        [TranscriptCorrection.model_validate(item) for item in corrections_data],
+        producer=producer,
+        model=model,
+        review_issues=[ReviewIssue.model_validate(item) for item in issues_data],
+        **extra,
+    )
+    _print(compact_job_payload(job) if protocol == 2 else job)
 
 
 @gateway_app.command("submit-analysis")
@@ -653,13 +677,24 @@ def gateway_submit_analysis(
     producer: Annotated[str, typer.Option(help="Gateway/Agent 名称")],
     model: Annotated[str, typer.Option(help="生成分析的模型")] = "agent",
     config_path: Path | None = None,
+    gateway_protocol: int = 1,
+    context_revision: str | None = None,
 ) -> None:
+    protocol = _gateway_protocol_option(gateway_protocol)
     payload = json.loads(json_file.read_text(encoding="utf-8"))
-    _print(
-        _service(config_path).submit_gateway_analysis(
-            job_id, payload, producer=producer, model=model
-        )
+    extra = (
+        {"gateway_protocol": protocol, "context_revision": context_revision}
+        if protocol == 2
+        else {}
     )
+    job = _service(config_path).submit_gateway_analysis(
+        job_id,
+        payload,
+        producer=producer,
+        model=model,
+        **extra,
+    )
+    _print(compact_job_payload(job) if protocol == 2 else job)
 
 
 @app.command("search")
