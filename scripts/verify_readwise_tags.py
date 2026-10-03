@@ -86,17 +86,22 @@ async def verify():
 
                 await page.route("**/*", route)
                 await page.goto("http://testserver/")
-                await page.wait_for_selector("#sidebar-tags .sidebar-tag")
-                assert await page.locator("#sidebar-tags .sidebar-tag").count() == 8
-                assert await page.locator("#sidebar-tags .nav-count").first.inner_text() == "13"
+                await page.wait_for_selector("#library-results:not(.hidden)")
+                assert await page.locator("#library-sidebar a[href^='/?tag=']").count() == 0
+                assert await page.locator("#library-sidebar .sidebar-tag").count() == 0
+                assert await page.locator("#tags-nav").inner_text() == "标签"
+                assert await page.locator("#tags-nav .nav-count").count() == 0
                 for theme in ["light", "dark"]:
                     await page.evaluate("theme => window.DoukuTheme.set(theme)", theme)
                     await page.evaluate("document.fonts.ready")
                     await page.locator("#library-sidebar").screenshot(
                         path=out / f"sidebar-{theme}.png", animations="disabled"
                     )
-                await page.click("#all-tags-button")
+                await page.click("#tags-nav")
                 await page.wait_for_selector("#tags-view:not(.hidden) #tags-rows tr")
+                assert await page.locator("#tags-nav").evaluate(
+                    "e => e.classList.contains('active')"
+                )
                 assert await page.locator("#panel-tabs [role=tab]").count() == 1
                 counts = await page.locator("#tags-rows .tag-count").all_text_contents()
                 assert [int(value) for value in counts] == sorted(
@@ -119,22 +124,25 @@ async def verify():
                         "() => !document.querySelector('#tags-rows .tag-pin')?.disabled"
                     )
 
+                def pinned_names():
+                    return [row["name"] for row in client.get("/api/tags").json()["sidebar"]]
+
                 for name in ["咖啡", "AI 代理"]:
                     await row(name).locator(".tag-pin").click()
                     await idle()
-                assert await page.locator("#sidebar-tags .tag-name").all_text_contents() == [
+                assert pinned_names() == [
                     "咖啡",
                     "AI 代理",
                 ]
                 await row("AI 代理").locator("[data-tag-action=up]").click()
                 await idle()
-                assert await page.locator("#sidebar-tags .tag-name").all_text_contents() == [
+                assert pinned_names() == [
                     "AI 代理",
                     "咖啡",
                 ]
                 await row("咖啡").drag_to(row("AI 代理"))
                 await idle()
-                assert await page.locator("#sidebar-tags .tag-name").all_text_contents() == [
+                assert pinned_names() == [
                     "咖啡",
                     "AI 代理",
                 ]
@@ -215,14 +223,16 @@ async def verify():
                         await page.screenshot(path=out / "tags-mobile.png", animations="disabled")
                 await page.reload()
                 await page.wait_for_selector("#tags-view:not(.hidden) #tags-rows tr")
-                assert await page.locator("#sidebar-tags .tag-name").all_text_contents() == ["咖啡"]
+                assert pinned_names() == ["咖啡"]
+                assert await row("咖啡").locator(".tag-pin").get_attribute("aria-pressed") == "true"
+                assert await page.locator("#library-sidebar .sidebar-tag").count() == 0
                 assert not await page.locator("#reading-fonts").count()
                 assert not errors, errors
                 assert not failed, failed
                 assert not external, external
                 report = {
                     "checks": [
-                        "sidebar cap and counts",
+                        "sidebar management entry without tag names or counts",
                         "pin and reorder with drag",
                         "search and sorts",
                         "single and multi selection panel",

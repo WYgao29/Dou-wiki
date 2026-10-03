@@ -90,7 +90,7 @@
     const dialog = $("tag-edit-dialog"); dialog.dataset.mode = mode;
     $("tag-edit-title").textContent = mode === "rename" ? "重命名标签" : "合并标签";
     $("tag-edit-description").textContent = mode === "rename" ? `重命名「${names[0]}」。旧名称会作为别名保留。`
-      : `合并 ${names.length} 个标签；源标签会成为目标标签的别名，以后 AI 自动复用目标标签。`;
+      : `合并 ${names.length} 个标签；源标签会成为目标标签的别名，后续写入沿用目标名称。`;
     $("tag-name-label").classList.toggle("hidden", mode !== "rename");
     $("tag-target-label").classList.toggle("hidden", mode !== "merge");
     $("tag-new-name").required = mode === "rename";
@@ -153,7 +153,7 @@
     pin.dataset.tagAction = "pin";
     pin.disabled = state.busy || pinFull;
     pin.setAttribute("aria-pressed", String(Boolean(row.pinned_at)));
-    pin.setAttribute("aria-label", pinFull ? `最多固定 ${PIN_LIMIT} 个` : `${row.pinned_at ? "取消固定" : "固定到侧栏"} ${row.name}`);
+    pin.setAttribute("aria-label", pinFull ? `最多固定 ${PIN_LIMIT} 个` : `${row.pinned_at ? "取消固定" : "固定"} ${row.name}`);
     if (pinFull) pin.title = `最多固定 ${PIN_LIMIT} 个`;
     return pin;
   }
@@ -289,7 +289,7 @@
     renderPanel();
   }
   async function open() {
-    D.hideAllViews(); D.setPage("tags"); $("tags-view").classList.remove("hidden");
+    D.hideAllViews(); D.setPage("tags"); D.setNav("tags-nav"); $("tags-view").classList.remove("hidden");
     document.title = "标签管理 · 抖库"; await load();
   }
   D.tags = {open, load, renderPanel};

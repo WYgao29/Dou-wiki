@@ -21,7 +21,7 @@ def test_pages_and_library_do_not_write_tag_vocabulary(tmp_path):
     with service.database.connect() as conn:
         before = [tuple(row) for row in conn.execute("SELECT * FROM tags ORDER BY name")]
     with local_client(app) as client:
-        assert "咖啡" in client.get("/").text
+        assert client.get("/").status_code == 200
         assert client.get("/api/library").json()["facets"]["sidebar_tags"][0]["name"] == "咖啡"
         with service.database.connect() as conn:
             assert [

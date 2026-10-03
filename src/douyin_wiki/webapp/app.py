@@ -509,10 +509,6 @@ def create_app(
                     catalog.refresh()
         return core.tags.overview(catalog.list_items(), persist=False)
 
-    templates.context_processors.append(
-        lambda request: {"sidebar_tags": read_tag_overview()["sidebar"]}
-    )
-
     def _local_write_origin_ok(request: Request) -> bool:
         """Require Origin or Referer to match this local host on write requests.
 

@@ -356,11 +356,11 @@ async def verify():
                             path=out / "mobile-selection.png", animations="disabled"
                         )
 
-                # Opening all tags from a mobile navigation drawer must release main inert.
+                # Opening tag management from mobile navigation must release main inert.
                 await page.set_viewport_size({"width": 390, "height": 900})
                 await fresh("/?view=list")
                 await page.click("#nav-toggle")
-                await page.click("#all-tags-button")
+                await page.click("#tags-nav")
                 assert not await page.locator("#main-content").evaluate("e => e.inert")
                 await page.wait_for_selector("#tags-view:not(.hidden) #tags-cards .tag-card")
                 assert await page.locator("#tags-search").is_visible()

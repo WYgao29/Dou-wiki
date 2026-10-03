@@ -114,6 +114,14 @@ flowchart LR
 {"job_id":"实际 job_id","producer":"my-agent","model":"当前模型","analysis":{"analysis_version":2,"title":"示例标题","one_liner":"示例一句话","relevance_to_inspiration":"","takeaways":[],"content_type":"other","facets":[],"content_card":{"kind":"other","notes":[]},"chapters":[],"knowledge_atoms":[],"actions":[],"open_questions":[],"reminders":[],"tags":[],"concepts":[],"entities":[],"contradictions":[]}}
 ```
 
+`tags` 只根据本篇的中心内容生成，不提供或参考已有标签清单。通常两个，最多三个；
+中心不够时可少写或为空。第一个写具体中心对象，第二个写所讨论的问题、方法或判断，
+第三个只用于另一个同等重要的中心。中心对象可以是 FDE、Data Agent 等专名，
+但顺带提到的产品、类比和例子不能作为标签，也不要用“AI”等背景词凑数。
+新分析提交时去除首尾空白、丢弃空标签并按原顺序去重，仍超过三个就拒绝；
+这个限制也适用于 `submit_analysis`，旧资料读取与索引保持兼容。
+落库仍解析用户已经确认的合并别名，不做语义近似归类。
+
 “需要登录授权”表示采集使用的浏览器需要登录或验证码。本机 Worker 通常已经
 显示 macOS 授权引导；用户完成登录后，抖库会验证授权并自动重试相同授权通道中仍然暂停的任务。
 Gateway 应先调用 `get_auth_status` 和 `get_job` 复核最新状态，不要反复打开浏览器或重复调用

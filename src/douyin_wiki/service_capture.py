@@ -630,7 +630,6 @@ class CaptureMixin:
                 analysis_metadata["existing_knowledge"] = self.indexer.find_related_claims(
                     context_text
                 )
-                analysis_metadata["existing_tags"] = self.tags.standard_names()
                 async with self.analysis_semaphore:
                     self.check_job_cancelled(job)
                     analysis_kwargs = (
@@ -669,6 +668,7 @@ class CaptureMixin:
                         f"模型生成的 {removed} 条无法核实的证据或内容已移除"
                     )
                 model_progress("evidence", 1, 1)
+            self._validate_analysis_tags(analysis, job_id=job.id)
             self.validate_analysis_evidence(analysis, evidence_context)
             artifacts["analysis"] = analysis.model_dump(mode="json")
             artifacts["llm_checkpoints"] = {}
@@ -689,6 +689,7 @@ class CaptureMixin:
 
         now = utc_now()
         validated_analysis = AnalysisResult.model_validate(artifacts["analysis"])
+        self._validate_analysis_tags(validated_analysis, job_id=job.id)
         self.validate_analysis_evidence(
             validated_analysis,
             {**artifacts, "metadata": metadata.model_dump(mode="json")},
@@ -1020,7 +1021,6 @@ class CaptureMixin:
                 ]
             )
             analysis_metadata["existing_knowledge"] = self.indexer.find_related_claims(context_text)
-            analysis_metadata["existing_tags"] = self.tags.standard_names()
             checkpoints = artifacts.setdefault("llm_checkpoints", {})
 
             def save_checkpoint(_fingerprint: str, _value: dict[str, Any]) -> None:
@@ -1055,6 +1055,7 @@ class CaptureMixin:
                 analysis = await self.analysis.analyze(
                     [], ocr_models, effective_inspirations, analysis_metadata, **kwargs
                 )
+            self._validate_analysis_tags(analysis, job_id=job.id)
             self.validate_analysis_evidence(
                 analysis,
                 {**artifacts, "metadata": metadata.model_dump(mode="json")},
@@ -1066,6 +1067,7 @@ class CaptureMixin:
 
         now = utc_now()
         validated_analysis = AnalysisResult.model_validate(artifacts["analysis"])
+        self._validate_analysis_tags(validated_analysis, job_id=job.id)
         self.validate_analysis_evidence(
             validated_analysis,
             {**artifacts, "metadata": metadata.model_dump(mode="json")},

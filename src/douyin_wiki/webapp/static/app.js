@@ -453,27 +453,8 @@ function renderFilters() {
     $$(".nav-item[data-section]").forEach((node) => node.classList.toggle("active", !state.tags.length && node.dataset.section === state.section));
     $("#topics-nav").classList.remove("active"); $("#trash-nav").classList.remove("active");
   }
-  renderSidebarTags();
   renderAppliedFilters();
   renderToolbarState();
-}
-
-function renderSidebarTags() {
-  const root = $("#sidebar-tags");
-  const tags = state.facets.sidebar_tags || [];
-  root.replaceChildren(...tags.map((tag) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "sidebar-tag";
-    button.append(window.Douku.node("span", "#", "tag-hash"), window.Douku.node("span", tag.name, "tag-name"), window.Douku.node("span", String(tag.count), "nav-count"));
-    const selected = state.panelPage === "library" && state.tags.includes(tag.name);
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-pressed", String(selected));
-    button.addEventListener("click", () => {
-      window.Douku.navigate(window.Douku.tagPath(tag.name));
-    });
-    return button;
-  }));
 }
 
 function activeFilterCount() {
@@ -1075,7 +1056,6 @@ function showLibrary(push = true) {
   $("#topics-nav").classList.remove("active");
   $("#trash-nav").classList.remove("active");
   $$(".nav-item[data-section]").forEach((node) => node.classList.toggle("active", !state.tags.length && node.dataset.section === state.section));
-  renderSidebarTags();
   if (push) history.pushState({}, "", currentLibraryURL());
   document.title = "资料库 · 抖库";
   renderLibrary();
@@ -1096,7 +1076,6 @@ function showTags() {
   state.currentEntry = ""; state.currentArticleItem = null; state.currentTopic = "";
   closeDrawers(false);
   window.Douku.tags.open();
-  renderSidebarTags();
 }
 window.Douku.refreshLibrary = () => loadLibrary({showLoading: false});
 
@@ -3239,7 +3218,6 @@ function bindEvents() {
   window.addEventListener("douku:page", (event) => {
     renderPanelTabs(event.detail.page);
     syncSessionScope();
-    renderSidebarTags();
   });
   $("#imports-popover").addEventListener("keydown", (event) => {
     if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
@@ -3470,7 +3448,7 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     if (panelBreakpoint() === "overlay" && isPanelOpen() && event.target.closest("#main-content") && !event.target.closest("#chat-toggle")) setChatPanelOpen(false);
     if (!event.target.closest("#entry-menu, .entry-more")) closeEntryMenu();
-    if (!event.target.closest("#filter-popover, #filter-toggle, #all-tags-button")) closeFilterPopover();
+    if (!event.target.closest("#filter-popover, #filter-toggle")) closeFilterPopover();
     if (!event.target.closest("#imports-popover, #imports-toggle")) closeImportsPopover();
     if (!event.target.closest("#chat-menu, #chat-menu-toggle")) closeChatMenu();
   }, {capture: true});

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 import pytest
 import yaml
 
@@ -45,7 +43,7 @@ def source(service, work_id, tags, *, managed=False):
     return path
 
 
-def test_sidebar_top_eight_counts_and_zero_hidden(tmp_path):
+def test_tag_overview_counts_and_management_only_navigation(tmp_path):
     config, service = _web_fixture(tmp_path)
     for i in range(12):
         source(service, str(1000 + i), [f"标签 {i}", "高频"])
@@ -58,16 +56,15 @@ def test_sidebar_top_eight_counts_and_zero_hidden(tmp_path):
         assert len(data["tags"][0]["recent"]) == 5
         html = client.get("/").text
         markup = ShellMarkup(html)
-        rows = [
+        sidebar_links = [
             attrs
             for _, attrs, parents in markup.elements
-            if ("div", "sidebar-tags") in parents and attrs.get("class") == "sidebar-tag"
+            if ("aside", "library-sidebar") in parents
+            and attrs.get("href", "").startswith("/?tag=")
         ]
-        assert len(rows) == 8
-        sidebar = re.search(r'id="sidebar-tags".*?</div>', html, re.S).group()
-        assert re.findall(r'class="nav-count">(.*?)</span>', sidebar)[0] == "12"
-        assert 'class="tag-hash" aria-hidden="true">#</span>' in sidebar
-        assert markup.element("all-tags-button")[1]["href"] == "/tags"
+        assert sidebar_links == []
+        assert markup.element("tags-nav")[1]["data-route"] == "/tags"
+        assert ("aside", "library-sidebar") in markup.element("tags-nav")[2]
         # Retain a vocabulary entry even when its last source is removed externally.
         (config.vault_path / "wiki/sources/标签资料_1000.md").unlink()
         data = client.get("/api/tags").json()
@@ -217,7 +214,7 @@ def test_multi_file_failure_rolls_back_files_registry_and_entry(tmp_path, monkey
     assert "源" in service.tags.standard_names()
 
 
-def test_tags_page_and_gateway_vocabulary(tmp_path):
+def test_tags_page_and_gateway_content_context(tmp_path):
     config, service = _web_fixture(tmp_path)
     with local_client(create_app(config, service=service, start_watcher=False)) as client:
         response = client.get("/tags")
@@ -231,10 +228,16 @@ def test_tags_page_and_gateway_vocabulary(tmp_path):
         job = service.database.create_job(
             CaptureRequest(share_text="https://www.douyin.com/video/123")
         )
-        service.database.update_job(job.id, status=JobStatus.AWAITING_AGENT_ANALYSIS)
+        service.database.update_job(
+            job.id,
+            status=JobStatus.AWAITING_AGENT_ANALYSIS,
+            artifacts={"metadata": {"existing_tags": ["咖啡"], "post_text": "文章中心内容"}},
+        )
         context = service.get_analysis_context(job.id)
-        assert "咖啡" in context["existing_tags"]
-        assert any("existing_tags" in rule for rule in context["rules"])
+        assert "existing_tags" not in context
+        assert "existing_tags" not in context["metadata"]
+        assert context["metadata"]["post_text"] == "文章中心内容"
+        assert service.database.get_job(job.id).artifacts["metadata"]["existing_tags"] == ["咖啡"]
 
 
 def test_duplicate_rules_are_candidates_only():

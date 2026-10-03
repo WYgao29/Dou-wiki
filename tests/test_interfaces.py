@@ -30,7 +30,6 @@ def test_web_version_import_is_lightweight_and_keeps_package_exports() -> None:
     code = """
 import sys
 from douyin_wiki.webapp.version import WEB_VERSION
-assert WEB_VERSION == "0.2.43"
 assert "douyin_wiki.webapp.app" not in sys.modules
 import douyin_wiki.webapp as webapp
 assert {"create_app", "run_web"} <= set(dir(webapp))
@@ -38,6 +37,7 @@ from douyin_wiki.webapp import create_app, run_web
 from douyin_wiki.webapp import app
 assert create_app is app.create_app
 assert run_web is app.run_web
+assert app.WEB_VERSION == WEB_VERSION
 """
     result = subprocess.run(
         [sys.executable, "-B", "-c", code],

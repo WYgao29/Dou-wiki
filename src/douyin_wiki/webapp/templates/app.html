@@ -38,17 +38,11 @@
       </nav>
 
       <section class="sidebar-section"><div class="sidebar-section-heading"><h2>专题</h2></div><button class="nav-item" id="topics-nav" type="button"><svg aria-hidden="true"><use href="/static/icons.svg#layers"></use></svg><span>专题</span></button><div id="sidebar-recent-topics" class="sidebar-recent-topics"></div></section>
-      <section class="sidebar-section tags-section" aria-labelledby="common-tags-title">
-        <div class="sidebar-section-heading"><h2 id="common-tags-title">标签</h2></div>
-        <div id="sidebar-tags" class="sidebar-tags">{% for tag in sidebar_tags %}<a class="sidebar-tag" href="/?tag={{ tag.name | urlencode }}"><span class="tag-hash" aria-hidden="true">#</span><span class="tag-name">{{ tag.name }}</span><span class="nav-count">{{ tag.count }}</span></a>{% endfor %}</div>
-        <a class="all-tags-link" id="all-tags-button" href="/tags" data-route="/tags">全部标签 →</a>
-      </section>
-
       <section class="sidebar-section sidebar-operations" aria-label="操作">
         <div class="sidebar-section-heading"><h2>工作</h2></div>
         <button class="nav-item" id="imports-nav" type="button" data-route="/imports"><svg aria-hidden="true"><use href="/static/icons.svg#inbox"></use></svg><span>导入内容</span></button>
         <button class="nav-item" id="jobs-nav" type="button" data-route="/jobs"><svg aria-hidden="true"><use href="/static/icons.svg#list-checks"></use></svg><span>任务中心</span></button>
-
+        <a class="nav-item" id="tags-nav" href="/tags" data-route="/tags"><svg aria-hidden="true"><use href="/static/icons.svg#tag"></use></svg><span>标签</span></a>
         <button class="nav-item" id="trash-nav" type="button"><svg aria-hidden="true"><use href="/static/icons.svg#trash-2"></use></svg><span>废纸篓</span></button>
       </section>
       </div>
@@ -264,7 +258,7 @@
         <p id="tags-error" class="dialog-error hidden" role="alert"></p>
         <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th><input id="tags-select-all" type="checkbox" aria-label="选择所有搜索结果"></th><th><button type="button" data-tag-sort="name">标签名</button></th><th aria-sort="descending"><button type="button" data-tag-sort="count">数量 ↓</button></th><th><button type="button" data-tag-sort="last_used_at">最近使用时间</button></th><th>固定</th></tr></thead><tbody id="tags-rows"></tbody></table></div><div id="tags-cards" class="tag-cards"></div>
         <p id="tags-empty" class="hint-copy hidden">没有符合条件的标签。</p>
-        <p class="hint-copy tags-help">固定标签优先显示在侧栏，最多 8 个。拖动已固定行可排序，也可使用行内的上移 / 下移按钮。</p>
+        <p class="hint-copy tags-help">最多固定 8 个标签。拖动已固定行可调整固定顺序，也可使用行内的上移 / 下移按钮。</p>
       </section>
     </main>
 

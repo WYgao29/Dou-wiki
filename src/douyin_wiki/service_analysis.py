@@ -10,6 +10,7 @@ from .adapters.llm import (
     PROMPT_VERSION,
     OpenAICompatibleProvider,
 )
+from .analysis_rules import CONTENT_TAG_RULES, MAX_ANALYSIS_TAGS
 from .errors import (
     JobStateError,
 )
@@ -32,6 +33,25 @@ from .vault import safe_filename
 
 
 class AnalysisMixin:
+    def _validate_analysis_tags(
+        self, analysis: AnalysisResult, *, job_id: str | None = None
+    ) -> None:
+        """Enforce new-analysis limits without restricting historical storage."""
+        tags = list(dict.fromkeys(tag.strip() for tag in analysis.tags if tag.strip()))
+        if len(tags) > MAX_ANALYSIS_TAGS:
+            if job_id is not None:
+                # Do not replay an invalid analysis or its model checkpoints on retry.
+                self.database.update_job(
+                    job_id,
+                    artifacts={"llm_checkpoints": {}},
+                    remove_artifacts={"analysis", "analysis_candidate"},
+                )
+            raise JobStateError(
+                f"分析标签最多 {MAX_ANALYSIS_TAGS} 个，请按作品中心内容精简后重新提交",
+                details={"tag_count": len(tags), "max_tags": MAX_ANALYSIS_TAGS},
+            )
+        analysis.tags = tags
+
     def get_analysis_context(self, job_id: str) -> dict[str, Any]:
         job = self.database.get_job(job_id)
         if job.status not in {
@@ -41,7 +61,8 @@ class AnalysisMixin:
             raise JobStateError("只有处于“待 AI 处理”或“需要人工复核”状态的任务可读取分析上下文")
         artifacts = job.artifacts
         transcript = artifacts.get("transcript_corrected") or artifacts.get("transcript_raw", [])
-        metadata = artifacts.get("metadata", {})
+        metadata = dict(artifacts.get("metadata", {}))
+        metadata.pop("existing_tags", None)
         context_text = "\n".join(
             [
                 *[item.text for item in job.request.inspirations],
@@ -71,10 +92,9 @@ class AnalysisMixin:
                 for issue in self.database.get_review_issues(job_id, open_only=True)
             ],
             "existing_knowledge": self.indexer.find_related_claims(context_text),
-            "existing_tags": self.tags.standard_names(),
             "analysis_schema": AnalysisResult.model_json_schema(),
             "rules": [
-                "标签优先复用 existing_tags 中的标准标签；只有确实没有合适的才新建。",
+                *CONTENT_TAG_RULES,
                 "根据原话上下文和对应 OCR 直接给出最贴近原意的校正版，不请求人工校对，"
                 "不增加独立复核调用；数字、金额、人名缺少依据时保留原表述。",
                 "灵感必须逐字保留，不得改写或补造。",
@@ -194,6 +214,7 @@ class AnalysisMixin:
         if self.database.get_review_issues(job_id, open_only=True):
             raise JobStateError("逐字稿仍有未解决疑点")
         validated = AnalysisResult.model_validate(analysis)
+        self._validate_analysis_tags(validated)
         self.validate_analysis_evidence(validated, job.artifacts)
         reanalyze_entry_id = job.artifacts.get("reanalyze_entry_id")
         video_id = job.artifacts.get("resolved", {}).get("video_id", "")
@@ -274,6 +295,7 @@ class AnalysisMixin:
         ):
             incoming["one_liner"] = incoming["summary"]
         validated = AnalysisResult.model_validate(incoming)
+        self._validate_analysis_tags(validated)
         self.validate_analysis_evidence(validated, data)
         validated = AnalysisResult.model_validate(
             {
@@ -385,6 +407,7 @@ class AnalysisMixin:
         self.database.update_job(job.id, status=JobStatus.ANALYZING, progress=0.72)
         if "analysis" not in artifacts:
             metadata = dict(artifacts.get("metadata", {}))
+            metadata.pop("existing_tags", None)
             context_text = "\n".join(
                 [
                     *[item.text for item in entry.inspirations],
@@ -394,7 +417,6 @@ class AnalysisMixin:
                 ]
             )
             metadata["existing_knowledge"] = self.indexer.find_related_claims(context_text)
-            metadata["existing_tags"] = self.tags.standard_names()
             checkpoints = artifacts.setdefault("llm_checkpoints", {})
 
             def save_checkpoint(_fingerprint: str, _value: dict[str, Any]) -> None:
@@ -433,6 +455,7 @@ class AnalysisMixin:
 
         try:
             validated = AnalysisResult.model_validate(artifacts["analysis"])
+            self._validate_analysis_tags(validated, job_id=job.id)
             evidence_context = {**current_data, **artifacts}
             if self.config.analysis_mode == AnalysisMode.PROVIDER:
                 audit: list[dict[str, Any]] = []

@@ -34,6 +34,8 @@ flowchart TD
 
 新视频由同一分析模型直接校正后继续入库，普通 ASR/OCR 疑点只记录，不新增人工复核步骤。旧 `needs_review` 任务可显式重试。授权失效、长视频需确认、模型错误等仍按对应任务状态处理。
 
+Provider 的完整分段汇总超出模型预算时，保留各段内容与证据并降级拼接。只有最终拼接的标签超过三个时，才用全部分段内容概要单独归纳全文标签，不直接截断或提供已有标签清单；归纳也超出预算时留空标签，在分析中记录原因。标签归纳的连接错误或无效输出仍使任务失败，重试复用已成功的分段检查点。
+
 ## 文件职责
 
 以下模块路径相对于 `src/douyin_wiki/`。
@@ -46,6 +48,7 @@ flowchart TD
 | `database.py`、`vault.py` | SQLite 持久状态与索引；Markdown、侧车和 Vault Git |
 | `favorites.py`、`favorites_models.py`、`favorites_store.py` | 收藏清点、选择、幂等派发和批次汇总；数据契约及批次持久存储 |
 | `tags.py` | 标签、别名与资料关联；沿用数据库事务和解析约定 |
+| `analysis_rules.py` | 网关与 Provider 共用的内容标签规则与新分析数量上限 |
 | `adapters/` | 抖音解析与下载、媒体处理、模型、向量和系统提醒适配；`chat.py` 共用 HTTP/SSE 聊天传输 |
 | `webapp/chat.py`、`webapp/version.py` | Web 聊天上下文与旧聊天导入兼容；Web 版本常量，`app.WEB_VERSION` 继续导出，包入口延迟加载 `create_app` / `run_web` |
 | `search.py` | 证据分块、FTS 与向量检索、资料关系 |

@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from ..analysis_rules import CONTENT_TAG_RULES, MAX_ANALYSIS_TAGS
 from ..config import LLMSettings, llm_is_configured
 from ..errors import (
     ExternalToolError,
@@ -31,7 +32,7 @@ from ..models import (
 )
 from ..secrets import get_secret
 
-PROMPT_VERSION = "v2.3-context-correction"
+PROMPT_VERSION = "v2.4-content-tags"
 
 
 class ModelLimitError(ExternalToolError):
@@ -1254,18 +1255,17 @@ context_before/context_after 只供理解，不得复制进当前段的 text；
             on_progress("merge", 0, 0)
         merge_count = 0
 
-        async def merge(group: list[dict[str, Any]]) -> dict[str, Any]:
+        async def merge(group: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
             nonlocal merge_count
             if len(group) == 1:
-                return group[0]
+                return group[0], False
             if len(group) > 3:
                 size = (len(group) + 2) // 3
-                return await merge(
-                    [
-                        await merge(group[index : index + size])
-                        for index in range(0, len(group), size)
-                    ]
-                )
+                children = []
+                for index in range(0, len(group), size):
+                    child, _ = await merge(group[index : index + size])
+                    children.append(child)
+                return await merge(children)
             inherited: set[tuple[int | None, str]] = set()
             inherited_quotes: set[str] = set()
             for partial in group:
@@ -1324,7 +1324,7 @@ context_before/context_after 只供理解，不得复制进当前段的 text；
                     merge_count += 1
                     if on_progress is not None:
                         on_progress("merge", merge_count, 0)
-                    return result
+                    return result, False
                 except ModelLimitError:
                     pass
             if len(group) == 2:
@@ -1334,17 +1334,79 @@ context_before/context_after 只供理解，不得复制进当前段的 text；
                     if not fits_input
                     else "两个分段结果仍超过模型汇总预算，已降级拼接分段结果"
                 )
-                return _soft_merge_analysis_partials(group, reason=warning)
+                return _soft_merge_analysis_partials(group, reason=warning), True
             middle = len(group) // 2
-            return await merge(
-                [
-                    await merge(group[:middle]),
-                    await merge(group[middle:]),
-                ]
-            )
+            left, _ = await merge(group[:middle])
+            right, _ = await merge(group[middle:])
+            return await merge([left, right])
 
-        result = await merge(partials)
+        result, soft_merged = await merge(partials)
+        if soft_merged and len(result.get("tags", [])) > MAX_ANALYSIS_TAGS:
+            # A union of locally valid tags is not a whole-article tag decision.
+            # Reuse all original part summaries, rather than keeping the first three.
+            tags, warning = await self._summarize_fallback_tags(
+                partials, checkpoints=checkpoints, on_checkpoint=on_checkpoint
+            )
+            result["tags"] = tags
+            if warning:
+                result["open_questions"].append(warning)
+                result["content_card"]["notes"].append(warning)
         return _preserve_partial_coverage(AnalysisResult.model_validate(result), partials)
+
+    async def _summarize_fallback_tags(
+        self,
+        partials: list[dict[str, Any]],
+        *,
+        checkpoints: dict[str, Any] | None,
+        on_checkpoint: Callable[[str, dict[str, Any]], None] | None,
+    ) -> tuple[list[str], str | None]:
+        """Recover whole-article tags without replaying the full analysis."""
+        system = "\n".join(CONTENT_TAG_RULES) + (
+            "\n输入是按作品顺序排列的全部分段内容概要。根据整篇中心内容归纳标签，"
+            '只输出 JSON 对象 {"tags": ["标签"]}，不要输出其他分析字段。'
+        )
+        sources = [AnalysisResult.model_validate(part) for part in partials]
+        payload = {
+            "content_outline": [
+                {
+                    "title": source.title,
+                    "one_liner": source.one_liner,
+                    "takeaways": [text[:240] for text in source.takeaways],
+                }
+                for source in sources
+            ]
+        }
+        schema = {
+            "type": "object",
+            "properties": {"tags": {"type": "array", "items": {"type": "string"}}},
+            "required": ["tags"],
+            "additionalProperties": False,
+        }
+
+        def validate_tags(value: dict[str, Any]) -> list[str]:
+            if "tags" not in value:
+                raise ValueError("全文标签归纳结果缺少 tags")
+            analysis = AnalysisResult.model_validate({"title": "全文标签", "tags": value["tags"]})
+            tags = list(dict.fromkeys(tag.strip() for tag in analysis.tags if tag.strip()))
+            if len(tags) > MAX_ANALYSIS_TAGS:
+                raise ValueError(f"全文分析标签最多 {MAX_ANALYSIS_TAGS} 个")
+            return tags
+
+        warning = "分段内容无法在模型预算内完成全文标签归纳，降级结果暂不写标签。"
+        if not self._fits(system, payload, schema):
+            return [], warning
+        try:
+            result = await self._checkpointed_call(
+                system,
+                payload,
+                schema,
+                validator=validate_tags,
+                checkpoints=checkpoints,
+                on_checkpoint=on_checkpoint,
+            )
+        except ModelLimitError:
+            return [], warning
+        return validate_tags(result), None
 
     async def _analysis_call(
         self,
@@ -1596,8 +1658,7 @@ image_index、quote、context、confidence、valid_until、review_after、stale�
 用户灵感必须逐字保留，只能用于调整分析重点，禁止替用户发明灵感。
 metadata.existing_knowledge 是从本地知识库召回的既有主张；只有新旧主张明确不兼容时才写入
 contradictions，必须引用其中真实存在的 entry_id/claim_id，保留双方来源，不要擅自裁决或覆盖。
-metadata.existing_tags 是已有标准标签清单。tags 优先复用其中合适的标签，保持原有拼写；
-只有确实没有合适的标准标签时才新建，不生成已有标签的近义词或中英别名。
+""" + "\n".join(CONTENT_TAG_RULES) + """
 日期、促销、活动或待办放入 reminders；不能确定绝对时间时 due_at=null、needs_clarification=true。
 输出一个 JSON 对象，字段必须兼容：title, analysis_version=2, one_liner,
 relevance_to_inspiration, takeaways[], content_type, facets[], content_card, chapters[],

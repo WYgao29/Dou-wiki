@@ -168,7 +168,7 @@ body:has(.app-shell[data-page="library"] .selection-bar:not(.hidden)) .toast {
 }
 .primary-nav { display: grid; gap: 0; }
 .nav-item {
-  width: 100%; text-align: left;
+  width: 100%; text-align: left; text-decoration: none;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   min-height: 32px; padding: 0 var(--space-2); font-size: var(--fs-14);
   font-weight: var(--fw-regular); border-radius: var(--radius);
