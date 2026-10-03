@@ -18,6 +18,7 @@ from .gateway_protocol import (
     GatewayProtocol,
     build_compact_context,
     gateway_phase,
+    require_context_revision,
     validate_gateway_protocol,
 )
 from .gateway_sources import build_source_catalog
@@ -158,7 +159,10 @@ class AnalysisMixin:
         producer: str,
         model: str = "agent",
         review_issues: list[ReviewIssue] | None = None,
+        gateway_protocol: GatewayProtocol = 1,
+        context_revision: str | None = None,
     ) -> JobRecord:
+        protocol = validate_gateway_protocol(gateway_protocol)
         job = self.database.get_job(job_id)
         if job.status != JobStatus.AWAITING_AGENT_ANALYSIS:
             raise JobStateError("只有处于“待 AI 处理”状态的任务可提交逐字稿校正")
@@ -167,11 +171,19 @@ class AnalysisMixin:
             or job.artifacts.get("metadata", {}).get("source_kind") == SourceKind.IMAGE_NOTE.value
         ):
             raise JobStateError("当前任务已进入分析阶段，不可再次提交逐字稿校正")
+        if protocol == 2:
+            if self.config.analysis_mode != AnalysisMode.GATEWAY:
+                raise JobStateError("紧凑协议仅用于 Gateway 分析模式")
+            if gateway_phase(job) != "transcript_correction":
+                raise JobStateError("当前阶段不可提交逐字稿校正")
+            require_context_revision(job, context_revision)
         raw = [
             TranscriptSegment.model_validate(item)
             for item in job.artifacts.get("transcript_raw", [])
         ]
         known_ids = {segment.id for segment in raw}
+        if protocol == 2 and len(known_ids) != len(raw):
+            raise JobStateError("原稿片段 ID 重复，不能应用校正补丁")
         by_id: dict[int, str] = {}
         for correction in corrections:
             if correction.id not in known_ids:
@@ -182,13 +194,25 @@ class AnalysisMixin:
             if not text:
                 raise JobStateError("校正文本不能仅包含空白")
             by_id[correction.id] = text
-        if set(by_id) != known_ids:
+        if protocol == 1 and set(by_id) != known_ids:
             missing_ids = sorted(known_ids - set(by_id))
             raise JobStateError(f"校正结果必须覆盖全部片段，缺少 ID: {missing_ids}")
-        corrected = [segment.model_copy(update={"text": by_id[segment.id]}) for segment in raw]
+        corrected = [
+            segment.model_copy(update={"text": by_id.get(segment.id, segment.text)})
+            for segment in raw
+        ]
         notes = deduplicate_review_issues([*detect_review_issues(raw), *(review_issues or [])])
         artifact_update = {
-            "transcript_corrected": [item.model_dump(mode="json") for item in corrected],
+            "transcript_corrected": (
+                [
+                    {**source, "text": item.text}
+                    for source, item in zip(
+                        job.artifacts.get("transcript_raw", []), corrected, strict=True
+                    )
+                ]
+                if protocol == 2
+                else [item.model_dump(mode="json") for item in corrected]
+            ),
             "transcript_edits": [
                 {
                     "id": source.id,
