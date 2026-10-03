@@ -68,6 +68,15 @@ def build_source_catalog(
     )
     if is_image_note:
         transcript = []
+    segment_ids = [segment["id"] for segment in transcript]
+    if len(segment_ids) != len(set(segment_ids)):
+        raise JobStateError(
+            "逐字稿片段 ID 重复，不能生成来源编号",
+            details={
+                "reason": "invalid_source_ref",
+                "path": "transcript",
+            },
+        )
     sources: list[dict[str, Any]] = []
     projected_ocr: list[dict[str, Any]] = []
     refs: dict[str, SourceSpan] = {}

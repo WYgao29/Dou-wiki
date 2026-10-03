@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import timedelta
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from douyin_wiki.errors import JobStateError
 from douyin_wiki.gateway_protocol import (
@@ -377,3 +378,59 @@ def test_legacy_context_and_non_gateway_behavior_remain(service):
 def test_protocol_rejects_values_other_than_integer_versions(value):
     with pytest.raises(ValueError):
         validate_gateway_protocol(value)
+
+
+@pytest.mark.parametrize("phase", ["transcript_correction", "analysis"])
+def test_duplicate_audio_ids_do_not_expose_ambiguous_references(phase):
+    artifacts = {
+        "transcript_raw": [
+            {"id": 0, "start_ms": 0, "end_ms": 1000, "text": "第一段原文"},
+            {"id": 0, "start_ms": 1000, "end_ms": 2000, "text": "第二段不同原文"},
+        ]
+    }
+    before = deepcopy(artifacts)
+    with pytest.raises(JobStateError) as error:
+        build_source_catalog(artifacts, phase=phase)
+    assert error.value.details["reason"] == "invalid_source_ref"
+    assert artifacts == before
+
+
+@pytest.mark.parametrize(
+    "atom",
+    [
+        {"id": "k", "statement": "事实", "quote": "原文", "timestamp_ms": 0, "source_refs": None},
+        {
+            "id": "k",
+            "statement": "推断",
+            "atom_type": "inference",
+            "provenance": "ai_inference",
+            "source_refs": ["a:0:0"],
+        },
+        {
+            "id": "k",
+            "statement": "推断",
+            "atom_type": "inference",
+            "provenance": "ai_inference",
+            "quote": "原文",
+            "timestamp_ms": 0,
+            "source_refs": ["a:0:0"],
+        },
+    ],
+)
+def test_advertised_schema_rejects_null_refs_and_inference_with_refs(atom):
+    validator = Draft202012Validator(compact_analysis_schema())
+    assert list(validator.iter_errors({"title": "资料", "knowledge_atoms": [atom]}))
+
+
+def test_advertised_schema_accepts_omitted_refs_and_valid_ref_evidence():
+    schema = compact_analysis_schema()
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    for atom in [
+        {"id": "k", "statement": "事实", "quote": "原文", "timestamp_ms": 0},
+        {"id": "k", "statement": "事实", "source_refs": ["a:0:0"]},
+        {"id": "k", "statement": "推断", "atom_type": "inference", "provenance": "ai_inference"},
+    ]:
+        incoming = {"title": "资料", "knowledge_atoms": [atom]}
+        validator.validate(incoming)
+        validate_compact_analysis_shape(incoming)

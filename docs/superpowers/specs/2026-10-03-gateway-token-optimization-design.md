@@ -1,6 +1,6 @@
 # Gateway token 优化设计规格
 
-日期：2026-10-03。状态：架构设计、本书面规格和[实施计划](../plans/2026-10-03-gateway-token-optimization.md)均已获用户确认，代码已在 `codex/gateway-token-optimization` 实现，正在完成隔离验收；交付记录见实施计划。主线集成与真实客户端切换尚未执行。
+日期：2026-10-03。状态：架构设计、本书面规格和[实施计划](../plans/2026-10-03-gateway-token-optimization.md)均已获用户确认，已在 `codex/gateway-token-optimization` 实现并通过隔离离线验收与自审修复；交付记录见实施计划。主线集成与真实客户端切换尚未执行。
 
 本规格基于工作区对应提交 `400cf269f0cd375547833a074acfc1107c2c82eb` 核对。生产服务是否已加载该版本未核验。实现后的业务流程仍以 [Gateway Agent 接入指南](../../gateway-agents.md) 为唯一共用入口，本文件记录开发设计，不代替现行调用契约。
 

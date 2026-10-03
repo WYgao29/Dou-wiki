@@ -90,7 +90,7 @@ _evidence_fields.update(
         "timestamp_ms": (int | None, Field(default=None, ge=0)),
         "quote": (str | None, Field(default=None, min_length=1)),
         "evidence_type": (Literal["audio", "ocr", "audio+ocr"] | None, None),
-        "source_refs": (SourceRefs | None, None),
+        "source_refs": (SourceRefs, Field(default_factory=list)),
     }
 )
 RefChapterEvidence = create_model("RefChapterEvidence", **_evidence_fields)
@@ -103,13 +103,13 @@ RefKnowledgeAtom = create_model(
     "RefKnowledgeAtom",
     __base__=KnowledgeAtom,
     provenance=(KnowledgeAtom.model_fields["provenance"].annotation | None, None),
-    source_refs=(SourceRefs | None, None),
+    source_refs=(SourceRefs, Field(default_factory=list)),
 )
 RefReminderCandidate = create_model(
     "RefReminderCandidate",
     __base__=ReminderCandidate,
     source_quote=(str | None, None),
-    source_refs=(SourceRefs | None, None),
+    source_refs=(SourceRefs, Field(default_factory=list)),
 )
 _analysis_fields = {
     name: value
@@ -221,6 +221,30 @@ def compact_analysis_schema() -> dict[str, Any]:
             "required": ["source_quote"],
             "properties": {"source_quote": {"type": "string", "minLength": 1}},
         },
+    ]
+    definitions["RefKnowledgeAtom"]["allOf"] = [
+        {
+            "if": {
+                "anyOf": [
+                    {
+                        "required": ["atom_type"],
+                        "properties": {"atom_type": {"const": "inference"}},
+                    },
+                    {
+                        "required": ["provenance"],
+                        "properties": {"provenance": {"const": "ai_inference"}},
+                    },
+                ]
+            },
+            "then": {
+                "required": ["atom_type", "provenance"],
+                "properties": {
+                    "atom_type": {"const": "inference"},
+                    "provenance": {"const": "ai_inference"},
+                },
+                "not": {"required": ["source_refs"]},
+            },
+        }
     ]
     return _compact_schema(schema)
 
