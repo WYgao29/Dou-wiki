@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    ValidationError,
     create_model,
 )
 
@@ -226,7 +227,20 @@ def compact_analysis_schema() -> dict[str, Any]:
 
 def validate_compact_analysis_shape(analysis: dict[str, Any]) -> None:
     # Validate without serializing defaults back into the caller's payload.
-    CompactAnalysis.model_validate(analysis)
+    try:
+        CompactAnalysis.model_validate(analysis)
+    except ValidationError as error:
+        issues = error.errors(include_input=False, include_context=False, include_url=False)
+        ref_issues = [issue for issue in issues if "source_refs" in issue["loc"]]
+        if ref_issues:
+            raise JobStateError(
+                "来源编号列表格式无效",
+                details={
+                    "reason": "invalid_source_ref",
+                    "errors": ref_issues[:8],
+                },
+            ) from error
+        raise
 
     def fail(path: str, message: str) -> None:
         raise JobStateError(message, details={"reason": "invalid_source_ref", "path": path})

@@ -19,9 +19,10 @@ from .gateway_protocol import (
     build_compact_context,
     gateway_phase,
     require_context_revision,
+    validate_compact_analysis_shape,
     validate_gateway_protocol,
 )
-from .gateway_sources import build_source_catalog
+from .gateway_sources import build_source_catalog, expand_source_references
 from .models import (
     AnalysisMode,
     AnalysisResult,
@@ -248,7 +249,10 @@ class AnalysisMixin:
         *,
         producer: str,
         model: str = "agent",
+        gateway_protocol: GatewayProtocol = 1,
+        context_revision: str | None = None,
     ) -> JobRecord:
+        protocol = validate_gateway_protocol(gateway_protocol)
         job = self.database.get_job(job_id)
         if job.status != JobStatus.AWAITING_AGENT_ANALYSIS:
             raise JobStateError("只有处于“待 AI 处理”状态的任务可提交分析")
@@ -260,6 +264,18 @@ class AnalysisMixin:
             raise JobStateError("请先提交逐字稿校正")
         if self.database.get_review_issues(job_id, open_only=True):
             raise JobStateError("逐字稿仍有未解决疑点")
+        if protocol == 2:
+            if self.config.analysis_mode != AnalysisMode.GATEWAY:
+                raise JobStateError("紧凑协议仅用于 Gateway 分析模式")
+            if gateway_phase(job) != "analysis":
+                raise JobStateError("请读取当前分析阶段上下文")
+            require_context_revision(job, context_revision)
+            validate_compact_analysis_shape(analysis)
+            analysis = expand_source_references(
+                analysis,
+                build_source_catalog(job.artifacts, phase="analysis"),
+                source_kind=source_kind,
+            )
         validated = AnalysisResult.model_validate(analysis)
         self._validate_analysis_tags(validated)
         self.validate_analysis_evidence(validated, job.artifacts)

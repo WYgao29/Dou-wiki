@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from douyin_wiki.errors import JobStateError
 from douyin_wiki.gateway_protocol import context_revision
+from douyin_wiki.gateway_sources import build_source_catalog, expand_source_references
 from douyin_wiki.models import AnalysisMode, JobStatus, ReviewIssue, TranscriptCorrection
 from tests.support.gateway import make_gateway_job
 
@@ -215,3 +216,440 @@ def test_legacy_full_correction_and_notes_remain_compatible(service):
     assert updated.artifacts["correction_notes"][0]["id"] == "note"
     assert updated.artifacts["review_issues"] == []
     assert service.database.get_review_issues(job.id, open_only=True) == []
+
+
+def test_refs_expand_to_exact_original_quote_without_mutating_input(service):
+    job = make_gateway_job(service, phase="analysis")
+    catalog = build_source_catalog(job.artifacts, phase="analysis")
+    incoming = {
+        "title": "资料",
+        "knowledge_atoms": [{"id": "atom-1", "statement": "第二段内容", "source_refs": ["a:1:0"]}],
+    }
+    before = deepcopy(incoming)
+    expanded = expand_source_references(incoming, catalog, source_kind="video")
+    atom = expanded["knowledge_atoms"][0]
+    assert atom["quote"] == "原始第二段。"
+    assert atom["timestamp_ms"] == 5000
+    assert atom["provenance"] == "audio"
+    assert "source_refs" not in atom
+    assert incoming == before
+
+
+def test_ref_and_explicit_submission_produce_equivalent_analysis(service):
+    ref_job = make_gateway_job(service, phase="analysis")
+    explicit_job = make_gateway_job(service, phase="analysis")
+    common = {
+        "title": "资料",
+        "one_liner": "原话摘要",
+        "tags": ["原话"],
+        "chapters": [
+            {
+                "start_ms": 0,
+                "title": "开头",
+                "summary": "原话",
+                "evidence": [{"source_refs": ["a:0:0"]}],
+            }
+        ],
+        "knowledge_atoms": [{"id": "k", "statement": "第二段内容", "source_refs": ["a:1:0"]}],
+    }
+    explicit = deepcopy(common)
+    explicit["chapters"][0]["evidence"][0] = {
+        "quote": "第一段原话。",
+        "timestamp_ms": 0,
+        "evidence_type": "audio",
+    }
+    explicit["knowledge_atoms"][0] = {
+        "id": "k",
+        "statement": "第二段内容",
+        "quote": "原始第二段。",
+        "timestamp_ms": 5000,
+        "provenance": "audio",
+    }
+    ref_result = service.submit_gateway_analysis(
+        ref_job.id,
+        common,
+        producer="test-agent",
+        gateway_protocol=2,
+        context_revision=context_revision(ref_job),
+    )
+    explicit_result = service.submit_gateway_analysis(
+        explicit_job.id,
+        explicit,
+        producer="test-agent",
+        gateway_protocol=2,
+        context_revision=context_revision(explicit_job),
+    )
+    assert ref_result.artifacts["analysis"] == explicit_result.artifacts["analysis"]
+    assert ref_result.artifacts["analysis"]["claims"][0]["source_quote"] == "原始第二段。"
+    assert ref_result.status == JobStatus.QUEUED
+
+
+@pytest.mark.parametrize("source_kind,provenance", [("video", "ocr"), ("image_note", "image_ocr")])
+def test_ocr_ref_derives_provenance_without_audio_default(service, source_kind, provenance):
+    job = make_gateway_job(
+        service,
+        phase="analysis",
+        source_kind=source_kind,
+        artifacts={
+            "metadata": {
+                "source_kind": source_kind,
+                "image_paths": ["1.jpg"],
+                "duration_seconds": 90,
+            },
+            "ocr": [
+                {
+                    "text": "表格原文２０％",
+                    "timestamp_ms": 1000 if source_kind == "video" else None,
+                    "image_index": 1 if source_kind == "image_note" else None,
+                }
+            ],
+        },
+    )
+    submitted = service.submit_gateway_analysis(
+        job.id,
+        {
+            "title": "资料",
+            "knowledge_atoms": [{"id": "k", "statement": "参数", "source_refs": ["o:0:0"]}],
+        },
+        producer="test-agent",
+        gateway_protocol=2,
+        context_revision=context_revision(job),
+    )
+    atom = submitted.artifacts["analysis"]["knowledge_atoms"][0]
+    assert atom["provenance"] == provenance and atom["quote"] == "表格原文２０％"
+    assert atom["timestamp_ms"] == (1000 if source_kind == "video" else None)
+    assert atom["image_index"] == (1 if source_kind == "image_note" else None)
+
+
+def test_cross_segment_and_unicode_refs_preserve_complete_original_ranges(service):
+    transcript = [
+        {"id": 0, "start_ms": 0, "end_ms": 1000, "text": "ΟΣ"},
+        {"id": 1, "start_ms": 1000, "end_ms": 2000, "text": " 。！ "},
+        {"id": 2, "start_ms": 2000, "end_ms": 3000, "text": "Α"},
+        {"id": 3, "start_ms": 4000, "end_ms": 5000, "text": "Straße/oﬃce"},
+    ]
+    job = make_gateway_job(
+        service, phase="analysis", artifacts={"transcript_corrected": transcript}
+    )
+    catalog = build_source_catalog(job.artifacts, phase="analysis")
+    analysis = {
+        "title": "资料",
+        "knowledge_atoms": [
+            {"id": "greek", "statement": "原文", "source_refs": ["a:0:0", "a:2:0"]},
+            {"id": "expanded", "statement": "原文", "source_refs": ["a:3:0"]},
+        ],
+    }
+    expanded = expand_source_references(analysis, catalog, source_kind="video")
+    assert expanded["knowledge_atoms"][0]["quote"] == "ΟΣ\n 。！ \nΑ"
+    assert expanded["knowledge_atoms"][1]["quote"] == "Straße/oﬃce"
+    submitted = service.submit_gateway_analysis(
+        job.id,
+        analysis,
+        producer="test-agent",
+        gateway_protocol=2,
+        context_revision=context_revision(job),
+    )
+    assert submitted.artifacts["analysis"]["knowledge_atoms"][0]["timestamp_ms"] == 0
+
+
+@pytest.mark.parametrize(
+    "refs", [["a:999:0"], ["o:0:0"], ["a:0:0", "a:2:0"], ["a:1:0", "a:1:0"], ["a:1:0", "a:0:0"]]
+)
+def test_refs_reject_unknown_hidden_noncontiguous_and_duplicate_sources(service, refs):
+    job = make_gateway_job(service, phase="analysis")
+    corrected = deepcopy(job.artifacts["transcript_corrected"])
+    corrected.append({"id": 2, "start_ms": 9000, "end_ms": 10000, "text": "最后一段"})
+    job = service.database.update_job(
+        job.id,
+        artifacts={
+            "transcript_corrected": corrected,
+            "ocr": [{"timestamp_ms": 0, "text": "第一段原话。"}],
+        },
+    )
+    with pytest.raises(JobStateError) as error:
+        service.submit_gateway_analysis(
+            job.id,
+            {
+                "title": "资料",
+                "knowledge_atoms": [{"id": "k", "statement": "事实", "source_refs": refs}],
+            },
+            producer="test-agent",
+            gateway_protocol=2,
+            context_revision=context_revision(job),
+        )
+    assert error.value.details["reason"] == "invalid_source_ref"
+    assert error.value.details["path"] == "knowledge_atoms[0].source_refs"
+    assert service.database.get_job(job.id) == job
+
+
+@pytest.mark.parametrize(
+    "source_kind,refs",
+    [
+        ("image_note", ["o:0:0", "o:1:0"]),
+        ("video", ["o:0:0", "o:1:0"]),
+        ("video", ["a:0:0", "o:0:0"]),
+    ],
+)
+def test_refs_cannot_cross_images_containers_or_revisions(service, source_kind, refs):
+    job = make_gateway_job(
+        service,
+        phase="analysis",
+        source_kind=source_kind,
+        artifacts={
+            "metadata": {"source_kind": source_kind, "image_paths": ["1.jpg", "2.jpg"]},
+            "ocr": [
+                {"timestamp_ms": 0, "image_index": 1, "text": "图表文字"},
+                {"timestamp_ms": 1000, "image_index": 2, "text": "后面文字"},
+            ],
+        },
+    )
+    with pytest.raises(JobStateError):
+        service.submit_gateway_analysis(
+            job.id,
+            {
+                "title": "资料",
+                "knowledge_atoms": [{"id": "k", "statement": "事实", "source_refs": refs}],
+            },
+            producer="test-agent",
+            gateway_protocol=2,
+            context_revision=context_revision(job),
+        )
+    other = make_gateway_job(service, phase="analysis", source_kind=source_kind)
+    with pytest.raises(JobStateError) as error:
+        service.submit_gateway_analysis(
+            job.id,
+            {"title": "资料"},
+            producer="test-agent",
+            gateway_protocol=2,
+            context_revision=context_revision(other),
+        )
+    assert error.value.details["reason"] == "context_revision_mismatch"
+    assert service.database.get_job(job.id) == job
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        {"quote": "伪造原话"},
+        {"provenance": "ocr"},
+        {"timestamp_ms": 0},
+        {"image_index": 1},
+        {"quote": "Stras"},
+    ],
+)
+def test_refs_and_inline_fields_must_agree(service, conflict):
+    job = make_gateway_job(service, phase="analysis")
+    with pytest.raises(JobStateError) as error:
+        service.submit_gateway_analysis(
+            job.id,
+            {
+                "title": "资料",
+                "knowledge_atoms": [
+                    {"id": "k", "statement": "事实", "source_refs": ["a:1:0"], **conflict}
+                ],
+            },
+            producer="test-agent",
+            gateway_protocol=2,
+            context_revision=context_revision(job),
+        )
+    assert error.value.details["reason"] == "invalid_source_ref"
+    assert service.database.get_job(job.id) == job
+
+
+def test_matching_inline_fields_and_explicit_mixed_quotes_remain_valid(service):
+    job = make_gateway_job(
+        service, phase="analysis", artifacts={"ocr": [{"timestamp_ms": 5000, "text": "画面表格"}]}
+    )
+    submitted = service.submit_gateway_analysis(
+        job.id,
+        {
+            "title": "资料",
+            "knowledge_atoms": [
+                {
+                    "id": "same",
+                    "statement": "原文",
+                    "source_refs": ["a:1:0"],
+                    "quote": "原始第二段。",
+                    "provenance": "audio",
+                    "timestamp_ms": 5000,
+                },
+                {
+                    "id": "mixed",
+                    "statement": "原文",
+                    "quote": "原始第二段。\n画面表格",
+                    "provenance": "audio+ocr",
+                    "timestamp_ms": 5000,
+                },
+            ],
+        },
+        producer="test-agent",
+        gateway_protocol=2,
+        context_revision=context_revision(job),
+    )
+    assert [atom["provenance"] for atom in submitted.artifacts["analysis"]["knowledge_atoms"]] == [
+        "audio",
+        "audio+ocr",
+    ]
+
+
+@pytest.mark.parametrize(
+    "source_kind,ref,quote",
+    [
+        ("video", "a:0:0", "第一段原话。"),
+        ("image_note", "p:0", "正文原文"),
+    ],
+)
+def test_inference_and_reminder_sources_keep_their_semantics(service, source_kind, ref, quote):
+    job = make_gateway_job(service, phase="analysis", source_kind=source_kind)
+    job = service.database.update_job(
+        job.id, artifacts={"metadata": {**job.artifacts["metadata"], "post_text": "正文原文"}}
+    )
+    result = service.submit_gateway_analysis(
+        job.id,
+        {
+            "title": "资料",
+            "knowledge_atoms": [
+                {
+                    "id": "inference",
+                    "statement": "推断",
+                    "atom_type": "inference",
+                    "provenance": "ai_inference",
+                }
+            ],
+            "reminders": [
+                {
+                    "id": "r",
+                    "title": "稍后检查",
+                    "reason": "原文动作",
+                    "confidence": 0.7,
+                    "needs_clarification": True,
+                    "source_refs": [ref],
+                }
+            ],
+        },
+        producer="test-agent",
+        gateway_protocol=2,
+        context_revision=context_revision(job),
+    )
+    assert result.artifacts["analysis"]["claims"] == []
+    assert result.artifacts["analysis"]["reminders"][0]["source_quote"] == quote
+    assert service.reminders.created == []
+
+
+def test_compact_facts_require_refs_or_located_quote(service):
+    legacy = make_gateway_job(service, phase="analysis")
+    analysis = {
+        "title": "资料",
+        "knowledge_atoms": [{"id": "k", "statement": "事实", "timestamp_ms": 0}],
+    }
+    service.submit_gateway_analysis(legacy.id, analysis, producer="old-agent")
+    compact = make_gateway_job(service, phase="analysis")
+    compact = service.database.update_job(
+        compact.id,
+        artifacts={
+            "metadata": {**compact.artifacts["metadata"], "post_text": "视频正文，只供理解"}
+        },
+    )
+    for atom in [
+        analysis["knowledge_atoms"][0],
+        {"id": "k", "statement": "事实", "source_refs": ["p:0"]},
+    ]:
+        with pytest.raises(JobStateError):
+            service.submit_gateway_analysis(
+                compact.id,
+                {"title": "资料", "knowledge_atoms": [atom]},
+                producer="test-agent",
+                gateway_protocol=2,
+                context_revision=context_revision(compact),
+            )
+    assert service.database.get_job(compact.id) == compact
+    note = make_gateway_job(service, phase="analysis", source_kind="image_note")
+    with pytest.raises(JobStateError):
+        service.submit_gateway_analysis(
+            note.id,
+            {
+                "title": "资料",
+                "chapters": [{"start_ms": 0, "title": "伪时间轴", "summary": "原文"}],
+            },
+            producer="test-agent",
+            gateway_protocol=2,
+            context_revision=context_revision(note),
+        )
+    assert service.database.get_job(note.id) == note
+
+
+@pytest.mark.parametrize("revision", [None, "expired"])
+def test_analysis_revision_prevents_stale_requeue(service, revision):
+    job = make_gateway_job(service, phase="analysis")
+    with pytest.raises(JobStateError):
+        service.submit_gateway_analysis(
+            job.id,
+            {"title": "资料"},
+            producer="test-agent",
+            gateway_protocol=2,
+            context_revision=revision,
+        )
+    assert service.database.get_job(job.id) == job
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_analysis_compare_and_set_prevents_stale_requeue(service, monkeypatch, cancel):
+    job = make_gateway_job(service, phase="analysis")
+    original_requeue = service.database.requeue_job
+
+    def race(job_id, **kwargs):
+        service.database.update_job(
+            job_id,
+            result={"concurrent": "preserved"},
+            **({"status": JobStatus.CANCELLED} if cancel else {}),
+        )
+        return original_requeue(job_id, **kwargs)
+
+    monkeypatch.setattr(service.database, "requeue_job", race)
+    with pytest.raises(JobStateError):
+        service.submit_gateway_analysis(
+            job.id,
+            {"title": "资料"},
+            producer="test-agent",
+            gateway_protocol=2,
+            context_revision=context_revision(job),
+        )
+    current = service.database.get_job(job.id)
+    assert "analysis" not in current.artifacts and current.result["concurrent"] == "preserved"
+    assert current.status == (JobStatus.CANCELLED if cancel else JobStatus.AWAITING_AGENT_ANALYSIS)
+
+
+def test_unlocated_and_punctuation_only_refs_cannot_be_facts(service):
+    for text in ["没有定位的图表", "……！？"]:
+        job = make_gateway_job(service, phase="analysis", artifacts={"ocr": [{"text": text}]})
+        with pytest.raises(JobStateError):
+            service.submit_gateway_analysis(
+                job.id,
+                {
+                    "title": "资料",
+                    "knowledge_atoms": [{"id": "k", "statement": "事实", "source_refs": ["o:0:0"]}],
+                },
+                producer="test-agent",
+                gateway_protocol=2,
+                context_revision=context_revision(job),
+            )
+        assert service.database.get_job(job.id) == job
+
+
+@pytest.mark.parametrize("refs", [[], [42], "a:0:0"])
+def test_malformed_reference_shape_uses_small_state_error(service, refs):
+    job = make_gateway_job(service, phase="analysis")
+    with pytest.raises(JobStateError) as error:
+        service.submit_gateway_analysis(
+            job.id,
+            {
+                "title": "资料",
+                "knowledge_atoms": [{"id": "k", "statement": "事实", "source_refs": refs}],
+            },
+            producer="test-agent",
+            gateway_protocol=2,
+            context_revision=context_revision(job),
+        )
+    assert error.value.details["reason"] == "invalid_source_ref"
+    assert "input" not in str(error.value.details)
+    assert service.database.get_job(job.id) == job
