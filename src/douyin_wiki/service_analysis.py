@@ -14,6 +14,13 @@ from .analysis_rules import CONTENT_TAG_RULES, MAX_ANALYSIS_TAGS
 from .errors import (
     JobStateError,
 )
+from .gateway_protocol import (
+    GatewayProtocol,
+    build_compact_context,
+    gateway_phase,
+    validate_gateway_protocol,
+)
+from .gateway_sources import build_source_catalog
 from .models import (
     AnalysisMode,
     AnalysisResult,
@@ -52,7 +59,10 @@ class AnalysisMixin:
             )
         analysis.tags = tags
 
-    def get_analysis_context(self, job_id: str) -> dict[str, Any]:
+    def get_analysis_context(
+        self, job_id: str, *, gateway_protocol: GatewayProtocol = 1
+    ) -> dict[str, Any]:
+        protocol = validate_gateway_protocol(gateway_protocol)
         job = self.database.get_job(job_id)
         if job.status not in {
             JobStatus.AWAITING_AGENT_ANALYSIS,
@@ -71,6 +81,19 @@ class AnalysisMixin:
                 *[str(item.get("text", "")) for item in artifacts.get("ocr", [])],
             ]
         )
+        if protocol == 2:
+            if self.config.analysis_mode != AnalysisMode.GATEWAY:
+                raise JobStateError("紧凑协议仅用于 Gateway 分析模式")
+            phase = gateway_phase(job)
+            if phase not in {"transcript_correction", "analysis"}:
+                raise JobStateError("当前阶段不提供紧凑分析上下文", details={"phase": phase})
+            return build_compact_context(
+                job,
+                catalog=build_source_catalog(artifacts, phase=phase),
+                related_claims=self.indexer.find_related_claims(context_text)
+                if phase == "analysis"
+                else [],
+            )
         is_image_note = metadata.get("source_kind") == SourceKind.IMAGE_NOTE.value
         return {
             "job_id": job.id,
