@@ -405,3 +405,11 @@ Run: `uv run --no-sync ruff check src tests`；`uv run --no-sync pytest -q -m 'n
 执行决策：默认由当前 Agent 实现与自审，代价是没有独立审查视角；Skill 临时副本只解决原文件无执行权限，行为保持一致；引用格式错误补充统一错误信封，避免多种重试分支；六次交换含两次状态查询，实际客户端轮询频率不同会改变负载。单次分析上下文在短句合成场景增大是已披露的定位开销，完整往返仍减少，尚无计费 token 结论。
 
 按已确认计划保留实现分支与原生 worktree 供审阅；主仓库 `main` 仍为 `70717b9` 且工作区清洁。交付包括代码、正式测试、业务文档、完整负载记录与复现脚本；没有执行主线合并、推送、服务重启、客户端配置修改或发行包替换。
+
+### 后续审查 P2 修复（2026-10-03）
+
+用户随后要求审查并修复来源枚举的 schema 不一致：[审查记录](/Users/weisengao/.codex/maintenance/douyin-wiki/gateway-token-review-2026-10-03-d491f04/review.md)针对 `d491f04` 复现了 `provenance/evidence_type:null` 通过公布 schema、却在标准模型验证时被拒绝。修复沿用两个标准模型的枚举类型；字段可省略，出现时不能为 null。内部使用标准来源默认值工厂，使 wire schema 不提示填写默认来源；校验默认值仍不回写原始输入，编号继续推导真实来源。
+
+新增 6 项 schema/MCP 用例在修复前均失败、修复后均通过；相关 Gateway、接口、标准分析、图文、证据边界、Unicode 和标签回归共 242 passed，Ruff 与差异空白检查通过。按修复范围选择验证，未重复此前 863 项完整离线集；上文的 61.69% 应用负载测量对应 `d491f04`，原始记录保留，不推断本次修复后的计费用量。默认协议、存储模型、主线与现用服务保持现状。
+
+修复日志和提交记录保存在[修复验收目录](/Users/weisengao/.codex/maintenance/douyin-wiki/gateway-source-enum-fix-2026-10-03/README.md)。当前 Agent 完成修复与复核，未委派。

@@ -434,3 +434,30 @@ def test_advertised_schema_accepts_omitted_refs_and_valid_ref_evidence():
         incoming = {"title": "资料", "knowledge_atoms": [atom]}
         validator.validate(incoming)
         validate_compact_analysis_shape(incoming)
+
+
+@pytest.mark.parametrize("role", ["atom", "chapter"])
+def test_advertised_source_enum_accepts_omission_but_not_null(role):
+    evidence = {"quote": "第一段原话。", "timestamp_ms": 0}
+    if role == "atom":
+        evidence.update(id="k", statement="第一段原话")
+        incoming = {"title": "资料", "knowledge_atoms": [evidence]}
+        definition, field = "RefKnowledgeAtom", "provenance"
+    else:
+        incoming = {
+            "title": "资料",
+            "chapters": [
+                {"start_ms": 0, "title": "第一章", "summary": "原话", "evidence": [evidence]}
+            ],
+        }
+        definition, field = "RefChapterEvidence", "evidence_type"
+    schema = compact_analysis_schema()
+    validator = Draft202012Validator(schema)
+    validator.validate(incoming)
+    validate_compact_analysis_shape(incoming)
+    evidence[field] = None
+    assert not validator.is_valid(incoming)
+    with pytest.raises(ValueError):
+        validate_compact_analysis_shape(incoming)
+    # Clients must not fill an omitted, reference-derived source from a schema default.
+    assert "default" not in schema["$defs"][definition]["properties"][field]

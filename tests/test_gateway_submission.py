@@ -3,6 +3,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
+from jsonschema import Draft202012Validator
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
 from typer.testing import CliRunner
@@ -717,6 +718,61 @@ async def test_mcp_advertises_optional_protocol_and_rejects_nonintegers(service,
     for value in [True, 2.0, "2", 3]:
         with pytest.raises(ToolError):
             await mcp.call_tool("get_job", {"job_id": "invalid", "gateway_protocol": value})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["atom", "chapter"])
+@pytest.mark.parametrize("use_refs", [False, True])
+async def test_mcp_source_enum_omission_preserves_reference_and_explicit_sources(
+    service, monkeypatch, role, use_refs
+):
+    job = make_gateway_job(
+        service,
+        phase="analysis",
+        artifacts={"ocr": [{"timestamp_ms": 1000, "text": "画面表格２０％"}]},
+    )
+    monkeypatch.setattr(mcp_server, "_SERVICE", service)
+    context = (
+        await mcp.call_tool("get_analysis_context", {"job_id": job.id, "gateway_protocol": 2})
+    ).structured_content
+    evidence = (
+        {"source_refs": ["o:0:0"]} if use_refs else {"quote": "第一段原话。", "timestamp_ms": 0}
+    )
+    if role == "atom":
+        evidence.update(id="k", statement="原文")
+        analysis = {"title": "资料", "knowledge_atoms": [evidence]}
+        field = "provenance"
+    else:
+        analysis = {
+            "title": "资料",
+            "chapters": [
+                {"start_ms": 0, "title": "第一章", "summary": "原话", "evidence": [evidence]}
+            ],
+        }
+        field = "evidence_type"
+    validator = Draft202012Validator(context["analysis_schema"])
+    validator.validate(analysis)
+    params = {
+        "job_id": job.id,
+        "gateway_protocol": 2,
+        "context_revision": context["context_revision"],
+        "producer": "test-agent",
+        "analysis": analysis,
+    }
+    evidence[field] = None
+    assert not validator.is_valid(analysis)
+    with pytest.raises(ToolError):
+        await mcp.call_tool("submit_gateway_analysis", params)
+    assert service.database.get_job(job.id) == job
+
+    del evidence[field]
+    validator.validate(analysis)
+    ack = (await mcp.call_tool("submit_gateway_analysis", params)).structured_content
+    assert ack["status"] == "queued"
+    stored = service.database.get_job(job.id).artifacts["analysis"]
+    item = stored["knowledge_atoms"][0] if role == "atom" else stored["chapters"][0]["evidence"][0]
+    assert item[field] == ("ocr" if use_refs else "audio")
+    assert item["quote"] == ("画面表格２０％" if use_refs else "第一段原话。")
 
 
 @pytest.mark.asyncio

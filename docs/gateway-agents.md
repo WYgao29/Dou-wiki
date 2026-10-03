@@ -112,6 +112,7 @@ OCR `o:<observation_index>:<line_index>`、正文 `p:<unit_index>`。下标从 0
 引用应有序、无重复、同类且连续；音频可跨相邻段，OCR 只能在同一原始 observation 内跨行，
 正文可跨连续段落。不能跳过正文、跨图片或将音频/OCR 混成一组编号；混合来源继续用显式引文格式。
 若同时提供引文、来源或定位，须与恢复结果一致；省略这些字段时由编号推导，不要填默认 `audio` 或 `null` 占位。
+`provenance/evidence_type` 可省略，但出现时必须是对应来源枚举，不能为 `null`；紧凑 schema 不提供这两个字段的默认值。
 
 非推断知识原子必须有编号，或有非空显式引文与合法定位。推断仍用
 `atom_type=inference`、`provenance=ai_inference`，不能附编号。视频正文仅用于理解与提醒，

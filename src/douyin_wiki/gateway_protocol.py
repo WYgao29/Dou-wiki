@@ -85,11 +85,16 @@ def _fields(model: type[BaseModel]) -> dict[str, tuple[Any, Any]]:
 
 
 _evidence_fields = _fields(ChapterEvidence)
+# Default factories keep standard source defaults out of the wire schema. Validation
+# defaults are never serialized back into the raw input used for reference expansion.
 _evidence_fields.update(
     {
         "timestamp_ms": (int | None, Field(default=None, ge=0)),
         "quote": (str | None, Field(default=None, min_length=1)),
-        "evidence_type": (Literal["audio", "ocr", "audio+ocr"] | None, None),
+        "evidence_type": (
+            ChapterEvidence.model_fields["evidence_type"].annotation,
+            Field(default_factory=lambda: ChapterEvidence.model_fields["evidence_type"].default),
+        ),
         "source_refs": (SourceRefs, Field(default_factory=list)),
     }
 )
@@ -102,7 +107,10 @@ RefTimelineChapter = create_model(
 RefKnowledgeAtom = create_model(
     "RefKnowledgeAtom",
     __base__=KnowledgeAtom,
-    provenance=(KnowledgeAtom.model_fields["provenance"].annotation | None, None),
+    provenance=(
+        KnowledgeAtom.model_fields["provenance"].annotation,
+        Field(default_factory=lambda: KnowledgeAtom.model_fields["provenance"].default),
+    ),
     source_refs=(SourceRefs, Field(default_factory=list)),
 )
 RefReminderCandidate = create_model(
