@@ -17,6 +17,8 @@
 
 ## 开发中的功能
 
+[Gateway token 优化规格](superpowers/specs/2026-10-03-gateway-token-optimization-design.md)已确认，[实施计划](superpowers/plans/2026-10-03-gateway-token-optimization.md)待审阅。计划为现有 Gateway 工具增加可选紧凑协议，覆盖 OCR 投影、增量校正、证据引用与简短回执；尚未实现或切换真实客户端。
+
 [画面检索方案](design/visual-search-indexed-plan.md)仍用于独立分支 `codex/visual-search-phase1` 的开发；当前主线尚未集成此功能。该方案保留原有设计范围，实际进度以对应分支为准。
 
 ## 维护记录

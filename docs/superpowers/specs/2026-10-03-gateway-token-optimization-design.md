@@ -1,6 +1,6 @@
 # Gateway token 优化设计规格
 
-日期：2026-10-03。状态：用户已确认会话中的架构设计，本书面规格待复核；实施计划和实现尚未开始。
+日期：2026-10-03。状态：架构设计与本书面规格均已获用户确认；[实施计划](../plans/2026-10-03-gateway-token-optimization.md)待审阅，实现尚未开始。
 
 本规格基于工作区对应提交 `400cf269f0cd375547833a074acfc1107c2c82eb` 核对。生产服务是否已加载该版本未核验。实现后的业务流程仍以 [Gateway Agent 接入指南](../../gateway-agents.md) 为唯一共用入口，本文件记录开发设计，不代替现行调用契约。
 
@@ -144,9 +144,9 @@ CLI `gateway context`、`gateway submit-correction`、`gateway submit-analysis` 
 
 版本 2 的 MCP/CLI 回执只包含 `gateway_protocol/job_id/status/phase/progress/updated_at/context_revision/next_tool/gateway_context`，以及当前必要的错误、确认原因和结果摘要。`context_revision` 只在有可读取校正/分析上下文的阶段提供，否则为 `null`。
 
-结果白名单为 `entry_id/title/summary/original_url/source_path/warnings/auth_scope`；取值从现有任务结果、元数据与 artifacts 确定，不加载或返回完整分析。保留批量任务现有 `favorites_context/creator_context` 的路由、父任务与静默标记，避免逐条误发完成消息；不附带批量作品清单。保留原状态与阶段中文 label，不为正文结构新增展示标签。
+结果白名单为 `entry_id/title/summary/original_url/source_path/warnings/auth_scope`；取值从现有任务结果、元数据与 artifacts 确定，不额外读取资料正文或返回完整分析。结果放在 `result` 对象，必要确认信息保留 `reason/duration_minutes`，错误保留 `error_code/error_message`。保留批量任务现有 `favorites_context/creator_context` 的路由、父任务与静默标记，避免逐条误发完成消息；不附带批量作品清单。保留原状态与阶段中文 label，不为正文结构新增展示标签。
 
-等待 Agent 的当前阶段可返回 `next_tool = "get_analysis_context"`；分析提交入队后与处理中返回 `next_tool = "list_job_events"`，不能把已入队任务指向不可读取的分析上下文。完成阶段返回摘要与链接，用户另行要求完整资料时使用现有查询工具。
+等待 Agent 的当前阶段可返回 `next_tool = "get_analysis_context"`；分析提交入队后与处理中返回 `next_tool = "list_job_events"`，不能把已入队任务指向不可读取的分析上下文。完成阶段返回摘要与链接，`next_tool` 为 `null`；用户另行要求完整资料时使用现有查询工具。
 
 回执不包含 `artifacts`、全文 request、ASR、OCR、完整分析或 schema。版本 1 继续返回原 `JobRecord` 的既有完整投影。
 
@@ -158,7 +158,7 @@ CLI `gateway context`、`gateway submit-correction`、`gateway submit-analysis` 
 | 新增 `src/douyin_wiki/gateway_sources.py` | OCR 过滤、来源单元与原始范围映射、引用展开；纯材料处理，不读写数据库 |
 | 修改 `src/douyin_wiki/service_analysis.py` | 读取任务、按协议调用上述处理、补丁合成、现有状态/校验/并发/发布流程 |
 | 修改 `src/douyin_wiki/mcp_server.py`、`src/douyin_wiki/cli.py` | 增加可选参数、回执投影和与阶段相符的调用说明 |
-| 新增 `tests/test_gateway_context.py`、`tests/test_gateway_submission.py` | 投影、版本、补丁、引用、回执与旧协议回归；复用现有临时服务与假适配器 |
+| 新增 `tests/test_gateway_context.py`、`tests/test_gateway_submission.py`、`tests/support/gateway.py` | 投影、版本、补丁、引用、回执与旧协议回归；共用小夹具复用现有临时服务与假适配器 |
 | 修改 `docs/gateway-agents.md`、`docs/agents/integration-contract.md`、`docs/architecture.md`、`docs/README.md`，按交付内容更新 README/CHANGELOG | 业务流程仍在 Gateway 指南；接入契约只说明能力检测、仓库外验证与版本记录；架构与索引指向实际实现 |
 
 不把 Gateway 逻辑放进本地模型适配器，不改 Web 静态资源、数据库模式或 Vault writer。跨 Service mixin 的调用与锁约束遵循 [Service 协作 API](../../service-collaboration-api.md)。
@@ -199,4 +199,4 @@ CLI `gateway context`、`gateway submit-correction`、`gateway submit-analysis` 
 
 完成判据为：旧协议回归通过；原始材料保留；补丁可还原完整校正稿；来源引用得到可校验的原文与定位；版本及并发保护生效；简短回执不重传正文；视频、图文与重新分析闭环通过；重复 OCR 和少量校正场景的完整往返量确实减少。真实客户端是否已启用单独记录，仓库验收不代替生产接入验收。
 
-下一节点：用户复核本书面规格后，使用 writing-plans 生成按任务与测试分解的实施计划；默认由当前 Agent 执行，启用 Superpowers 不授权子 Agent。书面规格确认不直接启动实现，实施计划仍需用户审阅。
+下一节点：[实施计划](../plans/2026-10-03-gateway-token-optimization.md)已按 writing-plans 编写，待用户审阅；默认由当前 Agent 执行，启用 Superpowers 不授权子 Agent。书面规格确认不直接启动实现。
