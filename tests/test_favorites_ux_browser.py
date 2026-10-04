@@ -112,6 +112,9 @@ async def ux_ui():
                 await route.fulfill(json={"job_id": name, "status": "dispatching"})
                 return
             if url.path.endswith("/selection"):
+                if data["status"] != "needs_selection" or data["confirmed"]:
+                    await route.fulfill(status=409, json={"detail": "当前批次不能再修改选择"})
+                    return
                 if fail_selection:
                     fail_selection = False
                     await route.fulfill(status=500, json={"detail": "模拟保存失败"})
@@ -332,6 +335,21 @@ async def test_switching_history_flushes_the_previous_jobs_pending_choices(ux_ui
     assert saves[0]["path"] == "/api/favorites/imports/works/selection"
     assert ux_ui.states["works"]["summary"]["selected"] == 2
     assert ux_ui.states["bulk"]["summary"]["selected"] == 35
+
+
+async def test_cancelled_elsewhere_does_not_trap_unsaved_choices(ux_ui):
+    await ux_ui.open()
+    await ux_ui.page.locator("#favorites-items input[data-work]").nth(1).check()
+    ux_ui.states["works"]["status"] = "cancelled"
+    await ux_ui.page.locator("#favorites-cancelled").wait_for(state="visible")
+    assert await ux_ui.page.locator("#favorites-save-retry").is_hidden()
+    assert await ux_ui.page.locator("#favorites-confirm").is_hidden()
+    assert not await ux_ui.page.locator("#favorites-items input[data-work]").nth(1).is_checked()
+    assert ux_ui.states["works"]["summary"]["selected"] == 1
+    await ux_ui.page.locator(".fav-advanced > summary").click()
+    await ux_ui.page.locator("#favorites-history").select_option("bulk")
+    await ux_ui.page.wait_for_function("() => location.search.includes('bulk')")
+    assert await ux_ui.page.locator("#favorites-confirm").is_enabled()
 
 
 async def test_shift_selection_saves_one_range(ux_ui):

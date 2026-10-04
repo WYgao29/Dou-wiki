@@ -21,7 +21,7 @@
   function active() { return !view.classList.contains("hidden"); }
   function stopPolling() { clearTimeout(pollTimer); pollTimer = null; }
   function canSelect() {
-    return current?.status === "needs_selection" && !current.directory_only && !current.confirmed;
+    return current?.status === "needs_selection" && !current.directory_only && !current.confirmed && !current.cancel_requested;
   }
   function legacy(data) {
     return (data?.warnings || []).some((warning) => String(warning).includes("无法确认收藏夹目录分页结束"));
@@ -40,8 +40,8 @@
   }
   function selectionStatus() {
     const imported = current?.summary?.in_library ?? current?.summary?.imported ?? 0;
-    $("selected-count").textContent = (current?.confirmed ? "本批所选 " : "将导入 ") + selectedCount() + " 件" +
-      (imported ? " · " + imported + " 件已在资料库，会跳过" : "");
+    $("selected-count").textContent = (current?.status === "cancelled" ? "保留选择 " : current?.confirmed ? "本批所选 " : "将导入 ") + selectedCount() + " 件" +
+      (imported ? " · " + imported + " 件已在资料库" + (canSelect() ? "，会跳过" : "") : "");
     $("save-hint").textContent = saveError ? "选择尚未保存，请重试后再导入。"
       : saving || pending.size ? "正在保存选择…" : current && canSelect() ? "选择已保存" : "";
     $("save-retry").hidden = !saveError;
@@ -143,6 +143,15 @@
     saving = task; controls();
     try { await task; }
     catch (error) {
+      if (error.status === 409 && target === jobId) {
+        try { await load(); } catch (_error) { /* Keep unsaved choices if the state cannot be read. */ }
+        if (!canSelect()) {
+          pending.clear(); saveError = false;
+          render(current);
+          D.toast("本批状态已改变，未保存的勾选不能继续提交。可以重新读取或选择其他记录。");
+          return;
+        }
+      }
       saveError = true; D.toast("选择尚未保存：" + error.message); throw error;
     } finally { saving = null; controls(); }
     if (pending.size) return flushSelections();
@@ -326,7 +335,9 @@
     await load(); await history();
   }
   async function confirmImport() {
+    if (!canSelect()) throw new Error("本批已不能导入，请重新读取或选择其他记录");
     const count = selectedCount(), preview = current.confirmation_preview || {};
+    if (!count) throw new Error("请先选择尚未入库的作品");
     const mode = current.analysis_mode === "gateway" ? "网关 Agent，后续由外部 Agent 接续" : "当前模型";
     $("confirm-description").textContent = "将处理 " + count + " 件所选作品" +
       (preview.new_tasks != null ? "：新建 " + preview.new_tasks + " 个任务，复用 " + (preview.reused_tasks || 0) + " 个进行中任务" : "") +
