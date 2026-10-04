@@ -291,13 +291,18 @@ class DouyinFavoritesAdapter(PlaywrightImageNoteDownloader):
         )
         await page.wait_for_timeout(750)
         body = (await page.locator("body").inner_text(timeout=10_000))[:20_000]
-        if not _usable_auth_cookies(cookies) or _page_auth_blocked(
-            body, response.status if response else None, page.url
+        status = response.status if response else None
+        if (
+            not _usable_auth_cookies(cookies)
+            or status == 401
+            or _page_auth_blocked(body, None, page.url)
         ):
             raise BrowserAuthRequiredError(
                 "收藏清点需要专用浏览器登录",
                 details={"action": "douyin-wiki auth douyin"},
             )
+        if status is not None and status >= 400:
+            raise ExternalToolError(f"收藏页面 HTTP 状态异常：{status}")
         account = await self._read_initial_account(page)
         account_id = str((account or {}).get("account_id") or "").strip()
         nickname = str((account or {}).get("nickname") or "").strip()

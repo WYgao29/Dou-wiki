@@ -8,7 +8,7 @@ import json
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from playwright.async_api import async_playwright
+from playwright.async_api import Response, async_playwright
 
 from douyin_wiki.errors import ExternalToolError
 
@@ -115,8 +115,15 @@ async def browser_fixture():
             await browser.close()
 
 
-async def test_listener_precedes_bootstrap_navigation(browser_fixture):
+async def test_listener_precedes_bootstrap_navigation(browser_fixture, monkeypatch):
     page, calls, state = browser_fixture
+    original = Response.body
+
+    async def delayed_body(response):
+        await asyncio.sleep(0.15)
+        return await original(response)
+
+    monkeypatch.setattr(Response, "body", delayed_body)
     state["bootstrap"] = True
     async with client(page) as api:
         await page.goto(ORIGIN)
@@ -149,19 +156,25 @@ async def test_read_page_calls_native_api_with_exact_folder_id(browser_fixture):
 
 
 async def test_response_matching_ignores_wrong_folder_cursor_and_origin(browser_fixture):
-    page, _, _ = browser_fixture
+    page, calls, state = browser_fixture
     async with client(page) as api:
         await page.goto(ORIGIN)
+        state["body"] = json.dumps(
+            {"status_code": 0, "has_more": 0, "aweme_list": [{"aweme_id": "999", "video": {}}]}
+        )
         for url in (
             ORIGIN + FOLDER + "?collects_id=99&cursor=0&count=20",
             ORIGIN + FOLDER + "?collects_id=12&cursor=99&count=20",
             "https://evil.test" + FOLDER + "?collects_id=12&cursor=0&count=20",
         ):
             await page.evaluate("url => fetch(url)", url)
+        state["body"] = None
         result = await api.read_page(resource="folder", folder_id="12", use_cached=True)
     assert result.folder_id == "12"
     assert result.request_cursor == "0"
     assert result.request_count == 20
+    assert json.loads(result.body)["aweme_list"][0]["aweme_id"] == "7000000000000000123"
+    assert len(calls) == 4
 
 
 async def test_force_read_does_not_use_prefetched_response(browser_fixture):
@@ -251,3 +264,46 @@ async def test_native_bridge_waits_for_collection_module_to_load(browser_fixture
         result = await api.read_page(resource="directory")
     assert result.http_status == 200
     assert len(calls) == 1
+
+
+async def test_force_read_rejects_older_in_flight_prefetch(browser_fixture):
+    page, _, _ = browser_fixture
+    started = asyncio.Event()
+    requests = []
+
+    async def delayed(route):
+        requests.append(route.request.url)
+        index = len(requests)
+        if index == 1:
+            started.set()
+        await asyncio.sleep(0.05 if index == 1 else 0.15)
+        await route.fulfill(
+            json={
+                "status_code": 0,
+                "has_more": 0,
+                "collects_list": [{"collects_id_str": "11" if index == 1 else "22"}],
+            }
+        )
+
+    async with client(page) as api:
+        await page.goto(ORIGIN)
+        await page.route(ORIGIN + DIRECTORY + "**", delayed)
+        await page.evaluate("void fixtureAPI.directory({cursor:'0',offset:20})")
+        await started.wait()
+        result = await api.read_page(resource="directory", use_cached=False)
+    assert json.loads(result.body)["collects_list"][0]["collects_id_str"] == "22"
+    assert len(requests) == 2
+
+
+async def test_native_bridge_is_not_invoked_outside_douyin_origin(browser_fixture, monkeypatch):
+    page, calls, _ = browser_fixture
+    api = client(page)
+    module = importlib.import_module("douyin_wiki.adapters.favorites_browser")
+    monkeypatch.setattr(module, "_READ_BUDGET", 0.08)
+    monkeypatch.setattr(module, "_ATTEMPT_TIMEOUT", 0.02)
+    monkeypatch.setattr(module, "_BACKOFF", (0.001, 0.002))
+    async with api:
+        await page.goto("https://evil.test/")
+        with pytest.raises(ExternalToolError):
+            await api.read_page(resource="directory", use_cached=False)
+    assert not calls

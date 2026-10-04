@@ -636,3 +636,11 @@ async def test_empty_folder_page_with_advancing_cursor_keeps_later_accessible_wo
     assert [w.work_id for w in result.works] == ["1", "2", "3", "4"]
     assert not result.complete
     assert result.folders_complete
+
+
+@pytest.mark.parametrize("status", [403, 429])
+async def test_generic_page_http_failure_is_not_a_login_denial(tmp_path, monkeypatch, status):
+    monkeypatch.setattr(FakeResponse, "status", status)
+    page = SyntheticFavoritesPage(body="服务暂时拒绝访问")
+    with pytest.raises(ExternalToolError, match="HTTP"):
+        await scan(tmp_path, page, directory_only=True)

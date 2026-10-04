@@ -20,6 +20,7 @@ _BACKOFF = (1, 2)
 _BRIDGE_WAIT_BUDGET = 3
 _CALL_NATIVE_JS = r"""
 p => { // douyin-wiki:favorites-api
+  if (location.origin !== 'https://www.douyin.com') return {ok:false};
   const paths = ['/aweme/v1/web/collects/list/', '/aweme/v1/web/collects/video/list/'];
   if (!paths.includes(p.path)) return {ok:false};
   const chunks = window.webpackChunkdouyin_web;
@@ -68,6 +69,7 @@ class FavoritesBrowserClient:
         self._cache: OrderedDict[Key, RawFavoritePage] = OrderedDict()
         self._pending: dict[Key, tuple[asyncio.Future, int, int]] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._captures: dict[asyncio.Task, tuple[int, int, Key]] = {}
 
     async def __aenter__(self) -> FavoritesBrowserClient:
         self._open = True
@@ -94,6 +96,7 @@ class FavoritesBrowserClient:
         self._pending.clear()
         self._requests.clear()
         self._cache.clear()
+        self._captures.clear()
 
     def _on_navigation(self, frame: Any) -> None:
         if frame != self.page.main_frame:
@@ -108,6 +111,8 @@ class FavoritesBrowserClient:
         if not self._open:
             return
         try:
+            if not self._is_douyin_page():
+                return
             parsed = urlsplit(request.url)
             if (
                 parsed.scheme != "https"
@@ -152,7 +157,21 @@ class FavoritesBrowserClient:
             return
         task = asyncio.create_task(self._capture(response, stamp), name="douyin-favorites-response")
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._captures[task] = stamp
+        task.add_done_callback(self._capture_done)
+
+    def _capture_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        self._captures.pop(task, None)
+
+    def _has_inflight(self, key: Key) -> bool:
+        return any(
+            epoch == self._epoch and resource_key == key
+            for epoch, _, resource_key in self._requests.values()
+        ) or any(
+            not task.done() and epoch == self._epoch and resource_key == key
+            for task, (epoch, _, resource_key) in self._captures.items()
+        )
 
     async def _capture(self, response: Any, stamp: tuple[int, int, Key]) -> None:
         epoch, _, key = stamp
@@ -185,9 +204,15 @@ class FavoritesBrowserClient:
         else:
             future.set_result(result)
 
+    def _is_douyin_page(self) -> bool:
+        origin = urlsplit(self.page.url)
+        return origin.scheme == "https" and origin.netloc == "www.douyin.com"
+
     async def _invoke(self, parameters: dict[str, Any]) -> None:
         deadline = asyncio.get_running_loop().time() + _BRIDGE_WAIT_BUDGET
         while True:
+            if not self._is_douyin_page():
+                raise ExternalToolError("收藏页面来源已变化，本次读取结束")
             try:
                 invoked = await self.page.evaluate(_CALL_NATIVE_JS, parameters)
             except Exception:
@@ -229,17 +254,23 @@ class FavoritesBrowserClient:
             async with asyncio.timeout(_READ_BUDGET):
                 for attempt in range(3):
                     future = asyncio.get_running_loop().create_future()
-                    self._pending[key] = (future, self._serial, self._epoch)
+                    reuse_inflight = attempt == 0 and use_cached and self._has_inflight(key)
+                    self._pending[key] = (
+                        future,
+                        -1 if reuse_inflight else self._serial,
+                        self._epoch,
+                    )
                     try:
                         async with asyncio.timeout(_ATTEMPT_TIMEOUT):
-                            await self._invoke(
-                                {
-                                    "path": _PATHS[resource],
-                                    "folder_id": folder_id,
-                                    "cursor": str(cursor),
-                                    "count": count,
-                                }
-                            )
+                            if not reuse_inflight:
+                                await self._invoke(
+                                    {
+                                        "path": _PATHS[resource],
+                                        "folder_id": folder_id,
+                                        "cursor": str(cursor),
+                                        "count": count,
+                                    }
+                                )
                             raw = await future
                             if raw.http_status == 429 or 500 <= raw.http_status <= 599:
                                 raise _RetryableError()
