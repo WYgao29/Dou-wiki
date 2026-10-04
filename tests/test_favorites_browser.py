@@ -25,6 +25,173 @@ async def offline_page():
             await browser.close()
 
 
+@pytest.fixture
+async def favorites_ui(offline_page):
+    from urllib.parse import parse_qs, urlsplit
+
+    page = offline_page
+    root = Path(__file__).parents[1] / "src/douyin_wiki/webapp"
+    template = (root / "templates/app.html").read_text()
+    begin = template.index('      <section id="imports-favorites-view"')
+    end = template.index('<section id="jobs-view"', begin)
+    html = '<meta charset="utf-8"><style>' + (root / "static/app.css").read_text() + "</style>"
+    html += template[begin:end]
+    dialog_begin = template.index('  <dialog id="destructive-dialog"')
+    dialog_end = template.index("</dialog>", dialog_begin) + len("</dialog>")
+    html += template[dialog_begin:dialog_end]
+    for script in ("shared.js", "imports-favorites.js"):
+        html += "<script>" + (root / "static" / script).read_text() + "</script>"
+    html += """<script>window.dispatchEvent(new CustomEvent('douku:route',
+      {detail:{path:'/imports/favorites'}}));</script>"""
+    directory = {
+        "job_id": "fixture-directory",
+        "status": "completed",
+        "status_label": "已完成",
+        "nickname": "模拟账号",
+        "directory_only": True,
+        "confirmed": False,
+        "include_images": False,
+        "complete": True,
+        "warnings": [],
+        "folders": [{"id": "12", "name": "重要", "reported_count": 1}],
+        "analysis_mode": "gateway",
+        "total": 0,
+        "has_more": False,
+        "summary": {"discovered": 0, "selected": 0, "failed": 0},
+        "items": [],
+    }
+    works = {
+        **directory,
+        "job_id": "fixture-works",
+        "status": "needs_selection",
+        "status_label": "待选择作品",
+        "directory_only": False,
+        "total": 1,
+        "summary": {"discovered": 1, "selected": 1, "failed": 0},
+        "items": [
+            {
+                "work_id": "123456",
+                "canonical_url": "https://www.douyin.com/video/123456",
+                "title": "目标标题",
+                "author": "模拟作者",
+                "source_kind": "video",
+                "selected": True,
+                "disposition": "pending",
+            }
+        ],
+    }
+    calls = []
+    removed = False
+
+    async def handler(route):
+        nonlocal removed
+        parsed = urlsplit(route.request.url)
+        if parsed.path == "/imports/favorites":
+            await route.fulfill(body=html, content_type="text/html")
+            return
+        if parsed.path == "/api/system/health":
+            await route.fulfill(json={"worker": {"running": True}})
+            return
+        if parsed.path == "/api/imports/fixture-works":
+            assert route.request.method == "DELETE"
+            removed = route.request.post_data_json["confirmed"]
+            await route.fulfill(json={"will_delete": ["测试清单"], "will_keep": ["已入库资料"]})
+            return
+        if not parsed.path.startswith("/api/favorites/imports"):
+            await route.abort()
+            return
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        calls.append((route.request.method, parsed.path, query))
+        if parsed.path == "/api/favorites/imports":
+            result = (
+                {"job_id": "fixture-works", "status": "queued"}
+                if route.request.method == "POST"
+                else [directory]
+                if removed
+                else [works, directory]
+            )
+        else:
+            result = works if parsed.path.endswith("fixture-works") else directory
+            if query.get("query", [""])[0] and query["query"][0] not in "目标标题":
+                result = {**result, "items": [], "total": 0}
+        await route.fulfill(json=result)
+
+    await page.route("http://fixture.test/**", handler)
+
+    async def open_page(job_id):
+        url = "http://fixture.test/imports/favorites"
+        if job_id:
+            url += "?job=" + job_id
+        await page.goto(url, wait_until="domcontentloaded")
+        await page.locator("#favorites-scan").wait_for(state="visible")
+        await page.wait_for_function("!document.getElementById('favorites-scope').disabled")
+
+    return page, open_page, calls
+
+
+@pytest.mark.parametrize("job_id", [None, "fixture-directory"])
+async def test_work_search_waits_for_work_inventory(favorites_ui, job_id):
+    page, open_page, _ = favorites_ui
+    await open_page(job_id)
+    for control in ("search", "query", "filter", "only-new"):
+        assert await page.locator("#favorites-" + control).is_disabled()
+    assert "先点击上方“更新抖音收藏”" in await page.locator("#favorites-search-hint").inner_text()
+    if job_id:
+        assert "收藏夹目录已读取" in await page.locator("#favorites-status").inner_text()
+        assert "尚未读取作品" in await page.locator("#favorites-summary").inner_text()
+
+
+@pytest.mark.parametrize("action", ["create", "history"])
+async def test_current_favorites_job_survives_page_reload(favorites_ui, action):
+    from urllib.parse import parse_qs, urlsplit
+
+    page, open_page, _ = favorites_ui
+    await open_page("fixture-directory")
+    if action == "create":
+        await page.locator("#favorites-scan").click()
+    else:
+        await page.locator(".fav-advanced > summary").click()
+        await page.locator("#favorites-history").select_option("fixture-works")
+    await page.get_by_text("目标标题", exact=True).wait_for()
+    assert parse_qs(urlsplit(page.url).query)["job"] == ["fixture-works"]
+    await page.reload(wait_until="domcontentloaded")
+    await page.get_by_text("目标标题", exact=True).wait_for()
+    assert "待选择作品" in await page.locator("#favorites-status").inner_text()
+    assert await page.locator("#favorites-search").is_enabled()
+
+
+async def test_existing_work_inventory_can_search_again_after_no_matches(favorites_ui):
+    page, open_page, calls = favorites_ui
+    await open_page("fixture-works")
+    await page.locator("#favorites-query").fill("不存在")
+    async with page.expect_response(
+        lambda response: "query=%E4%B8%8D%E5%AD%98%E5%9C%A8" in response.url
+    ):
+        await page.locator("#favorites-search").click()
+    await page.get_by_text("当前筛选下暂无作品。", exact=True).wait_for()
+    assert await page.locator("#favorites-search").is_enabled()
+    assert await page.locator("#favorites-query").is_enabled()
+    await page.locator("#favorites-query").fill("目标")
+    await page.locator("#favorites-search").click()
+    await page.get_by_text("目标标题", exact=True).wait_for()
+    assert not any(method == "POST" for method, _, _ in calls)
+
+
+async def test_deleted_favorites_job_is_not_reopened_by_reload(favorites_ui):
+    from urllib.parse import parse_qs, urlsplit
+
+    page, open_page, _ = favorites_ui
+    await open_page("fixture-works")
+    await page.locator(".fav-advanced > summary").click()
+    await page.locator("#favorites-delete-history").click()
+    await page.get_by_role("button", name="确认清理", exact=True).click()
+    await page.get_by_text("已删除该导入记录，已入库资料仍保留。", exact=True).wait_for()
+    assert "job" not in parse_qs(urlsplit(page.url).query)
+    await page.reload(wait_until="domcontentloaded")
+    await page.get_by_text("尚未开始更新", exact=True).wait_for()
+    assert await page.locator("#favorites-search").is_disabled()
+
+
 async def test_observed_dom_boundary_extracts_relative_links_and_ignores_footer(offline_page):
     page = offline_page
     await page.set_content("""<div><h1>模拟账号</h1><span>抖音号：fixture_123</span></div>
