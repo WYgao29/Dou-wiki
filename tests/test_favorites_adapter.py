@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -8,16 +9,62 @@ from pydantic import ValidationError
 
 from douyin_wiki.adapters.favorites import (
     DouyinFavoritesAdapter,
-    _folders_from_dom,
     _merge_works,
     _works_from_dom,
 )
+from douyin_wiki.adapters.favorites_api import RawFavoritePage, parse_favorite_page
 from douyin_wiki.config import MediaSettings
-from douyin_wiki.errors import BrowserAuthRequiredError
+from douyin_wiki.errors import BrowserAuthRequiredError, ExternalToolError, JobLeaseLostError
 from douyin_wiki.favorites_models import FavoriteWork
 
 WORK_ID = "1234567890123456789"
 SECOND_WORK_ID = "2234567890123456789"
+
+
+def raw_page(resource, folder_id, cursor, data):
+    return RawFavoritePage(resource, folder_id, cursor, 20, 200, json.dumps(data).encode())
+
+
+class ScriptedApiClient:
+    def __init__(self, page):
+        self.page = page
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        pass
+
+    async def read_page(self, *, resource, folder_id=None, cursor="0", **_):
+        self.page.api_calls.append((resource, folder_id, cursor))
+        value = self.page.api_pages.get((resource, folder_id, cursor))
+        if value is None and resource == "directory":
+            records = self.page.directory.get("records", [])
+            value = {
+                "status_code": 0,
+                "has_more": 0,
+                "collects_list": [
+                    {
+                        "collects_id_str": r.get("platform_id"),
+                        "collects_name": r.get("name"),
+                        "total_number": r.get("reported_count"),
+                    }
+                    for r in records
+                ],
+                "total_number": len(records),
+            }
+        if isinstance(value, BaseException):
+            raise value
+        if value is None:
+            raise AssertionError(f"unexpected API call: {(resource, folder_id, cursor)}")
+        return raw_page(resource, folder_id, cursor, value)
+
+
+@pytest.fixture(autouse=True)
+def scripted_client(monkeypatch):
+    monkeypatch.setattr(
+        "douyin_wiki.adapters.favorites.FavoritesBrowserClient", ScriptedApiClient, raising=False
+    )
 
 
 def test_work_rejects_external_source() -> None:
@@ -86,31 +133,26 @@ def test_dom_records_keep_articles_and_exclude_non_list_anchors() -> None:
     assert warnings == []
 
 
-def test_folder_catalog_never_uses_display_name_as_identity() -> None:
-    folders, complete, warnings = _folders_from_dom(
-        [
-            {"name": "旅行", "href": "/user/self?modal_id=favorite_collection"},
-            {"name": "AI", "platform_id": "2002", "reported_count": "3"},
-        ],
-        terminal=True,
-        reported_count=2,
+def test_folder_catalog_never_uses_display_name_as_identity():
+    page = parse_favorite_page(
+        raw_page(
+            "directory",
+            None,
+            "0",
+            {
+                "status_code": 0,
+                "has_more": 0,
+                "collects_list": [
+                    {"collects_name": "旅行", "share_url": "/user/self"},
+                    {"collects_name": "AI", "collects_id_str": "2002", "total_number": 3},
+                ],
+                "total_number": 2,
+            },
+        )
     )
-
-    assert [folder.id for folder in folders] == ["2002"]
-    assert complete is False
-    assert any("稳定 ID" in warning for warning in warnings)
-
-
-def test_folder_catalog_count_mismatch_is_incomplete() -> None:
-    folders, complete, warnings = _folders_from_dom(
-        [{"name": "旅行", "platform_id": "2001", "reported_count": 8}],
-        terminal=True,
-        reported_count=2,
-    )
-
-    assert len(folders) == 1
-    assert complete is False
-    assert any("目录显示 2 个" in warning for warning in warnings)
+    assert [f.id for f in page.folders] == ["2002"]
+    assert not page.valid
+    assert any("稳定 ID" in w for w in page.warnings)
 
 
 class FakeResponse:
@@ -156,6 +198,8 @@ class SyntheticFavoritesPage:
         }
         self.listing_index = 0
         self.clicked: list[str] = []
+        self.api_pages = {}
+        self.api_calls = []
         self.checkpoint_count = 0
         self.scroll_count = 0
         self.visible_selectors = {
@@ -266,7 +310,7 @@ async def test_inventory_checkpoints_cumulative_results_before_scrolling(tmp_pat
         on_checkpoint=checkpoint,
     )
 
-    assert checkpoints == [[WORK_ID], [WORK_ID, SECOND_WORK_ID]]
+    assert [ids for ids in checkpoints if ids] == [[WORK_ID], [WORK_ID, SECOND_WORK_ID]]
     assert result.complete is True
     assert page.scroll_count == 1
     assert page.checkpoint_count > page.scroll_count
@@ -320,12 +364,252 @@ def test_protocol_relative_records_and_article_badge_are_not_importable_notes():
     assert not warnings
 
 
-def test_folder_catalog_ignores_external_links_even_with_platform_id():
-    folders, complete, warnings = _folders_from_dom(
-        [{"name": "外部链接", "platform_id": "123", "href": "https://example.com/collection/123"}],
-        terminal=True,
-        reported_count=1,
+def test_folder_catalog_never_extracts_ids_from_external_links():
+    page = parse_favorite_page(
+        raw_page(
+            "directory",
+            None,
+            "0",
+            {
+                "status_code": 0,
+                "has_more": 0,
+                "collects_list": [
+                    {"collects_name": "外部", "share_url": "https://evil.test/collection/123"}
+                ],
+            },
+        )
     )
-    assert folders == []
-    assert not complete
-    assert warnings
+    assert not page.folders
+    assert not page.valid
+
+
+def api_directory(ids=("12",), *, counts=None, **extra):
+    counts = counts or {}
+    return {
+        "status_code": 0,
+        "has_more": 0,
+        "cursor": 0,
+        "total_number": len(ids),
+        "collects_list": [
+            {"collects_id_str": fid, "collects_name": "夹" + fid, "total_number": counts.get(fid)}
+            for fid in ids
+        ],
+        **extra,
+    }
+
+
+def api_works(ids, **extra):
+    return {
+        "status_code": 0,
+        "has_more": 0,
+        "cursor": 0,
+        "aweme_list": [{"aweme_id": str(wid), "video": {}} for wid in ids],
+        **extra,
+    }
+
+
+async def scan(tmp_path, page, *, folder_ids=None, directory_only=False, checkpoint=None):
+    return await DouyinFavoritesAdapter(MediaSettings(), tmp_path / "profile")._inventory_page(
+        page,
+        cookies=[{"name": "sessionid", "domain": ".douyin.com", "expires": -1}],
+        folder_ids=folder_ids,
+        directory_only=directory_only,
+        expected_account_id=None,
+        on_checkpoint=checkpoint,
+    )
+
+
+async def test_api_directory_does_not_require_empty_tabpanel(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.visible_selectors = set()
+    page.api_pages[("directory", None, "0")] = api_directory(("12", "13", "14", "15"))
+    result = await scan(tmp_path, page, directory_only=True)
+    assert [f.id for f in result.folders] == ["12", "13", "14", "15"]
+    assert result.complete and result.folders_complete
+
+
+async def test_directory_only_never_requests_folder_pages(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages[("directory", None, "0")] = api_directory()
+    result = await scan(tmp_path, page, directory_only=True)
+    assert not result.works
+    assert page.api_calls == [("directory", None, "0")]
+
+
+async def test_selected_folders_merge_duplicate_memberships(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages = {
+        ("directory", None, "0"): api_directory(("12", "13")),
+        ("folder", "12", "0"): api_works([1, 2]),
+        ("folder", "13", "0"): api_works([2, 3]),
+    }
+    result = await scan(tmp_path, page, folder_ids=["12", "13"])
+    assert [w.work_id for w in result.works] == ["1", "2", "3"]
+    assert result.works[1].folder_ids == ["12", "13"]
+    assert result.complete
+
+
+async def test_unselected_prefetch_does_not_enter_inventory(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages = {
+        ("directory", None, "0"): api_directory(("12", "13")),
+        ("folder", "12", "0"): api_works([1]),
+        ("folder", "13", "0"): api_works([999]),
+    }
+    result = await scan(tmp_path, page, folder_ids=["12"])
+    assert [w.work_id for w in result.works] == ["1"]
+    assert ("folder", "13", "0") not in page.api_calls
+
+
+async def test_all_favorites_keeps_ungrouped_dom_items(tmp_path):
+    page = SyntheticFavoritesPage(
+        listings=[{"records": [{"scope": "favorites-list", "href": "/video/1"}], "terminal": True}]
+    )
+    page.api_pages[("directory", None, "0")] = api_directory()
+    result = await scan(tmp_path, page)
+    assert result.works[0].folder_ids == []
+    assert result.complete
+    assert page.api_calls == [("directory", None, "0")]
+
+
+@pytest.mark.parametrize(
+    "failure", [ExternalToolError("接口异常"), {"status_code": 0, "has_more": 0}]
+)
+async def test_all_favorites_survives_directory_protocol_failure(tmp_path, failure):
+    page = SyntheticFavoritesPage(
+        listings=[{"records": [{"scope": "favorites-list", "href": "/video/1"}], "terminal": True}]
+    )
+    page.api_pages[("directory", None, "0")] = failure
+    result = await scan(tmp_path, page)
+    assert [w.work_id for w in result.works] == ["1"]
+    assert result.complete
+    assert not result.folders_complete
+    assert result.warnings
+
+
+async def test_api_inventory_checkpoints_before_next_page(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages = {
+        ("directory", None, "0"): api_directory(),
+        ("folder", "12", "0"): api_works([1], has_more=1, cursor="2"),
+        ("folder", "12", "2"): api_works([2]),
+    }
+    checkpoints = []
+
+    async def checkpoint(result):
+        checkpoints.append([w.work_id for w in result.works])
+        if len(result.works) == 1:
+            assert ("folder", "12", "2") not in page.api_calls
+
+    result = await scan(tmp_path, page, folder_ids=["12"], checkpoint=checkpoint)
+    assert [w.work_id for w in result.works] == ["1", "2"]
+    assert ["1"] in checkpoints and ["1", "2"] in checkpoints
+
+
+async def test_api_inventory_handles_more_than_5000_works(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages[("directory", None, "0")] = api_directory(counts={"12": 5121})
+    for cursor in range(0, 5121, 20):
+        end = min(cursor + 20, 5121)
+        page.api_pages[("folder", "12", str(cursor))] = api_works(
+            range(cursor + 1, end + 1), has_more=int(end < 5121), cursor=str(end)
+        )
+    result = await scan(tmp_path, page, folder_ids=["12"])
+    assert len(result.works) == 5121
+    assert result.works[-1].work_id == "5121"
+    assert result.complete
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        api_works([2], has_more=1, cursor="2"),
+        api_works([], has_more=1, cursor="4"),
+        api_works([2], has_more=None),
+        ExternalToolError("分页失败"),
+    ],
+)
+async def test_bad_next_page_preserves_discovered_works(tmp_path, second):
+    page = SyntheticFavoritesPage()
+    page.api_pages = {
+        ("directory", None, "0"): api_directory(),
+        ("folder", "12", "0"): api_works([1], has_more=1, cursor="2"),
+        ("folder", "12", "2"): second,
+    }
+    result = await scan(tmp_path, page, folder_ids=["12"])
+    assert result.works[0].work_id == "1"
+    assert not result.complete
+    assert result.warnings
+    assert len(page.api_calls) == 3
+
+
+async def test_page_limit_preserves_works(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages[("directory", None, "0")] = api_directory()
+    for cursor in range(500):
+        page.api_pages[("folder", "12", str(cursor))] = api_works(
+            [cursor + 1], has_more=1, cursor=str(cursor + 1)
+        )
+    result = await scan(tmp_path, page, folder_ids=["12"])
+    assert len(result.works) == 500
+    assert not result.complete
+    assert len(page.api_calls) == 501
+
+
+async def test_reported_seven_observed_four_is_partial(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages = {
+        ("directory", None, "0"): api_directory(counts={"12": 7}),
+        ("folder", "12", "0"): api_works([1, 2, 3, 4]),
+    }
+    result = await scan(tmp_path, page, folder_ids=["12"])
+    assert len(result.works) == 4
+    assert result.folders_complete
+    assert not result.complete
+    assert any("显示 7 条" in w and "读取 4 条" in w for w in result.warnings)
+
+
+async def test_first_directory_failure_is_not_empty_success(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages[("directory", None, "0")] = ExternalToolError("接口异常")
+    with pytest.raises(ExternalToolError):
+        await scan(tmp_path, page, directory_only=True)
+
+
+async def test_authentication_failure_does_not_fallback_to_all_favorites(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages[("directory", None, "0")] = BrowserAuthRequiredError("登录失效")
+    with pytest.raises(BrowserAuthRequiredError):
+        await scan(tmp_path, page)
+
+
+async def test_account_change_after_response_prevents_checkpoint(tmp_path, monkeypatch):
+    page = SyntheticFavoritesPage()
+    page.api_pages[("directory", None, "0")] = api_directory()
+    original = ScriptedApiClient.read_page
+
+    async def change(self, **kwargs):
+        result = await original(self, **kwargs)
+        self.page.account_id = "another-account"
+        return result
+
+    monkeypatch.setattr(ScriptedApiClient, "read_page", change)
+    checkpoints = []
+
+    async def checkpoint(snapshot):
+        checkpoints.append(snapshot)
+
+    with pytest.raises(BrowserAuthRequiredError):
+        await scan(tmp_path, page, directory_only=True, checkpoint=checkpoint)
+    assert not checkpoints
+
+
+async def test_checkpoint_lease_failure_is_not_a_partial_success(tmp_path):
+    page = SyntheticFavoritesPage()
+    page.api_pages[("directory", None, "0")] = api_directory()
+
+    async def checkpoint(_):
+        raise JobLeaseLostError("lease lost")
+
+    with pytest.raises(JobLeaseLostError):
+        await scan(tmp_path, page, directory_only=True, checkpoint=checkpoint)

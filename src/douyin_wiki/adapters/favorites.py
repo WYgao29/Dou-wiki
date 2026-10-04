@@ -5,12 +5,14 @@ from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from ..config import MediaSettings
 from ..errors import BrowserAuthRequiredError, ExternalToolError
 from ..favorites_models import FavoriteFolder, FavoriteInventory, FavoriteWork
 from ..models import AuthCheckResult
+from .favorites_api import Resource, parse_favorite_page
+from .favorites_browser import FavoritesBrowserClient
 from .image_note import (
     PlaywrightImageNoteDownloader,
     _page_auth_blocked,
@@ -19,7 +21,6 @@ from .image_note import (
 
 Checkpoint = Callable[[FavoriteInventory], Awaitable[None]]
 _STABLE_FOLDER_ID = re.compile(r"^[0-9]{1,32}$")
-_FOLDER_PATHS = (re.compile(r"/(?:collection|favorite/folder)/(\d+)(?:/|$)"),)
 
 _ACCOUNT_SNAPSHOT_JS = r"""
 () => { // douyin-wiki:account
@@ -41,45 +42,23 @@ _ACCOUNT_SNAPSHOT_JS = r"""
   const heading = document.querySelector('h1, [data-e2e="user-title"]');
   let root = heading?.parentElement;
   for (let i = 0; root && i < 5; i++, root = root.parentElement) {
-    const match = root.textContent.match(/抖音号[：:]\s*([a-zA-Z0-9_.-]+)/);
-    if (match) return {account_id: 'douyin:' + match[1], nickname: heading.textContent.trim()};
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (!node.parentElement?.getClientRects().length) continue;
+      if (!/抖音号[：:]/.test(node.textContent)) continue;
+      let match = node.textContent.match(/抖音号[：:]\s*([a-zA-Z0-9_.-]+)/);
+      if (!match && /^\s*抖音号[：:]\s*$/.test(node.textContent)) {
+        let sibling = node.nextSibling || node.parentElement.nextSibling;
+        while (sibling && !sibling.textContent.trim()) sibling = sibling.nextSibling;
+        if (sibling?.nodeType === Node.ELEMENT_NODE && !sibling.getClientRects().length) continue;
+        match = sibling?.textContent?.match(/^\s*([a-zA-Z0-9_.-]+)\s*$/);
+      }
+      if (match) return {account_id:'douyin:'+match[1], nickname:heading.textContent.trim()};
+    }
   }
   const ownProfile = location.pathname.match(/^\/user\/([^/?#]+)/);
   return {account_id: ownProfile?.[1] === 'self' ? '' : ownProfile?.[1] || '', nickname: ''};
-}
-"""
-
-_DIRECTORY_SNAPSHOT_JS = r"""
-() => { // douyin-wiki:directory
-  const candidates = [...document.querySelectorAll(
-    '[data-e2e="favorite-folder-list"], #semiTabPanelfavorite_folder, [data-e2e="favorite_folder"]'
-  )].filter(node => node.getClientRects().length && node.getAttribute('role') !== 'tab'
-    && node.tagName !== 'BUTTON');
-  const root = candidates.find(node =>
-    node.querySelector('a, [data-folder-id], [data-collection-id]'))
-    || candidates[0];
-  if (!root) return {records: [], terminal: false, reported_count: null, boundary_found: false};
-  const nodes = root.querySelectorAll('a, [data-collection-id], [data-folder-id]');
-  const records = [...nodes].map(node => ({
-    name: node.querySelector('[data-e2e="folder-name"]')
-        ?.textContent?.trim()
-      || node.getAttribute('aria-label')?.trim()
-      || node.textContent?.trim()
-      || '',
-    href: node.getAttribute('href') || '',
-    platform_id: node.getAttribute('data-collection-id')
-      || node.getAttribute('data-folder-id') || '',
-    reported_count: node.getAttribute('data-count'),
-  }));
-  const countText = root.getAttribute('data-total-count');
-  const terminal = Boolean(root.querySelector(
-    '[data-e2e="favorite-folder-end"], [data-e2e="list-end"]'));
-  return {
-    records,
-    terminal,
-    reported_count: /^\d+$/.test(countText || '') ? Number(countText) : null,
-    boundary_found: true,
-  };
 }
 """
 
@@ -125,38 +104,6 @@ _LISTING_SNAPSHOT_JS = r"""
 }
 """
 
-_OPEN_FOLDER_JS = r"""
-(folderId) => { // douyin-wiki:open-folder
-  const candidates = [...document.querySelectorAll(
-    '[data-e2e="favorite-folder-list"], #semiTabPanelfavorite_folder, [data-e2e="favorite_folder"]'
-  )].filter(node => node.getClientRects().length && node.getAttribute('role') !== 'tab'
-    && node.tagName !== 'BUTTON');
-  const root = candidates.find(node =>
-    node.querySelector('a, [data-folder-id], [data-collection-id]'))
-    || candidates[0];
-  if (!root) return false;
-  for (const node of root.querySelectorAll('a, [data-collection-id], [data-folder-id]')) {
-    const explicitId = node.getAttribute('data-collection-id')
-      || node.getAttribute('data-folder-id');
-    let hrefId = '';
-    try {
-      const url = new URL(node.getAttribute('href') || '', location.origin);
-      if (!['www.douyin.com', 'douyin.com'].includes(url.hostname)
-          || !['http:', 'https:'].includes(url.protocol) || url.port
-          || url.username || url.password) continue;
-      hrefId = url.searchParams.get('collection_id') || url.searchParams.get('folder_id') || '';
-      if (!hrefId) hrefId = url.pathname
-        .match(/\/(?:collection|favorite\/folder)\/(\d+)(?:\/|$)/)?.[1] || '';
-    } catch (_) { continue; }
-    if ((explicitId || hrefId) === folderId) {
-      node.click();
-      return true;
-    }
-  }
-  return false;
-}
-"""
-
 _SCROLL_LISTING_JS = r"""
 () => { // douyin-wiki:scroll
   const roots = [...document.querySelectorAll(
@@ -172,75 +119,11 @@ _SCROLL_LISTING_JS = r"""
 """
 
 
-def _stable_folder_id(record: dict[str, Any]) -> str | None:
-    href = str(record.get("href") or "").strip()
-    if href:
-        try:
-            target = urlsplit(urljoin("https://www.douyin.com/", href))
-            if (
-                target.scheme not in {"http", "https"}
-                or target.hostname not in {"www.douyin.com", "douyin.com"}
-                or target.username
-                or target.password
-                or target.port
-            ):
-                return None
-        except ValueError:
-            return None
-    explicit = str(record.get("platform_id") or "").strip()
-    if _STABLE_FOLDER_ID.fullmatch(explicit):
-        return explicit
-    href = str(record.get("href") or "").strip()
-    parsed = urlsplit(href if not href.startswith("//") else f"https:{href}")
-    for key in ("collection_id", "folder_id"):
-        candidate = (parse_qs(parsed.query).get(key) or [""])[0]
-        if _STABLE_FOLDER_ID.fullmatch(candidate):
-            return candidate
-    for pattern in _FOLDER_PATHS:
-        if match := pattern.search(parsed.path):
-            return match.group(1)
-    return None
-
-
 def _optional_count(value: Any) -> int | None:
     if isinstance(value, int) and value >= 0:
         return value
     text = str(value or "").strip()
     return int(text) if text.isascii() and text.isdigit() else None
-
-
-def _folders_from_dom(
-    records: Iterable[dict[str, Any]],
-    *,
-    terminal: bool,
-    reported_count: int | None,
-) -> tuple[list[FavoriteFolder], bool, list[str]]:
-    folders: dict[str, FavoriteFolder] = {}
-    unidentified = 0
-    for record in records:
-        folder_id = _stable_folder_id(record)
-        if folder_id is None:
-            unidentified += 1
-            continue
-        name = str(record.get("name") or "").strip() or "未命名收藏夹"
-        folder = FavoriteFolder(
-            id=folder_id,
-            name=name,
-            reported_count=_optional_count(record.get("reported_count")),
-        )
-        folders.setdefault(folder.id, folder)
-
-    warnings: list[str] = []
-    complete = terminal
-    if unidentified:
-        complete = False
-        warnings.append(f"有 {unidentified} 个收藏夹未暴露稳定 ID，未加入目录")
-    if not terminal:
-        warnings.append("无法确认收藏夹目录分页结束")
-    if reported_count is not None and len(folders) != reported_count:
-        complete = False
-        warnings.append(f"收藏夹目录显示 {reported_count} 个，实际识别 {len(folders)} 个")
-    return list(folders.values()), complete, warnings
 
 
 def _folder_ids(values: Any) -> list[str]:
@@ -380,8 +263,29 @@ class DouyinFavoritesAdapter(PlaywrightImageNoteDownloader):
         expected_account_id: str | None,
         on_checkpoint: Checkpoint | None,
     ) -> FavoriteInventory:
+        async with FavoritesBrowserClient(page) as client:
+            return await self._inventory_with_client(
+                client,
+                cookies=cookies,
+                folder_ids=folder_ids,
+                directory_only=directory_only,
+                expected_account_id=expected_account_id,
+                on_checkpoint=on_checkpoint,
+            )
+
+    async def _inventory_with_client(
+        self,
+        client: FavoritesBrowserClient,
+        *,
+        cookies: list[dict[str, Any]],
+        folder_ids: list[str] | None,
+        directory_only: bool,
+        expected_account_id: str | None,
+        on_checkpoint: Checkpoint | None,
+    ) -> FavoriteInventory:
+        page = client.page
         response = await page.goto(
-            "https://www.douyin.com/user/self?showTab=favorite_collection",
+            "https://www.douyin.com/user/self?showTab=favorite_collection&showSubTab=favorite_folder",
             wait_until="domcontentloaded",
             timeout=60_000,
         )
@@ -394,11 +298,12 @@ class DouyinFavoritesAdapter(PlaywrightImageNoteDownloader):
                 "收藏清点需要专用浏览器登录",
                 details={"action": "douyin-wiki auth douyin"},
             )
-
         account = await page.evaluate(_ACCOUNT_SNAPSHOT_JS)
         account_id = str((account or {}).get("account_id") or "").strip()
         nickname = str((account or {}).get("nickname") or "").strip()
-        if expected_account_id and account_id and account_id != expected_account_id:
+        if not account_id or account_id == "self":
+            raise BrowserAuthRequiredError("无法确认收藏所属账号，请登录专用浏览器后重试")
+        if expected_account_id and account_id != expected_account_id:
             raise BrowserAuthRequiredError(
                 "专用浏览器登录账号已变化；请恢复原账号或新建收藏导入任务",
                 details={
@@ -407,108 +312,188 @@ class DouyinFavoritesAdapter(PlaywrightImageNoteDownloader):
                     "actual_account_id": account_id,
                 },
             )
-
-        warnings: list[str] = []
-        if not account_id or account_id == "self":
-            raise BrowserAuthRequiredError("无法确认收藏所属账号，请登录专用浏览器后重试")
-
-        if not await self._click_tab(page, '[data-e2e="favorite_collection"]'):
-            warnings.append("未找到 favorite_collection 收藏区域，未扫描作品")
-            return FavoriteInventory(
+        try:
+            directory = await self._scan_api_resource(
+                client,
+                resource="directory",
                 account_id=account_id,
                 nickname=nickname,
-                warnings=warnings,
+                folders=[],
+                folders_complete=False,
+                folder_id=None,
+                existing=[],
+                inherited_warnings=[],
+                on_checkpoint=on_checkpoint,
             )
-
-        folders: list[FavoriteFolder] = []
-        folders_complete = False
-        if await self._click_tab(page, '[data-e2e="favorite_folder"]'):
-            directory = await page.evaluate(_DIRECTORY_SNAPSHOT_JS)
-            if not directory.get("boundary_found", True):
-                warnings.append("未找到 favorite_folder 目录列表边界")
-            else:
-                folders, folders_complete, folder_warnings = _folders_from_dom(
-                    directory.get("records") or [],
-                    terminal=directory.get("terminal") is True,
-                    reported_count=_optional_count(directory.get("reported_count")),
-                )
-                warnings.extend(folder_warnings)
-        else:
-            warnings.append("未找到 favorite_folder 收藏夹子页")
-
-        base = FavoriteInventory(
-            account_id=account_id,
-            nickname=nickname,
-            folders=folders,
-            complete=folders_complete if directory_only else False,
-            folders_complete=folders_complete,
-            warnings=warnings,
-        )
+        except ExternalToolError as exc:
+            if directory_only or folder_ids is not None:
+                raise
+            directory = FavoriteInventory(
+                account_id=account_id, nickname=nickname, warnings=[str(exc)]
+            )
         if directory_only:
-            if on_checkpoint:
-                await on_checkpoint(base.model_copy(deep=True))
-            return base
-
-        requested = None if folder_ids is None else list(dict.fromkeys(folder_ids))
-        known_ids = {folder.id for folder in folders}
-        if requested is not None:
-            invalid_ids = [folder_id for folder_id in requested if folder_id not in known_ids]
-            if invalid_ids:
-                raise ValueError(f"未知或无稳定标识的收藏夹 ID：{', '.join(invalid_ids)}")
-            scopes: list[str | None] = requested
-        else:
-            scopes = [None]
+            return directory
+        folders, folders_complete = directory.folders, directory.folders_complete
+        warnings = list(directory.warnings)
+        if folder_ids is None:
             if folders:
-                folders_complete = False
                 warnings.append("全部收藏清点未遍历各收藏夹，作品的收藏夹归属可能不完整")
-
-        all_works: list[FavoriteWork] = []
-        all_complete = True
-        for folder_id in scopes:
-            if folder_id is None:
-                if not await self._click_tab(page, '[data-e2e="video"]'):
-                    warnings.append("未找到 video 收藏作品子页")
-                    all_complete = False
-                    continue
-            elif not (
-                await self._click_tab(page, '[data-e2e="favorite_folder"]')
-                and await page.evaluate(_OPEN_FOLDER_JS, folder_id)
+            if not (
+                await self._click_tab(page, '[data-e2e="favorite_collection"]')
+                and await self._click_tab(page, '[data-e2e="video"]')
             ):
-                warnings.append(f"无法按稳定 ID 打开收藏夹 {folder_id}")
-                all_complete = False
-                continue
-            await page.wait_for_timeout(500)
-            all_works, scope_complete, scan_warnings = await self._scan_listing(
+                warnings.append("未找到 video 收藏作品子页")
+                return directory.model_copy(update={"complete": False, "warnings": warnings})
+            works, complete, scan_warnings = await self._scan_listing(
                 page,
                 account_id=account_id,
                 nickname=nickname,
                 folders=folders,
                 folders_complete=folders_complete,
-                existing=all_works,
-                folder_id=folder_id,
+                existing=[],
+                folder_id=None,
                 inherited_warnings=warnings,
                 on_checkpoint=on_checkpoint,
             )
-            warnings.extend(scan_warnings)
-            all_complete = all_complete and scope_complete
-
-            if folder_id is not None:
-                reported = next(
-                    (folder.reported_count for folder in folders if folder.id == folder_id), None
-                )
-                observed = sum(folder_id in work.folder_ids for work in all_works)
-                if reported is not None and observed != reported:
-                    all_complete = False
-                    warnings.append(
-                        f"收藏夹 {folder_id} 显示 {reported} 条，实际识别 {observed} 条"
-                    )
-
-        complete = all_complete and bool(account_id)
+            return FavoriteInventory(
+                account_id=account_id,
+                nickname=nickname,
+                folders=folders,
+                works=works,
+                complete=complete,
+                folders_complete=folders_complete,
+                warnings=list(dict.fromkeys([*warnings, *scan_warnings])),
+            )
+        requested = list(dict.fromkeys(folder_ids))
+        unknown = set(requested) - {folder.id for folder in folders}
+        if unknown:
+            raise ValueError(f"未知或无稳定标识的收藏夹 ID：{', '.join(sorted(unknown))}")
+        works, complete = [], folders_complete
+        for folder_id in requested:
+            inventory = await self._scan_api_resource(
+                client,
+                resource="folder",
+                account_id=account_id,
+                nickname=nickname,
+                folders=folders,
+                folders_complete=folders_complete,
+                folder_id=folder_id,
+                existing=works,
+                inherited_warnings=warnings,
+                on_checkpoint=on_checkpoint,
+            )
+            works, warnings = inventory.works, inventory.warnings
+            complete = complete and inventory.complete
         return FavoriteInventory(
             account_id=account_id,
             nickname=nickname,
             folders=folders,
-            works=_merge_works(all_works),
+            works=works,
+            complete=complete,
+            folders_complete=folders_complete,
+            warnings=warnings,
+        )
+
+    async def _assert_account(self, page: Any, account_id: str) -> None:
+        body = (await page.locator("body").inner_text(timeout=10_000))[:20_000]
+        current = await page.evaluate(_ACCOUNT_SNAPSHOT_JS)
+        if (
+            _page_auth_blocked(body, None, page.url)
+            or (current or {}).get("account_id") != account_id
+        ):
+            raise BrowserAuthRequiredError("清点期间登录失效或账号已变化，请恢复原账号后重试")
+
+    async def _scan_api_resource(
+        self,
+        client: FavoritesBrowserClient,
+        *,
+        resource: Resource,
+        account_id: str,
+        nickname: str,
+        folders: list[FavoriteFolder],
+        folders_complete: bool,
+        folder_id: str | None,
+        existing: list[FavoriteWork],
+        inherited_warnings: list[str],
+        on_checkpoint: Checkpoint | None,
+    ) -> FavoriteInventory:
+        catalog = {folder.id: folder for folder in folders}
+        works = _merge_works(existing)
+        warnings = list(inherited_warnings)
+        cursor, seen_cursors = "0", set()
+        terminal, valid, reported = False, True, None
+        trusted = bool(existing) or (resource == "folder" and bool(folders))
+        for _ in range(500):
+            await self._assert_account(client.page, account_id)
+            seen_cursors.add(cursor)
+            try:
+                raw = await client.read_page(resource=resource, folder_id=folder_id, cursor=cursor)
+                parsed = parse_favorite_page(raw)
+            except ExternalToolError as exc:
+                await self._assert_account(client.page, account_id)
+                if not trusted:
+                    raise
+                warnings.append(str(exc))
+                break
+            await self._assert_account(client.page, account_id)
+            trusted = trusted or parsed.valid or bool(parsed.folders or parsed.works)
+            if not trusted:
+                raise ExternalToolError("；".join(parsed.warnings) or "收藏接口没有可信结果")
+            warnings.extend(parsed.warnings)
+            valid = valid and parsed.valid
+            for folder in parsed.folders:
+                catalog[folder.id] = folder
+            works = _merge_works([*works, *parsed.works])
+            if parsed.reported_count is not None:
+                reported = parsed.reported_count
+            if on_checkpoint:
+                await on_checkpoint(
+                    FavoriteInventory(
+                        account_id=account_id,
+                        nickname=nickname,
+                        folders=list(catalog.values()),
+                        works=works,
+                        complete=False,
+                        folders_complete=folders_complete if resource == "folder" else False,
+                        warnings=list(dict.fromkeys(warnings)),
+                    )
+                )
+            if parsed.has_more is False:
+                terminal = True
+                break
+            if parsed.has_more is None:
+                break
+            if not (parsed.folders if resource == "directory" else parsed.works):
+                warnings.append("收藏接口返回空页但仍有下一页，清点不完整")
+                break
+            if not parsed.next_cursor or parsed.next_cursor in seen_cursors:
+                warnings.append("收藏接口分页 cursor 缺失、不推进或循环，清点不完整")
+                break
+            cursor = parsed.next_cursor
+        else:
+            warnings.append("收藏清点达到安全扫描上限，结果不完整")
+        complete = terminal and valid
+        if resource == "directory":
+            if reported is not None and reported != len(catalog):
+                warnings.append(f"收藏夹目录显示 {reported} 个，实际读取 {len(catalog)} 个")
+                complete = False
+            folders_complete = complete
+        else:
+            folder = catalog[folder_id]
+            observed = sum(folder_id in work.folder_ids for work in works)
+            if folder.reported_count is not None and folder.reported_count != observed:
+                warnings.append(
+                    f"收藏夹「{folder.name}」显示 {folder.reported_count} 条，"
+                    f"实际读取 {observed} 条，数量不一致"
+                )
+                complete = False
+        if not terminal:
+            warnings.append("未取得可信的收藏分页结束信号")
+        return FavoriteInventory(
+            account_id=account_id,
+            nickname=nickname,
+            folders=list(catalog.values()),
+            works=works,
             complete=complete,
             folders_complete=folders_complete,
             warnings=list(dict.fromkeys(warnings)),

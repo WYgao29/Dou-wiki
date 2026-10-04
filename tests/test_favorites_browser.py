@@ -50,6 +50,19 @@ async def test_observed_dom_boundary_extracts_relative_links_and_ignores_footer(
     assert (await page.evaluate(_LISTING_SNAPSHOT_JS))["boundary_found"] is False
 
 
+@pytest.mark.parametrize(
+    "account_markup",
+    [
+        "<span>抖音号：22127912455</span><span>36岁</span>",
+        "<span>抖音号：</span><span>22127912455</span><span>36岁</span>",
+    ],
+)
+async def test_account_fallback_does_not_append_adjacent_age(offline_page, account_markup):
+    await offline_page.set_content("<div><h1>测试账号</h1>" + account_markup + "</div>")
+    account = await offline_page.evaluate(_ACCOUNT_SNAPSHOT_JS)
+    assert account["account_id"] == "douyin:22127912455"
+
+
 async def test_ui_inventory_requires_separate_confirm_and_partial_acceptance(
     offline_page, tmp_path
 ):
@@ -117,8 +130,7 @@ async def test_ui_inventory_requires_separate_confirm_and_partial_acceptance(
     )
     await page.add_script_tag(content=(root / "static/imports-favorites.js").read_text())
     await page.evaluate(
-        "window.dispatchEvent(new CustomEvent('douku:route',"
-        " {detail:{path:'/imports/favorites'}}))"
+        "window.dispatchEvent(new CustomEvent('douku:route', {detail:{path:'/imports/favorites'}}))"
     )
     await page.locator("#favorites-scan").click()
     await page.locator("#favorites-items a").wait_for()
