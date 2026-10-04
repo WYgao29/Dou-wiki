@@ -117,8 +117,14 @@ def parse_favorite_page(response: RawFavoritePage) -> FavoriteApiPage:
         raise ExternalToolError("收藏接口响应结构异常")
     status = data.get("status_code")
     message = _text(data.get("status_msg"))
-    if status == 8 or (
-        status != 0 and re.search(r"请.*登录|登录.*失效|login required", message, re.I)
+    # Code 8 is generic; only a known login code or an explicit message denies auth.
+    if (type(status) is int and status == 2483) or (
+        status != 0
+        and re.search(
+            r"请.*登录|未登录|登录.*(?:失效|过期)|login\s+(?:required|expired)|not\s+logged\s+in",
+            message,
+            re.I,
+        )
     ):
         raise BrowserAuthRequiredError("收藏接口要求重新登录抖音")
     warnings: list[str] = []

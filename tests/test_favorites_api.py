@@ -145,6 +145,30 @@ def test_explicit_login_denial_requires_authentication():
         parse({"status_code": 8, "status_msg": "请先登录"})
 
 
+@pytest.mark.parametrize("message", ["", "系统繁忙", "请求被拒绝"])
+def test_generic_code_eight_is_not_a_login_denial(message):
+    page = parse(directory([], status_code=8, status_msg=message))
+    assert not page.valid
+    assert not page.folders
+    assert page.has_more is None and page.next_cursor is None
+
+
+@pytest.mark.parametrize(
+    "code,message",
+    [
+        (2483, ""),
+        (1001, "用户未登录"),
+        (1001, "登录已过期"),
+        (1001, "Login expired"),
+        (1001, "User is not logged in"),
+        (8, "用户未登录"),
+    ],
+)
+def test_known_login_code_or_explicit_login_message_requires_authentication(code, message):
+    with pytest.raises(BrowserAuthRequiredError):
+        parse(directory([], status_code=code, status_msg=message))
+
+
 @pytest.mark.parametrize(
     "payload,status", [(b"not json", 200), (b"[]", 200), (b"{}", 403), (b"{}", 503)]
 )

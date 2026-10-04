@@ -583,6 +583,61 @@ async def test_authentication_failure_does_not_fallback_to_all_favorites(tmp_pat
         await scan(tmp_path, page)
 
 
+@pytest.mark.parametrize(
+    "code,message", [(2483, ""), (1001, "用户未登录"), (1001, "Login expired")]
+)
+async def test_explicit_login_response_does_not_fallback_to_all_favorites(tmp_path, code, message):
+    page = SyntheticFavoritesPage(
+        listings=[{"records": [{"scope": "favorites-list", "href": "/video/1"}], "terminal": True}]
+    )
+    page.api_pages[("directory", None, "0")] = api_directory(status_code=code, status_msg=message)
+    checkpoints = []
+
+    async def checkpoint(snapshot):
+        checkpoints.append(snapshot)
+
+    with pytest.raises(BrowserAuthRequiredError):
+        await scan(tmp_path, page, checkpoint=checkpoint)
+    assert not checkpoints
+    assert not page.clicked
+
+
+async def test_generic_code_eight_does_not_block_all_favorites(tmp_path):
+    page = SyntheticFavoritesPage(
+        listings=[{"records": [{"scope": "favorites-list", "href": "/video/1"}], "terminal": True}]
+    )
+    page.api_pages[("directory", None, "0")] = api_directory(status_code=8, status_msg="系统繁忙")
+    result = await scan(tmp_path, page)
+    assert [w.work_id for w in result.works] == ["1"]
+    assert result.complete and not result.folders_complete
+    assert result.warnings
+
+
+@pytest.mark.parametrize("code,message", [(2483, ""), (1001, "用户未登录")])
+async def test_login_denial_after_first_folder_page_prevents_new_checkpoint(
+    tmp_path, code, message
+):
+    page = SyntheticFavoritesPage()
+    page.api_pages = {
+        ("directory", None, "0"): api_directory(counts={"12": 2}),
+        ("folder", "12", "0"): api_works([1], has_more=1, cursor="2"),
+        ("folder", "12", "2"): api_works([], status_code=code, status_msg=message),
+    }
+    checkpoints = []
+
+    async def checkpoint(snapshot):
+        checkpoints.append([w.work_id for w in snapshot.works])
+
+    with pytest.raises(BrowserAuthRequiredError):
+        await scan(tmp_path, page, folder_ids=["12"], checkpoint=checkpoint)
+    assert checkpoints == [[], ["1"]]
+    assert page.api_calls == [
+        ("directory", None, "0"),
+        ("folder", "12", "0"),
+        ("folder", "12", "2"),
+    ]
+
+
 async def test_account_change_after_response_prevents_checkpoint(tmp_path, monkeypatch):
     page = SyntheticFavoritesPage()
     page.api_pages[("directory", None, "0")] = api_directory()
