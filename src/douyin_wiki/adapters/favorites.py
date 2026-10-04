@@ -39,20 +39,44 @@ _ACCOUNT_SNAPSHOT_JS = r"""
         ?.textContent?.trim() || '';
     return {account_id: accountId, nickname};
   }
+  const visibleText = node => {
+    const parent = node.parentElement;
+    if (!parent?.getClientRects().length) return '';
+    const visibility = getComputedStyle(parent).visibility;
+    if (visibility === 'hidden' || visibility === 'collapse') return '';
+    return node.textContent.trim();
+  };
+  const firstVisibleText = node => {
+    if (node.nodeType === Node.TEXT_NODE) return visibleText(node);
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const text = visibleText(walker.currentNode);
+      if (text) return text;
+    }
+    return '';
+  };
   const heading = document.querySelector('h1, [data-e2e="user-title"]');
   let root = heading?.parentElement;
   for (let i = 0; root && i < 5; i++, root = root.parentElement) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
       const node = walker.currentNode;
-      if (!node.parentElement?.getClientRects().length) continue;
-      if (!/抖音号[：:]/.test(node.textContent)) continue;
-      let match = node.textContent.match(/抖音号[：:]\s*([a-zA-Z0-9_.-]+)/);
-      if (!match && /^\s*抖音号[：:]\s*$/.test(node.textContent)) {
-        let sibling = node.nextSibling || node.parentElement.nextSibling;
-        while (sibling && !sibling.textContent.trim()) sibling = sibling.nextSibling;
-        if (sibling?.nodeType === Node.ELEMENT_NODE && !sibling.getClientRects().length) continue;
-        match = sibling?.textContent?.match(/^\s*([a-zA-Z0-9_.-]+)\s*$/);
+      const text = visibleText(node);
+      if (!/抖音号[：:]/.test(text)) continue;
+      let match = text.match(/抖音号[：:]\s*([a-zA-Z0-9_.-]+)/);
+      if (!match && /^抖音号[：:]\s*$/.test(text)) {
+        let sibling = node, value = '';
+        while (sibling && sibling !== root) {
+          if (!sibling.nextSibling) {
+            sibling = sibling.parentNode;
+            continue;
+          }
+          sibling = sibling.nextSibling;
+          value = firstVisibleText(sibling);
+          if (value) break;
+        }
+        match = value.match(/^([a-zA-Z0-9_.-]+)$/);
       }
       if (match) return {account_id:'douyin:'+match[1], nickname:heading.textContent.trim()};
     }

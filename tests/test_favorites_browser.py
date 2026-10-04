@@ -55,12 +55,88 @@ async def test_observed_dom_boundary_extracts_relative_links_and_ignores_footer(
     [
         "<span>抖音号：22127912455</span><span>36岁</span>",
         "<span>抖音号：</span><span>22127912455</span><span>36岁</span>",
+        "<span>抖音号：</span><div><span>22127912455</span> <span>36岁</span></div>",
+        "<span>抖音号：</span><span><span>22127912455</span>"
+        '<span style="display:none">copy</span></span>',
+        "<span>抖音号：</span><span>"
+        '<span style="display:none">copy</span><span>22127912455</span><span>36岁</span></span>',
+        "<span>抖音号：</span><span>"
+        '<span style="visibility:hidden">copy</span><span>22127912455</span></span>',
+        "<span>抖音号：</span><span hidden>copy</span><!-- decoration -->"
+        "<span>22127912455</span><span>36岁</span>",
+        "<span><span>抖音号：</span></span><div><span>22127912455</span> <span>36岁</span></div>",
+        "<span>抖音号： <!-- hint --></span><span>22127912455</span><span>36岁</span>",
     ],
 )
 async def test_account_fallback_does_not_append_adjacent_age(offline_page, account_markup):
     await offline_page.set_content("<div><h1>测试账号</h1>" + account_markup + "</div>")
     account = await offline_page.evaluate(_ACCOUNT_SNAPSHOT_JS)
     assert account["account_id"] == "douyin:22127912455"
+
+
+@pytest.mark.parametrize("style", ["display:none", "visibility:hidden"])
+async def test_account_fallback_ignores_hidden_identity_text(offline_page, style):
+    await offline_page.set_content(
+        '<div><h1>测试账号</h1><span style="' + style + '">抖音号：wrong_account</span>'
+        "<span>抖音号：fixture_123</span></div>"
+    )
+    assert (await offline_page.evaluate(_ACCOUNT_SNAPSHOT_JS))["account_id"] == "douyin:fixture_123"
+
+
+async def test_account_fallback_does_not_use_hidden_id_or_age(offline_page):
+    await offline_page.set_content(
+        "<div><h1>测试账号</h1><span>抖音号：</span>"
+        "<span><span hidden>22127912455</span><span>36岁</span></span></div>"
+    )
+    assert (await offline_page.evaluate(_ACCOUNT_SNAPSHOT_JS))["account_id"] == ""
+
+
+async def test_inventory_reads_account_from_adjacent_container(offline_page, tmp_path):
+    from urllib.parse import urlsplit
+
+    from douyin_wiki.adapters.favorites import DouyinFavoritesAdapter
+    from douyin_wiki.config import MediaSettings
+    from tests.test_favorites_browser_client import BRIDGE
+
+    async def handler(route):
+        if route.request.is_navigation_request():
+            await route.fulfill(
+                content_type="text/html",
+                body='<meta charset="utf-8"><div><h1>测试账号</h1><span>抖音号：</span>'
+                "<div><span>fixture_123</span> <span>36岁</span></div></div><script>"
+                + BRIDGE
+                + "</script>",
+            )
+        elif urlsplit(route.request.url).path == "/aweme/v1/web/collects/list/":
+            await route.fulfill(
+                json={
+                    "status_code": 0,
+                    "has_more": 0,
+                    "total_number": 1,
+                    "collects_list": [{"collects_id_str": "12", "collects_name": "测试夹"}],
+                }
+            )
+        else:
+            await route.abort()
+
+    await offline_page.route("**/*", handler)
+    checkpoints = []
+
+    async def checkpoint(snapshot):
+        checkpoints.append(snapshot.account_id)
+
+    result = await DouyinFavoritesAdapter(MediaSettings(), tmp_path / "profile")._inventory_page(
+        offline_page,
+        cookies=[{"name": "sessionid", "domain": ".douyin.com", "expires": -1}],
+        folder_ids=None,
+        directory_only=True,
+        expected_account_id=None,
+        on_checkpoint=checkpoint,
+    )
+    assert result.account_id == "douyin:fixture_123"
+    assert result.complete and result.folders_complete
+    assert [f.id for f in result.folders] == ["12"]
+    assert checkpoints == ["douyin:fixture_123"]
 
 
 async def test_inventory_waits_for_profile_identity_to_render(offline_page, tmp_path, monkeypatch):
