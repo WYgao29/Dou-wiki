@@ -15,6 +15,10 @@
 | [Readwise 重设计方案](web-ui-redesign-readwise.md) | 已完成的设计规格与历史实施记录；当前界面约定见设计系统 |
 | [静态原型](prototypes/readwise/README.md) | 三栏布局、列表与阅读页的演示和截图 |
 
+## 近期完成
+
+[收藏夹 API 读取设计](superpowers/specs/2026-10-04-favorites-api-reading-design.md)与[实施计划](superpowers/plans/2026-10-04-favorites-api-reading.md)已确认，实现及搜索反馈修复已集成主线。目录与指定夹使用网页原生请求及原始 JSON；真实账号目录、单夹、多夹和主动分页只读验收已完成，数量差异仍要求明确接受不完整清单。作品搜索筛选本次已读清单，刷新保留当前任务。使用契约见[收藏批量导入](favorites-import.md)。
+
 ## 开发中的功能
 
 [Gateway token 优化规格](superpowers/specs/2026-10-03-gateway-token-optimization-design.md)与[实施计划](superpowers/plans/2026-10-03-gateway-token-optimization.md)已确认并在 `codex/gateway-token-optimization` 实现；现有四工具可显式选择协议 2，覆盖 OCR 投影、增量校正、证据引用与简短回执，默认保留旧协议。调用规范见 [Gateway 指南](gateway-agents.md#紧凑协议gateway_protocol2)；主线集成与真实客户端切换尚未执行。

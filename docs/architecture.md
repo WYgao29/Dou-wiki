@@ -56,6 +56,8 @@ Provider 的完整分段汇总超出模型预算时，保留各段内容与证�
 | `favorites.py`、`favorites_models.py`、`favorites_store.py` | 收藏清点、选择、幂等派发和批次汇总；数据契约及批次持久存储 |
 | `tags.py` | 标签、别名与资料关联；沿用数据库事务和解析约定 |
 | `analysis_rules.py` | 网关与 Provider 共用的内容标签规则与新分析数量上限 |
+| `adapters/favorites.py` | 收藏清点的 Profile 锁、账号保护、目录与指定夹分页、去重和检查点；全部模式的 DOM 作品读取 |
+| `adapters/favorites_api.py`、`adapters/favorites_browser.py` | 原始收藏 JSON 与稳定 ID 解析；网页原生只读请求、响应关联、重试预算和监听生命周期 |
 | `adapters/` | 抖音解析与下载、媒体处理、模型、向量和系统提醒适配；`chat.py` 共用 HTTP/SSE 聊天传输 |
 | `webapp/chat.py`、`webapp/version.py` | Web 聊天上下文与旧聊天导入兼容；Web 版本常量，`app.WEB_VERSION` 继续导出，包入口延迟加载 `create_app` / `run_web` |
 | `search.py` | 证据分块、FTS 与向量检索、资料关系 |

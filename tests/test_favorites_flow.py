@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi.testclient import TestClient
 
+from douyin_wiki.adapters.favorites_api import RawFavoritePage, parse_favorite_page
+from douyin_wiki.favorites_models import FavoriteInventory
 from douyin_wiki.webapp.app import create_app
 from tests.test_favorites import A, B, FakeFavoritesAdapter, snapshot
 
@@ -57,4 +60,81 @@ def test_web_unproven_inventory_requires_acceptance_and_rejects_unknown_selectio
         )
         assert accepted.status_code == 202
         assert len(service.database.list_jobs()) == 2
+        assert service.downloader.calls == 0
+
+
+def test_web_seven_reported_four_read_requires_explicit_partial_confirmation(config, service):
+    directory = parse_favorite_page(
+        RawFavoritePage(
+            "directory",
+            None,
+            "0",
+            20,
+            200,
+            json.dumps(
+                {
+                    "status_code": 0,
+                    "has_more": 0,
+                    "total_number": 1,
+                    "collects_list": [
+                        {"collects_id_str": "12", "collects_name": "测试夹", "total_number": 7}
+                    ],
+                }
+            ).encode(),
+        )
+    )
+    works = parse_favorite_page(
+        RawFavoritePage(
+            "folder",
+            "12",
+            "0",
+            20,
+            200,
+            json.dumps(
+                {
+                    "status_code": 0,
+                    "has_more": 0,
+                    "aweme_list": [{"aweme_id": str(wid), "video": {}} for wid in range(101, 105)],
+                }
+            ).encode(),
+        )
+    )
+    service.favorites.adapter = FakeFavoritesAdapter(
+        FavoriteInventory(
+            account_id="test-account",
+            folders=directory.folders,
+            works=works.works,
+            complete=False,
+            folders_complete=True,
+            warnings=["收藏夹「测试夹」显示 7 条，实际读取 4 条，数量不一致"],
+        )
+    )
+    with TestClient(
+        create_app(config, service=service, start_watcher=False),
+        headers={"Origin": "http://testserver"},
+    ) as client:
+        parent = client.post("/api/favorites/imports", json={"folder_ids": ["12"]}).json()["job_id"]
+        asyncio.run(service.process_claimed_job(service.database.get_job(parent)))
+        detail = client.get(f"/api/favorites/imports/{parent}").json()
+        assert detail["folders"][0]["reported_count"] == 7
+        assert detail["summary"]["discovered"] == 4
+        assert not detail["complete"] and detail["folders_complete"]
+        assert len(service.database.list_jobs()) == 1
+        assert client.post(f"/api/favorites/imports/{parent}/confirm", json={}).status_code == 409
+        assert len(service.database.list_jobs()) == 1
+        assert (
+            client.post(
+                f"/api/favorites/imports/{parent}/confirm", json={"accept_partial": True}
+            ).status_code
+            == 202
+        )
+        client.post(f"/api/favorites/imports/{parent}/confirm", json={"accept_partial": True})
+        children = [j for j in service.database.list_jobs() if j.kind == "capture"]
+        assert len(children) == 4
+        assert {j.request.share_text for j in children} == {
+            "https://www.douyin.com/video/101",
+            "https://www.douyin.com/video/102",
+            "https://www.douyin.com/video/103",
+            "https://www.douyin.com/video/104",
+        }
         assert service.downloader.calls == 0

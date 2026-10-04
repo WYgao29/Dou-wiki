@@ -17,9 +17,24 @@
   }
   function stopPolling() { clearTimeout(timer); timer = null; }
   function active() { return !view.classList.contains("hidden"); }
+  function updateJobAddress() {
+    if (!active() || location.pathname !== "/imports/favorites") return;
+    const url = new URL(location.href);
+    if (jobId) url.searchParams.set("job", jobId);
+    else url.searchParams.delete("job");
+    window.history.replaceState(window.history.state, "", url);
+  }
   function controls() {
     view.querySelectorAll("button[data-action]").forEach((button) => { button.disabled = busy; });
-    ["scope", "history", "filter", "query", "images", "mode"].forEach((id) => { if ($(id)) $(id).disabled = busy; });
+    ["scope", "history", "images", "mode"].forEach((id) => { if ($(id)) $(id).disabled = busy; });
+    const canSearch = Boolean(current && !current.directory_only && current.summary?.discovered);
+    ["search", "query", "filter", "only-new"].forEach((id) => { if ($(id)) $(id).disabled = busy || !canSearch; });
+    if ($("search-hint")) {
+      $("search-hint").textContent = canSearch ? "搜索仅筛选本次已读取的作品清单。"
+        : !current || current.directory_only ? "先点击上方“更新抖音收藏”读取作品，再搜索标题或作者。"
+        : ongoing.has(current.status) ? "正在读取作品，读取后即可搜索。"
+        : "当前清单暂无作品可搜索，可调整更新范围后重新读取。";
+    }
     if ($("scan")) $("scan").disabled = busy || ($("scope").value === "folders" && !$("folders").querySelector("input:checked"));
     const canSelect = current?.status === "needs_selection" && !current.directory_only && !current.confirmed;
     if ($("confirm")) $("confirm").disabled = busy || !canSelect || !current.summary.selected || (!current.complete && !$("partial").checked);
@@ -68,7 +83,10 @@
   }
   function render(data) {
     current = data;
-    $("status").textContent = `${data.nickname || "收藏任务"} · ${data.status_label || data.status}`;
+    updateJobAddress();
+    const directoryReady = data.directory_only && data.status === "completed";
+    const statusLabel = directoryReady ? "收藏夹目录已读取" : data.status_label || data.status;
+    $("status").textContent = `${data.nickname || "收藏任务"} · ${statusLabel}`;
     const summary = data.summary;
     $("selected-count").textContent = `已选 ${summary.selected || 0} / 共 ${summary.discovered || 0}`;
     $("status").classList.toggle("is-running", ongoing.has(data.status));
@@ -76,7 +94,9 @@
       waiting_confirmation: "待确认", needs_review: "待复核"};
     $("waits").textContent = Object.entries(waits).filter(([status]) => summary.child_status_counts?.[status])
       .map(([status, label]) => `${label} ${summary.child_status_counts[status]}`).join(" · ");
-    $("summary").textContent = `发现 ${summary.discovered || 0} · 新增 ${summary.new || 0} · 已选择 ${summary.selected || 0} · 已入库 ${summary.imported || 0} · 处理中 ${summary.active || 0} · 已完成 ${summary.completed || 0} · 失败 ${summary.failed || 0}`;
+    $("summary").textContent = directoryReady
+      ? `已读取 ${data.folders?.length || 0} 个收藏夹 · 尚未读取作品`
+      : `发现 ${summary.discovered || 0} · 新增 ${summary.new || 0} · 已选择 ${summary.selected || 0} · 已入库 ${summary.imported || 0} · 处理中 ${summary.active || 0} · 已完成 ${summary.completed || 0} · 失败 ${summary.failed || 0}`;
     $("warnings").replaceChildren(...(data.warnings || []).map((text) => node("li", text)));
     $("auth").hidden = !(data.status === "needs_auth" || summary.child_status_counts?.needs_auth);
     $("gateway").hidden = !(data.analysis_mode === "gateway" && data.confirmed);
@@ -216,7 +236,7 @@
     await D.api(`/api/imports/${encodeURIComponent(jobId)}`, {
       method: "DELETE", body: JSON.stringify({confirmed: true}),
     });
-    jobId = null; current = null; await history();
+    jobId = null; current = null; updateJobAddress(); await history();
     $("status").textContent = "已删除该导入记录，已入库资料仍保留。";
   }));
   controls();
