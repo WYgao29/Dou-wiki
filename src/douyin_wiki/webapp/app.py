@@ -392,11 +392,20 @@ class FavoritesScanBody(BaseModel):
     update_mode: Literal["incremental", "full"] = "incremental"
 
 
+class FavoritesFilterBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    folder_id: str | None = None
+    query: str = ""
+    only_new: bool = False
+    only_unimported: bool = False
+
+
 class FavoritesSelectionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     selected: bool
     work_ids: list[str] | None = None
     folder_id: str | None = None
+    filters: FavoritesFilterBody | None = None
 
 
 class FavoritesConfirmBody(BaseModel):
@@ -691,6 +700,7 @@ def create_app(
         recent: bool = False,
         fuzzy: bool = False,
         limit: int | None = Query(None, ge=1, le=500),
+        favorites_job: str | None = None,
     ):
         tags = await asyncio.to_thread(read_tag_overview, refresh=True)
         resolved_tags = core.tags.resolve([tag])
@@ -703,6 +713,13 @@ def create_app(
             tag=tag,
             inspiration_only=inspiration_only,
         )
+        if favorites_job:
+            try:
+                detail = await asyncio.to_thread(core.favorites.get, favorites_job, limit=1)
+            except JobStateError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            entry_ids = set(detail["imported_entry_ids"])
+            items = [item for item in items if item.entry_id in entry_ids]
         if recent:
             items = items[:20]
         if limit is not None:
@@ -1451,7 +1468,9 @@ def create_app(
         folder_id: str | None = None,
         query: str = "",
         only_new: bool = False,
+        only_unimported: bool = False,
     ):
+        options = {"only_unimported": True} if only_unimported else {}
         return add_display_labels(
             await favorites_call(
                 core.favorites.get,
@@ -1461,13 +1480,27 @@ def create_app(
                 folder_id=folder_id,
                 query=query,
                 only_new=only_new,
+                **options,
             )
         )
 
     @app.post("/api/favorites/imports/{job_id}/selection")
     async def favorites_selection(job_id: str, body: FavoritesSelectionBody):
+        if body.filters is not None:
+            if body.work_ids is not None or body.folder_id is not None:
+                raise HTTPException(422, "筛选选择不能同时指定作品或收藏夹")
+            return add_display_labels(
+                await favorites_call(
+                    core.favorites.select_filtered,
+                    job_id,
+                    selected=body.selected,
+                    **body.filters.model_dump(),
+                )
+            )
         return add_display_labels(
-            await favorites_call(core.favorites.select, job_id, **body.model_dump())
+            await favorites_call(
+                core.favorites.select, job_id, **body.model_dump(exclude={"filters"})
+            )
         )
 
     @app.post("/api/favorites/imports/{job_id}/confirm", status_code=202)

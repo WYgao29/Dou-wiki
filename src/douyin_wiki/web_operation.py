@@ -205,7 +205,8 @@ class WebOperationService:
                     "warnings": detail.get("warnings"),
                     "confirmed": detail.get("confirmed"),
                     "nickname": detail.get("nickname"),
-                }
+                },
+                "imported_entry_ids": detail.get("imported_entry_ids", []),
             }
         elif job.kind == "creator_import":
             extra = {
@@ -239,7 +240,9 @@ class WebOperationService:
                 if text and text not in own_warnings and text not in child_warnings:
                     child_warnings.append(text)
         if imported_ids:
-            extra["imported_entry_ids"] = imported_ids
+            extra["imported_entry_ids"] = list(
+                dict.fromkeys([*extra.get("imported_entry_ids", []), *imported_ids])
+            )
         if child_warnings:
             extra["result"] = {
                 **(job.result or {}),

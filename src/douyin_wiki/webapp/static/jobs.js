@@ -4,6 +4,8 @@
   if (!D) return;
   let pollTimer = null;
   let events = null;
+  const childPages = new Map();
+  const terminal = new Set(["completed", "completed_with_warnings", "failed", "cancelled"]);
 
   function stop() {
     clearTimeout(pollTimer);
@@ -344,11 +346,17 @@
     header.append(titleBox, statusCluster(job));
     const progress = D.node(
       "p",
-      job.status === "needs_selection"
+      job.status === "cancelled" ? job.kind === "favorites_import"
+        ? "此批次已取消，已读清单和已入库资料仍保留。" : "此任务已取消。"
+        : job.kind === "favorites_import" && ["queued", "inventorying"].includes(job.status)
+          ? "正在读取收藏清单 · 已读 " + (job.batch?.summary?.discovered || 0) + " 件"
+        : job.status === "needs_selection"
         ? `阶段 ${job.stage_label} · 等待你`
         : `阶段 ${job.stage_label} · 进度 ${Math.round((job.progress || 0) * 100)}%`
     );
     const track = D.node("div", null, "progress-track");
+    track.hidden = job.status === "cancelled";
+    track.classList.toggle("is-indeterminate", job.kind === "favorites_import" && ["queued", "inventorying"].includes(job.status));
     const fill = D.node("span"); fill.style.width = `${Math.min(100, Math.max(0, job.progress * 100))}%`; track.append(fill);
     const modelProgress = D.node("p", "", "hint-copy");
     if (job.analysis_progress && job.status === "analyzing") {
@@ -365,6 +373,10 @@
       modelProgress.textContent = `${phaseLabel}${count} · 最近模型响应 ${responseAt}${usage}${totalCalls}${waiting}`;
     }
     const actions = D.node("div", null, "operation-actions");
+    if (job.kind === "favorites_import") {
+      actions.append(followLink("/imports/favorites?job=" + encodeURIComponent(job.id), "查看收藏清单"));
+      if (job.imported_entry_ids?.length) actions.append(followLink("/?favorites_job=" + encodeURIComponent(job.id), "在资料库查看本批"));
+    }
     const viewingChildren = job.next_action?.code === "view_children";
     const action = viewingChildren || selfProgressLink(job.next_action) ? null : actionButton(job.next_action);
     if (action) actions.append(action);
@@ -389,7 +401,7 @@
       link.href = `/articles/${encodeURIComponent(job.entry_id)}`;
       actions.append(link);
     }
-    const analysis = D.node("p", `${job.analysis_mode_label || ""}`, "hint-copy");
+    const analysis = D.node("p", terminal.has(job.status) ? "" : "分析方式：" + (job.analysis_mode === "gateway" ? "网关 Agent" : job.analysis_mode_label || "当前模型"), "hint-copy");
     const media = D.node("section", null, "review-panel");
     const providers = job.media_provenance || {};
     if (providers.asr || providers.ocr) {
@@ -419,13 +431,34 @@
       if (job.child_stats) {
         children.append(D.node("p", `成功 ${stats.completed || 0} · 处理中 ${stats.running || 0} · 等待本人 ${stats.waiting_user || 0} · 失败 ${stats.failed || 0}`));
       }
-      for (const child of childList) {
-        const row = D.node("button", null, "job-child");
-        row.append(statusCluster(child), D.node("strong", jobTitle(child)), D.node("span", child.message_for_user));
-        row.type = "button";
-        row.addEventListener("click", () => D.navigate(`/jobs/${child.id}`));
-        children.append(row);
+      const state = childPages.get(job.id) || {page: 1, filter: "all"};
+      childPages.set(job.id, state);
+      const toolbar = D.node("div", null, "fav-toolbar"), filter = D.node("select");
+      filter.setAttribute("aria-label", "筛选子任务");
+      for (const [value, text] of [["all", "全部子任务"], ["unfinished", "未完成子任务"], ["failed", "失败子任务"]]) {
+        const option = D.node("option", text); option.value = value; filter.append(option);
       }
+      filter.value = state.filter; toolbar.append(filter);
+      const rows = D.node("div", null, "job-child-list"), pager = D.node("nav", null, "fav-toolbar fav-pager");
+      const previous = D.node("button", "上一页子任务", "secondary-button"), next = D.node("button", "下一页子任务", "secondary-button"), label = D.node("span");
+      previous.type = next.type = "button"; pager.append(previous, label, next);
+      const renderChildren = () => {
+        const filtered = childList.filter((child) => state.filter === "all" ||
+          (state.filter === "failed" ? child.status === "failed" : !terminal.has(child.status)));
+        const pages = Math.max(1, Math.ceil(filtered.length / 50));
+        state.page = Math.min(pages, Math.max(1, state.page)); rows.replaceChildren();
+        for (const child of filtered.slice((state.page - 1) * 50, state.page * 50)) {
+          const row = D.node("button", null, "job-child");
+          row.append(statusCluster(child), D.node("strong", jobTitle(child)), D.node("span", child.message_for_user));
+          row.type = "button"; row.addEventListener("click", () => D.navigate("/jobs/" + encodeURIComponent(child.id))); rows.append(row);
+        }
+        label.textContent = state.page + " / " + pages + " 页 · " + filtered.length + " 个任务";
+        previous.disabled = state.page <= 1; next.disabled = state.page >= pages;
+      };
+      filter.addEventListener("change", () => { state.filter = filter.value; state.page = 1; renderChildren(); });
+      previous.addEventListener("click", () => { state.page--; renderChildren(); });
+      next.addEventListener("click", () => { state.page++; renderChildren(); });
+      renderChildren(); children.append(toolbar, rows, pager);
     }
     if (viewingChildren && hasChildWork) {
       const jump = D.node("button", job.next_action.label, "primary-button");
@@ -483,10 +516,18 @@
       gatewayNote.textContent = "网页不会自动分析。这一步要等外部 Agent 接续，停在「待 AI 处理」不代表已经整理完成。";
     }
     const parts = [header, progress, track];
+    if (job.kind === "favorites_import" && job.batch?.summary) {
+      const summary = job.batch.summary;
+      const batch = D.node("section", null, "operation-section");
+      batch.append(D.node("h2", "收藏批次"), D.node("p", "共 " + (summary.discovered || 0) +
+        " 件 · 已选 " + (summary.selected || 0) + " · 已在资料库 " + (summary.in_library ?? summary.imported ?? 0) +
+        " · 已完成 " + (summary.completed || 0) + " · 失败 " + (summary.failed || 0)));
+      parts.push(batch);
+    }
     if (selectionNote.textContent) parts.push(selectionNote);
     if (gatewayNote.textContent) parts.push(gatewayNote);
     if (modelProgress.textContent) parts.push(modelProgress);
-    if (job.analysis_mode === "provider") {
+    if (job.analysis_mode === "provider" && !terminal.has(job.status)) {
       parts.push(modelHealth);
       try {
         const health = await D.api("/api/system/model-health");

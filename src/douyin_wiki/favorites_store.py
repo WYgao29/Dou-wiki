@@ -248,7 +248,7 @@ class FavoritesStore:
                             work["work_id"],
                             position,
                             json.dumps(work, ensure_ascii=False),
-                            int(eligible(work, run["options"])),
+                            0,
                         ),
                     )
             conn.execute(

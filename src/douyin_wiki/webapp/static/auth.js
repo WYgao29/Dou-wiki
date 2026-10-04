@@ -4,6 +4,7 @@
   if (!D) return;
   let timer = null;
   let sessionId = null;
+  let focusedChannel = false;
 
   function stop() {
     clearTimeout(timer);
@@ -89,6 +90,12 @@
     const data = await D.api(`/api/auth/status${refresh ? "?refresh=true" : ""}`);
     renderChannel(D.$("auth-video-card"), data.channels.video);
     renderChannel(D.$("auth-douyin-card"), data.channels.douyin);
+    const focusDouyin = new URLSearchParams(location.search).get("channel") === "douyin";
+    D.$("auth-douyin-card").classList.toggle("auth-channel-focus", focusDouyin);
+    if (focusDouyin && !focusedChannel && !D.$("auth-view").classList.contains("hidden")) {
+      focusedChannel = true;
+      D.$("auth-douyin-card").scrollIntoView({block: "center"});
+    }
     const session = D.$("auth-session");
     if (sessionId) {
       const current = await D.api(`/api/auth/sessions/${encodeURIComponent(sessionId)}`);
@@ -140,7 +147,7 @@
   }
 
   window.addEventListener("douku:route", async (event) => {
-    if (event.detail.path !== "/settings/auth") {
+    if (String(event.detail.path || "").split("?")[0] !== "/settings/auth") {
       stop();
       return;
     }
@@ -149,6 +156,7 @@
     D.setNav("settings-nav");
     D.$("auth-view").classList.remove("hidden");
     document.title = "授权状态 · 抖库";
+    focusedChannel = false;
     renderSkeleton();
     load(false).then((data) => {
       const video = data.channels?.video;

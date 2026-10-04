@@ -42,6 +42,7 @@ const state = {
   tags: [],
   sources: [],
   inspirationOnly: false,
+  favoritesJob: "",
   query: "",
   commandArticles: [],
   commandSearch: 0,
@@ -141,6 +142,7 @@ function readStateFromURL() {
   state.tags = params.getAll("tag").filter(Boolean);
   state.sources = params.getAll("source").filter((value) => ["video", "image_note"].includes(value));
   state.inspirationOnly = params.get("has_inspiration") === "1";
+  state.favoritesJob = params.get("favorites_job") || "";
 }
 
 function currentLibraryURL() {
@@ -154,6 +156,7 @@ function currentLibraryURL() {
   state.tags.forEach((value) => params.append("tag", value));
   state.sources.forEach((value) => params.append("source", value));
   if (state.inspirationOnly) params.set("has_inspiration", "1");
+  if (state.favoritesJob) params.set("favorites_job", state.favoritesJob);
   const query = params.toString();
   return query ? `/?${query}` : "/";
 }
@@ -383,11 +386,13 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
   const requestId = ++state.libraryRequestId;
   const navigationId = state.libraryNavigationId;
   const query = state.query;
+  const favoritesJob = state.favoritesJob;
   const isCurrent = () => requestId === state.libraryRequestId
-    && navigationId === state.libraryNavigationId && query === state.query;
+    && navigationId === state.libraryNavigationId && query === state.query && favoritesJob === state.favoritesJob;
   if (showLoading) setLibraryLoading();
   const params = new URLSearchParams();
   if (query) params.set("q", query);
+  if (favoritesJob) params.set("favorites_job", favoritesJob);
   try {
     const data = await api(`/api/library${params.size ? `?${params}` : ""}`);
     if (!isCurrent()) return;
@@ -396,7 +401,7 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
     state.items = data.items;
     state.facets = data.facets;
     state.tags = [...new Set(state.tags.map(tag => state.facets.tag_aliases?.[tag] || tag))];
-    if (!query) state.allItems = data.items;
+    if (!query && !favoritesJob) state.allItems = data.items;
     state.catalogHasItems = Boolean(
       (!query && data.items.length)
       || data.facets.authors?.length
@@ -459,7 +464,7 @@ function renderFilters() {
 
 function activeFilterCount() {
   return state.authors.length + state.types.length + state.tags.length + state.sources.length
-    + Number(state.inspirationOnly);
+    + Number(state.inspirationOnly) + Number(Boolean(state.favoritesJob));
 }
 
 function makeFilterChip(label, onRemove) {
@@ -488,6 +493,7 @@ function renderAppliedFilters() {
   state.tags.forEach((value) => chips.push(makeFilterChip(`标签：${value}`, () => toggleListValue("tags", value))));
   state.sources.forEach((value) => chips.push(makeFilterChip(value === "image_note" ? "图文" : "视频", () => toggleListValue("sources", value))));
   if (state.inspirationOnly) chips.push(makeFilterChip("有灵感", () => { state.inspirationOnly = false; }));
+  if (state.favoritesJob) chips.push(makeFilterChip("本批收藏", () => { state.favoritesJob = ""; loadLibrary(); }));
   if (state.query) chips.push(makeFilterChip(`搜索：${state.query}`, () => {
     state.query = "";
     $("#search-input").value = "";
@@ -979,6 +985,7 @@ async function createTopicFromSelection() {
 
 function clearSearchAndFilters() {
   state.query = "";
+  state.favoritesJob = "";
   state.authors = [];
   state.types = [];
   state.tags = [];

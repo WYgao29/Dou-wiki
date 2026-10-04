@@ -148,6 +148,7 @@ async def test_current_favorites_job_survives_page_reload(favorites_ui, action):
     page, open_page, _ = favorites_ui
     await open_page("fixture-directory")
     if action == "create":
+        await page.locator("#favorites-scope").select_option("all")
         await page.locator("#favorites-scan").click()
     else:
         await page.locator(".fav-advanced > summary").click()
@@ -184,7 +185,7 @@ async def test_deleted_favorites_job_is_not_reopened_by_reload(favorites_ui):
     await open_page("fixture-works")
     await page.locator(".fav-advanced > summary").click()
     await page.locator("#favorites-delete-history").click()
-    await page.get_by_role("button", name="确认清理", exact=True).click()
+    await page.get_by_role("button", name="确认删除", exact=True).click()
     await page.get_by_text("已删除该导入记录，已入库资料仍保留。", exact=True).wait_for()
     assert "job" not in parse_qs(urlsplit(page.url).query)
     await page.reload(wait_until="domcontentloaded")
@@ -444,5 +445,8 @@ async def test_ui_inventory_requires_separate_confirm_and_partial_acceptance(
     assert not any(path.endswith("/confirm") for path, _ in calls)
     await page.locator("#favorites-partial").check()
     await page.locator("#favorites-confirm").click()
+    await page.locator("#favorites-confirm-dialog[open]").wait_for()
+    assert not any(path.endswith("/confirm") for path, _ in calls)
+    await page.locator("#favorites-confirm-submit").click()
     await page.wait_for_timeout(500)
     assert sum(path.endswith("/confirm") for path, _ in calls) == 1

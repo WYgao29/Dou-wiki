@@ -26,9 +26,10 @@ def test_web_inventory_to_selection_to_explicit_queue(config, service):
         asyncio.run(service.process_claimed_job(service.database.get_job(parent_id)))
         detail = client.get(f"/api/favorites/imports/{parent_id}").json()
         assert detail["summary"]["discovered"] == 3
-        assert detail["summary"]["selected"] == 1
+        assert detail["summary"]["selected"] == 0
         assert detail["summary"]["unsupported"] == 1
         assert service.downloader.calls == 0
+        client.post(f"/api/favorites/imports/{parent_id}/selection", json={"selected": True})
         result = client.post(f"/api/favorites/imports/{parent_id}/confirm", json={})
         assert result.status_code == 202
         client.post(f"/api/favorites/imports/{parent_id}/confirm", json={})
@@ -55,6 +56,7 @@ def test_web_unproven_inventory_requires_acceptance_and_rejects_unknown_selectio
         rejected = client.post(f"/api/favorites/imports/{parent_id}/confirm", json={})
         assert rejected.status_code == 409
         assert len(service.database.list_jobs()) == 1
+        client.post(f"/api/favorites/imports/{parent_id}/selection", json={"selected": True})
         accepted = client.post(
             f"/api/favorites/imports/{parent_id}/confirm", json={"accept_partial": True}
         )
@@ -118,6 +120,7 @@ def test_web_seven_reported_four_read_requires_explicit_partial_confirmation(con
         detail = client.get(f"/api/favorites/imports/{parent}").json()
         assert detail["folders"][0]["reported_count"] == 7
         assert detail["summary"]["discovered"] == 4
+        client.post(f"/api/favorites/imports/{parent}/selection", json={"selected": True})
         assert not detail["complete"] and detail["folders_complete"]
         assert len(service.database.list_jobs()) == 1
         assert client.post(f"/api/favorites/imports/{parent}/confirm", json={}).status_code == 409

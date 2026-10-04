@@ -195,6 +195,7 @@ class FavoritesService:
         }
         result.update(
             discovered=len(items),
+            in_library=sum(bool(i.get("entry_id")) for i in items),
             eligible=sum(eligible(i, options) for i in items),
             selected=sum(i["selected"] and i["disposition"] != "imported" for i in items),
         )
@@ -204,7 +205,17 @@ class FavoritesService:
         result["retryable_failed"] = sum(i["can_retry"] for i in items)
         return result
 
-    def get(self, job_id: str, *, page=1, limit=50, folder_id=None, query="", only_new=False):
+    def get(
+        self,
+        job_id: str,
+        *,
+        page=1,
+        limit=50,
+        folder_id=None,
+        query="",
+        only_new=False,
+        only_unimported=False,
+    ):
         if page < 1 or not 1 <= limit <= 1000:
             raise ValueError("page 必须大于零，limit 必须在 1 到 1000 之间")
         run = self.store.load(job_id)
@@ -215,21 +226,37 @@ class FavoritesService:
             item["is_new"] = item["work_id"] not in previous_ids
         summary = self._summary(items, run["options"])
         summary["new"] = sum(1 for item in items if item.get("is_new"))
+        chosen = [i for i in items if i["selected"] and not i["entry_id"]]
+        reused = sum(bool(i["job_id"]) and i["disposition"] == "active" for i in chosen)
+        saved_entries = {}
         if run["confirmed"]:
             job = self._refresh_with(job_id, run, items, summary)
-        filtered = [
-            i
-            for i in items
-            if (not folder_id or folder_id in i.get("folder_ids", []))
-            and (not query or query.casefold() in (i["title"] + " " + i["author"]).casefold())
-            and (not only_new or i.get("is_new"))
-        ]
+            # Batch membership survives raw-cache removal; the catalog handles missing sources.
+            with self.database.connect() as conn:
+                saved_entries = {
+                    row["work_id"]: row["entry_id"]
+                    for row in conn.execute(
+                        "SELECT work_id,entry_id FROM favorites_items "
+                        "WHERE parent_id=? AND selected=1 AND entry_id IS NOT NULL",
+                        (job_id,),
+                    )
+                }
+        filtered = self._filter_items(
+            items,
+            folder_id=folder_id,
+            query=query,
+            only_new=only_new,
+            only_unimported=only_unimported,
+        )
         snapshot = run["snapshot"]
         start = (page - 1) * limit
         return {
             "job_id": job_id,
             "status": job.status.value,
             "progress": job.progress,
+            "created_at": job.created_at.isoformat(),
+            "updated_at": job.updated_at.isoformat(),
+            "first_read": not previous_ids,
             **run["options"],
             "account_id": snapshot.get("account_id"),
             "nickname": snapshot.get("nickname", ""),
@@ -243,11 +270,28 @@ class FavoritesService:
             "limit": limit,
             "has_more": start + limit < len(filtered),
             "summary": summary,
+            "confirmation_preview": {
+                "selected": len(chosen),
+                "new_tasks": len(chosen) - reused,
+                "reused_tasks": reused,
+                "already_imported": summary["in_library"],
+                "source_kinds": dict(Counter(i["source_kind"] for i in chosen)),
+            },
+            "imported_entry_ids": list(
+                dict.fromkeys(
+                    i["entry_id"] or saved_entries.get(i["work_id"])
+                    for i in items
+                    if run["confirmed"]
+                    and i["selected"]
+                    and (i["entry_id"] or saved_entries.get(i["work_id"]))
+                )
+            ),
             "analysis_mode": self.core.config.analysis_mode.value,
             "error_message": job.error_message,
             "error_code": job.error_code,
             "auth_scope": job.result.get("auth_scope"),
             "confirmed": run["confirmed"],
+            "cancel_requested": bool(job.artifacts.get("cancel_requested")),
             "can_retry": bool(
                 job.status != JobStatus.CANCELLED
                 and not job.artifacts.get("cancel_requested")
@@ -272,6 +316,48 @@ class FavoritesService:
     def select(self, job_id: str, *, selected: bool, work_ids=None, folder_id=None):
         self.store.select(job_id, selected=selected, work_ids=work_ids, folder_id=folder_id)
         return self.get(job_id)
+
+    @staticmethod
+    def _filter_items(items, *, folder_id=None, query="", only_new=False, only_unimported=False):
+        term = query.casefold()
+        return [
+            i
+            for i in items
+            if (not folder_id or folder_id in i.get("folder_ids", []))
+            and (not term or term in (i["title"] + " " + i["author"]).casefold())
+            and (not only_new or i.get("is_new"))
+            and (not only_unimported or not i["entry_id"])
+        ]
+
+    def select_filtered(
+        self,
+        job_id: str,
+        *,
+        selected: bool,
+        folder_id=None,
+        query="",
+        only_new=False,
+        only_unimported=False,
+    ):
+        # The store validates eligibility and applies the whole selection in one transaction.
+        run = self.store.load(job_id)
+        items = self._items(job_id, run)
+        previous_ids = self.store.previous_work_ids(job_id)
+        for item in items:
+            item["is_new"] = item["work_id"] not in previous_ids
+        filtered = self._filter_items(
+            items,
+            folder_id=folder_id,
+            query=query,
+            only_new=only_new,
+            only_unimported=only_unimported,
+        )
+        work_ids = [
+            i["work_id"]
+            for i in filtered
+            if not selected or (eligible(i, run["options"]) and not i["entry_id"])
+        ]
+        return self.select(job_id, selected=selected, work_ids=work_ids, folder_id=folder_id)
 
     def confirm(self, job_id: str, *, accept_partial=False):
         with self.core.vault.entry_operations_locked():

@@ -50,20 +50,25 @@ class FakeFavoritesAdapter:
         return self.result
 
 
-async def scan(service, result=None, **kwargs):
+async def scan(service, result=None, *, select=True, **kwargs):
     assert hasattr(service, "favorites"), "service must expose the new favorites workflow"
     service.favorites.adapter = FakeFavoritesAdapter(result or snapshot())
     parent = service.favorites.start(**kwargs)
-    return await service.process_claimed_job(parent)
+    processed = await service.process_claimed_job(parent)
+    if select and processed.status == JobStatus.NEEDS_SELECTION:
+        # Tests that dispatch explicitly select the eligible inventory first.
+        service.favorites.select(parent.id, selected=True)
+    return processed
 
 
 async def test_inventory_never_queues_media_and_filters_unsupported_types(service):
-    parent = await scan(service)
+    parent = await scan(service, select=False)
     assert parent.status == JobStatus.NEEDS_SELECTION
     assert [j.kind for j in service.database.list_jobs()] == ["favorites_import"]
     data = service.favorites.get(parent.id)
     assert data["summary"]["discovered"] == 3
-    assert data["summary"]["selected"] == 1
+    assert data["summary"]["selected"] == 0
+    assert data["summary"]["eligible"] == 1
     assert data["summary"]["unsupported"] == 1
     assert data["items"][2]["disposition"] == "unsupported"
 
@@ -217,6 +222,7 @@ async def test_completed_capture_is_skipped_on_rescan_without_changing_user_stat
     parent = service.favorites.start()
     worker = Worker(service)
     assert (await worker.run_once()).status == JobStatus.NEEDS_SELECTION
+    service.favorites.select(parent.id, selected=True)
     service.favorites.confirm(parent.id)
     result = await worker.run_once()
     assert result.status in {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}

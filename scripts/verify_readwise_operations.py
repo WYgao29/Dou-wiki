@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -23,8 +24,8 @@ from tests.test_favorites import scan, snapshot  # noqa: E402
 from tests.test_web_operation import FakeAuthDownloader, FakeDouyinAuth  # noqa: E402
 
 
-async def verify():
-    out = ROOT / "docs/screenshots/redesign/phase-5"
+async def verify(*, output_dir: Path | None = None):
+    out = output_dir or ROOT / "docs/screenshots/redesign/phase-5"
     out.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="douku-operations-check-") as tmp:
         config, service = _web_fixture(Path(tmp))
@@ -48,6 +49,11 @@ async def verify():
             ),
         )
         service.favorites.select(favorites.id, selected=False)
+        imported_favorites = await scan(
+            service, snapshot(kinds=[("123", "video")]), update_mode="full", select=False
+        )
+        service.favorites.select(imported_favorites.id, selected=True)
+        service.favorites.confirm(imported_favorites.id)
         service.downloader = FakeAuthDownloader("ready", ok=True, verified=True)
         service.image_note_downloader = FakeDouyinAuth(ok=True)
         running = service.database.create_job(
@@ -132,9 +138,7 @@ async def verify():
                         assert json.loads(request.post_data)["text"] == (
                             "看看这个视频 https://v.douyin.com/test/"
                         )
-                        await r.fulfill(
-                            content_type="application/json", body='{"kind":"work"}'
-                        )
+                        await r.fulfill(content_type="application/json", body='{"kind":"work"}')
                         return
                     response = client.request(
                         request.method,
@@ -164,7 +168,30 @@ async def verify():
 
                 async def fresh(path, ready):
                     await page.goto("http://testserver" + path)
-                    await page.wait_for_selector(ready)
+                    try:
+                        await page.wait_for_selector(ready)
+                    except Exception:
+                        (out / "failure.json").write_text(
+                            json.dumps(
+                                {
+                                    "path": path,
+                                    "ready": ready,
+                                    "errors": errors,
+                                    "server_errors": server_errors,
+                                    "view": await page.evaluate("""() => ({
+                                      panel: state.panelPage, items: state.items.map(i=>i.entry_id),
+                                      batch: state.favoritesJob, section: state.section,
+                                      error: document.querySelector('#library-error').textContent,
+                                      body: document.body.innerText.slice(0, 5000)
+                                    })"""),
+                                },
+                                ensure_ascii=False,
+                                indent=2,
+                            )
+                            + "\n"
+                        )
+                        await page.screenshot(path=out / "failure.png")
+                        raise
                     await page.evaluate("document.fonts.ready")
                     await page.wait_for_timeout(100)
 
@@ -242,9 +269,10 @@ async def verify():
                 assert await checks.nth(2).is_disabled()
                 assert await checks.nth(4).is_disabled()
                 await checks.nth(0).click()
-                await wait_count("#favorites-selected-count", "已选 1")
+                await wait_count("#favorites-selected-count", "将导入 1 件")
                 await checks.nth(3).click(modifiers=["Shift"])
-                await wait_count("#favorites-selected-count", "已选 3")
+                await wait_count("#favorites-selected-count", "将导入 3 件")
+                await wait_count("#favorites-save-hint", "选择已保存")
                 last = next(m for m in reversed(mutations) if m["path"].endswith("/selection"))
                 assert json.loads(last["body"])["work_ids"] == [
                     work_ids[0],
@@ -253,8 +281,53 @@ async def verify():
                 ], last
                 assert await page.locator("#favorites-confirm").is_disabled()
                 await page.check("#favorites-partial")
+                await page.wait_for_function(
+                    "() => !document.querySelector('#favorites-confirm').disabled"
+                )
                 assert await page.locator("#favorites-confirm").is_enabled()
                 await shot("favorites-selection-light")
+                assert (
+                    await page.locator(".favorites-item-content").first.evaluate(
+                        "e => getComputedStyle(e).display"
+                    )
+                    == "grid"
+                )
+                before = len(mutations)
+                await page.click("#favorites-confirm")
+                await page.wait_for_function(
+                    "() => document.querySelector('#favorites-confirm-dialog').open"
+                )
+                assert (
+                    "将处理 3 件"
+                    in await page.locator("#favorites-confirm-description").inner_text()
+                )
+                await shot("favorites-confirm-light")
+                await page.click("#favorites-confirm-form button[value='cancel']")
+                assert len(mutations) == before
+                assert service.favorites.get(favorites.id)["confirmed"] is False
+
+                batch_url = f"/?favorites_job={imported_favorites.id}"
+                await fresh(batch_url, "#library-results .library-item")
+                assert await page.locator("#library-results .library-item").evaluate_all(
+                    "nodes => nodes.map(node => node.dataset.entryId)"
+                ) == ["dy-123"]
+                assert await page.get_by_role("button", name="移除筛选：本批收藏").is_visible()
+                await page.reload()
+                await page.wait_for_selector("#library-results .library-item")
+                assert await page.locator("#library-results .library-item").count() == 1
+                assert "favorites_job=" in page.url
+                await shot("favorites-batch-library-light")
+                await page.get_by_role("button", name="移除筛选：本批收藏").click()
+                await page.wait_for_function(
+                    "() => document.querySelectorAll('#library-results .library-item').length > 1"
+                )
+                assert "favorites_job=" not in page.url
+
+                await fresh("/settings/auth?channel=douyin", "#auth-douyin-card .status-pill")
+                assert await page.locator("#auth-douyin-card").evaluate(
+                    "e => e.classList.contains('auth-channel-focus')"
+                )
+                await shot("favorites-douyin-auth-light")
 
                 await fresh("/jobs", "#jobs-list .job-row")
                 track = page.locator(f".job-row[data-job-id='{running.id}'] .job-row-progress")
@@ -275,7 +348,7 @@ async def verify():
                 await page.keyboard.press("Enter")
                 await page.wait_for_selector("#job-detail-view:not(.hidden) .progress-track")
                 assert (
-                    await page.locator(".progress-track").evaluate(
+                    await page.locator("#job-detail-content .progress-track").evaluate(
                         "e=>e.getBoundingClientRect().height"
                     )
                     == 4
@@ -394,8 +467,17 @@ async def verify():
                         "nodes => nodes.map(node => node.dataset.commandId)"
                     )
                 ) == {
-                    "single", "creators", "favorites", "jobs", "tags", "topics",
-                    "trash", "settings", "chat", "theme", "shortcuts",
+                    "single",
+                    "creators",
+                    "favorites",
+                    "jobs",
+                    "tags",
+                    "topics",
+                    "trash",
+                    "settings",
+                    "chat",
+                    "theme",
+                    "shortcuts",
                 }
                 await page.locator("[data-command-id='theme']").click()
                 assert await page.evaluate("document.documentElement.dataset.theme") == "light"
@@ -430,7 +512,7 @@ async def verify():
                     (f"/imports/creators?job={creator.id}", "#creator-items input"),
                     (f"/imports/favorites?job={favorites.id}", "#favorites-items input"),
                     ("/jobs", ".job-row"),
-                    (f"/jobs/{running.id}", ".progress-track"),
+                    (f"/jobs/{running.id}", "#job-detail-content .progress-track"),
                     ("/topics", ".topic-list-card"),
                     (f"/topics/{topic['topic']['id']}", ".topic-artifact-card"),
                     ("/settings", "#settings-view:not(.hidden)"),
@@ -454,6 +536,25 @@ async def verify():
                                 "mobile-"
                                 + ("favorites" if "favorites" in path else path.split("/")[-1])
                             )
+                            if "favorites" in path:
+                                await page.locator(
+                                    "#favorites-confirm"
+                                ).scroll_into_view_if_needed()
+                                assert (
+                                    await page.locator(
+                                        "#imports-favorites-view .fav-confirm"
+                                    ).evaluate("e => getComputedStyle(e).position")
+                                    == "static"
+                                )
+                                await shot("mobile-favorites-selection")
+                                await page.check("#favorites-partial")
+                                await page.click("#favorites-confirm")
+                                await page.wait_for_function(
+                                    "() => document.querySelector('#favorites-confirm-dialog').open"
+                                )
+                                await no_overflow((width, "favorites confirmation"))
+                                await shot("mobile-favorites-confirm")
+                                await page.click("#favorites-confirm-form button[value='cancel']")
                     if width == 390:
                         await fresh(f"/topics/{topic['topic']['id']}", ".topic-artifact-card")
                         await page.click("#chat-toggle")
@@ -488,7 +589,11 @@ async def verify():
                             "checks": [
                                 "paste classification and prefill only",
                                 "creator shift range and keyboard focus",
-                                "favorites eligible range and partial guard",
+                                "favorites batched eligible range and partial guard",
+                                "favorites confirmation cancellation creates no tasks",
+                                "favorites batch library, reload and clear filter",
+                                "favorites authorization targets the Douyin account",
+                                "favorites title layout and mobile footer/confirmation",
                                 "jobs refresh focus, progress, retry and Enter",
                                 "topic source relocation, persistence and artifact expansion",
                                 "live settings summary, flat sections and metric columns",
@@ -510,4 +615,6 @@ async def verify():
 
 
 if __name__ == "__main__":
-    asyncio.run(verify())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path)
+    asyncio.run(verify(output_dir=parser.parse_args().output_dir))
