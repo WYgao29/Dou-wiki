@@ -298,7 +298,7 @@ class DouyinFavoritesAdapter(PlaywrightImageNoteDownloader):
                 "收藏清点需要专用浏览器登录",
                 details={"action": "douyin-wiki auth douyin"},
             )
-        account = await page.evaluate(_ACCOUNT_SNAPSHOT_JS)
+        account = await self._read_initial_account(page)
         account_id = str((account or {}).get("account_id") or "").strip()
         nickname = str((account or {}).get("nickname") or "").strip()
         if not account_id or account_id == "self":
@@ -403,6 +403,22 @@ class DouyinFavoritesAdapter(PlaywrightImageNoteDownloader):
         ):
             raise BrowserAuthRequiredError("清点期间登录失效或账号已变化，请恢复原账号后重试")
 
+    async def _read_initial_account(self, page: Any) -> dict[str, Any]:
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+        account = await page.evaluate(_ACCOUNT_SNAPSHOT_JS)
+        if (account or {}).get("account_id") not in (None, "", "self"):
+            return account
+        try:
+            await page.wait_for_function(
+                "() => { const value = (" + _ACCOUNT_SNAPSHOT_JS + ")(); "
+                "return value.account_id && value.account_id !== 'self'; }",
+                timeout=20_000,
+            )
+        except PlaywrightTimeoutError:
+            raise BrowserAuthRequiredError("无法确认收藏所属账号，请登录专用浏览器后重试") from None
+        return await page.evaluate(_ACCOUNT_SNAPSHOT_JS)
+
     async def _scan_api_resource(
         self,
         client: FavoritesBrowserClient,
@@ -463,12 +479,16 @@ class DouyinFavoritesAdapter(PlaywrightImageNoteDownloader):
                 break
             if parsed.has_more is None:
                 break
-            if not (parsed.folders if resource == "directory" else parsed.works):
-                warnings.append("收藏接口返回空页但仍有下一页，清点不完整")
-                break
             if not parsed.next_cursor or parsed.next_cursor in seen_cursors:
                 warnings.append("收藏接口分页 cursor 缺失、不推进或循环，清点不完整")
                 break
+            if not (parsed.folders if resource == "directory" else parsed.works):
+                warnings.append("收藏接口返回空页或缺失列表，清点不完整")
+                valid = False
+                if resource == "directory":
+                    break
+                # Live responses can omit inaccessible slots while advancing the cursor.
+                # Keep reading later accessible works, with the partial gate retained.
             cursor = parsed.next_cursor
         else:
             warnings.append("收藏清点达到安全扫描上限，结果不完整")

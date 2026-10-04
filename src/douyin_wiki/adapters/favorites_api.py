@@ -138,6 +138,8 @@ def parse_favorite_page(response: RawFavoritePage) -> FavoriteApiPage:
     if cursor is None:
         cursor = data.get("max_cursor")
     next_cursor = str(cursor) if type(cursor) in {str, int} and str(cursor) else None
+    if type(status) is not int or status != 0:
+        has_more, next_cursor = None, None
     if has_more and next_cursor is None:
         warnings.append("收藏接口缺少下一页 cursor")
     count = _count(data.get("total_number"))

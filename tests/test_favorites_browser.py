@@ -63,6 +63,67 @@ async def test_account_fallback_does_not_append_adjacent_age(offline_page, accou
     assert account["account_id"] == "douyin:22127912455"
 
 
+async def test_inventory_waits_for_profile_identity_to_render(offline_page, tmp_path, monkeypatch):
+    import json
+
+    from douyin_wiki.adapters.favorites import DouyinFavoritesAdapter
+    from douyin_wiki.adapters.favorites_api import RawFavoritePage
+    from douyin_wiki.config import MediaSettings
+
+    class EmptyDirectoryClient:
+        def __init__(self, page):
+            self.page = page
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def read_page(self, **_):
+            return RawFavoritePage(
+                "directory",
+                None,
+                "0",
+                20,
+                200,
+                json.dumps(
+                    {
+                        "status_code": 0,
+                        "has_more": 0,
+                        "collects_list": [],
+                        "total_number": 0,
+                    }
+                ).encode(),
+            )
+
+    monkeypatch.setattr(
+        "douyin_wiki.adapters.favorites.FavoritesBrowserClient", EmptyDirectoryClient
+    )
+    await offline_page.route(
+        "**/*",
+        lambda route: route.fulfill(
+            content_type="text/html",
+            body="""
+        <meta charset="utf-8"><div id="profile">正在加载</div><script>setTimeout(()=>{
+          document.getElementById('profile').innerHTML=
+            '<h1>测试账号</h1><span>抖音号：test_123</span>';
+        }, 1100);</script>
+    """,
+        ),
+    )
+    result = await DouyinFavoritesAdapter(MediaSettings(), tmp_path / "profile")._inventory_page(
+        offline_page,
+        cookies=[{"name": "sessionid", "domain": ".douyin.com", "expires": -1}],
+        folder_ids=None,
+        directory_only=True,
+        expected_account_id=None,
+        on_checkpoint=None,
+    )
+    assert result.account_id == "douyin:test_123"
+    assert result.complete
+
+
 async def test_ui_inventory_requires_separate_confirm_and_partial_acceptance(
     offline_page, tmp_path
 ):

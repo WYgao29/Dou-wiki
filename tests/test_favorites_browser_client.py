@@ -240,3 +240,14 @@ async def test_total_budget_includes_retries(browser_fixture, monkeypatch):
             await api.read_page(resource="directory")
         assert asyncio.get_running_loop().time() - start < 0.2
     assert len(calls) <= 3
+
+
+async def test_native_bridge_waits_for_collection_module_to_load(browser_fixture):
+    page, calls, state = browser_fixture
+    state["bridge"] = False
+    async with client(page) as api:
+        await page.goto(ORIGIN)
+        await page.evaluate("source => setTimeout(()=>eval(source), 150)", BRIDGE)
+        result = await api.read_page(resource="directory")
+    assert result.http_status == 200
+    assert len(calls) == 1

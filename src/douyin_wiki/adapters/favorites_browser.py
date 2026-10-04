@@ -17,15 +17,16 @@ _PATHS = {
 _READ_BUDGET = 20
 _ATTEMPT_TIMEOUT = 6
 _BACKOFF = (1, 2)
+_BRIDGE_WAIT_BUDGET = 3
 _CALL_NATIVE_JS = r"""
 p => { // douyin-wiki:favorites-api
   const paths = ['/aweme/v1/web/collects/list/', '/aweme/v1/web/collects/video/list/'];
   if (!paths.includes(p.path)) return {ok:false};
   const chunks = window.webpackChunkdouyin_web;
-  if (!Array.isArray(chunks)) return {ok:false};
+  if (!Array.isArray(chunks)) return {ok:false, reason:'not_ready'};
   const req = chunks.push([[Symbol('douyin-wiki-read')], {}, r => r]);
   chunks.pop();
-  if (!req?.m) return {ok:false};
+  if (!req?.m) return {ok:false, reason:'not_ready'};
   const functions = new Set();
   for (const [id, module] of Object.entries(req.m)) {
     const source = Function.prototype.toString.call(module);
@@ -39,6 +40,7 @@ p => { // douyin-wiki:favorites-api
       functions.add(fn);
     }
   }
+  if (functions.size === 0) return {ok:false, reason:'not_ready'};
   if (functions.size !== 1) return {ok:false};
   const args = {cursor:p.cursor, offset:p.count};
   if (p.folder_id) args.collectsId = p.folder_id;
@@ -183,6 +185,23 @@ class FavoritesBrowserClient:
         else:
             future.set_result(result)
 
+    async def _invoke(self, parameters: dict[str, Any]) -> None:
+        deadline = asyncio.get_running_loop().time() + _BRIDGE_WAIT_BUDGET
+        while True:
+            try:
+                invoked = await self.page.evaluate(_CALL_NATIVE_JS, parameters)
+            except Exception:
+                raise ExternalToolError("无法调用收藏网页的原生读取函数") from None
+            if isinstance(invoked, dict) and invoked.get("ok") is True:
+                return
+            if (
+                not isinstance(invoked, dict)
+                or invoked.get("reason") != "not_ready"
+                or asyncio.get_running_loop().time() >= deadline
+            ):
+                raise ExternalToolError("当前收藏网页没有可确认的原生读取函数")
+            await asyncio.sleep(0.1)
+
     async def read_page(
         self,
         *,
@@ -213,20 +232,14 @@ class FavoritesBrowserClient:
                     self._pending[key] = (future, self._serial, self._epoch)
                     try:
                         async with asyncio.timeout(_ATTEMPT_TIMEOUT):
-                            try:
-                                invoked = await self.page.evaluate(
-                                    _CALL_NATIVE_JS,
-                                    {
-                                        "path": _PATHS[resource],
-                                        "folder_id": folder_id,
-                                        "cursor": str(cursor),
-                                        "count": count,
-                                    },
-                                )
-                            except Exception as exc:
-                                raise ExternalToolError("无法调用收藏网页的原生读取函数") from exc
-                            if not isinstance(invoked, dict) or invoked.get("ok") is not True:
-                                raise ExternalToolError("当前收藏网页没有可确认的原生读取函数")
+                            await self._invoke(
+                                {
+                                    "path": _PATHS[resource],
+                                    "folder_id": folder_id,
+                                    "cursor": str(cursor),
+                                    "count": count,
+                                }
+                            )
                             raw = await future
                             if raw.http_status == 429 or 500 <= raw.http_status <= 599:
                                 raise _RetryableError()

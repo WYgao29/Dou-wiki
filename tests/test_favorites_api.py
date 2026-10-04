@@ -169,3 +169,10 @@ def test_nested_collects_info_and_opaque_max_cursor():
     )
     assert page.folders[0].id == "12"
     assert page.next_cursor == "page:next"
+
+
+def test_rejected_response_does_not_supply_trusted_pagination():
+    page = parse(directory([], status_code=1001, has_more=1, cursor="2"))
+    assert not page.valid
+    assert page.has_more is None
+    assert page.next_cursor is None

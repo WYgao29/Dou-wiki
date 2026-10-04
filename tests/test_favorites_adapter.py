@@ -524,7 +524,7 @@ async def test_api_inventory_handles_more_than_5000_works(tmp_path):
     "second",
     [
         api_works([2], has_more=1, cursor="2"),
-        api_works([], has_more=1, cursor="4"),
+        api_works([], has_more=1, cursor="2"),
         api_works([2], has_more=None),
         ExternalToolError("分页失败"),
     ],
@@ -613,3 +613,26 @@ async def test_checkpoint_lease_failure_is_not_a_partial_success(tmp_path):
 
     with pytest.raises(JobLeaseLostError):
         await scan(tmp_path, page, directory_only=True, checkpoint=checkpoint)
+
+
+@pytest.mark.parametrize("empty_list", [[], None])
+async def test_empty_folder_page_with_advancing_cursor_keeps_later_accessible_works(
+    tmp_path, empty_list
+):
+    page = SyntheticFavoritesPage()
+    page.api_pages = {
+        ("directory", None, "0"): api_directory(counts={"12": 7}),
+        ("folder", "12", "0"): api_works([1], has_more=1, cursor="2"),
+        ("folder", "12", "2"): {
+            "status_code": 0,
+            "aweme_list": empty_list,
+            "has_more": 1,
+            "cursor": "4",
+        },
+        ("folder", "12", "4"): api_works([2, 3], has_more=1, cursor="6"),
+        ("folder", "12", "6"): api_works([4]),
+    }
+    result = await scan(tmp_path, page, folder_ids=["12"])
+    assert [w.work_id for w in result.works] == ["1", "2", "3", "4"]
+    assert not result.complete
+    assert result.folders_complete
