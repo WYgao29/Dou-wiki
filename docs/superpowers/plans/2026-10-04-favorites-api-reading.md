@@ -184,3 +184,15 @@ Worktree：`/Users/weisengao/.codex/worktrees/favorites-api-reading/douyin-wiki`
 最终验证：`uv run --no-sync pytest -q -m 'not live'` 得到 **946 passed, 2 deselected**；`uv run --no-sync ruff check src tests scripts/verify_favorites_api.py`、11 个修改 Python 文件的格式检查、`git diff --check` 通过；五份修改文档的本地链接与代码块检查通过。完整执行与失败/修复证据保存在[仓库外实施记录](/var/folders/s_/pbv327pj05j9rjk26h50qqrr0000gn/T/douyin-favorites-api-20261004-eoowenh1/implementation-record)。
 
 整分支由当前 Agent 自审，R1–R5 均有对应验证：原始长数字精度与冲突拒绝；错夹/旧页/外站/旧会话隔离；null/结束信号/循环和上限；7/4 的保留与明确确认；邻接年龄、换账号和租约保护。没有修改公开 Service/Web/CLI/MCP、数据库或静态资源文件，也未新增产品依赖。没有独立审查者；真实只读验收只覆盖当次视频元数据，前述登录中断原因仍未确认。
+
+## 复审修复与再次审查（2026-10-04）
+
+用户确认修复 `cf744f3` 复审中的两项 P2。登录拒绝现在由已核实的整数码 `2483` 或明确的未登录/登录失效/过期消息判断；普通 code-8 响应保留一般失败处理。明确登录拒绝不回退到全部收藏 DOM，也不在拒绝页发布新检查点。抖音号回退改读相邻容器内首个非空可见文本节点，支持嵌套标签，跳过隐藏辅助文字和注释，不把邻接年龄拼入账号。
+
+两项分别先复现失败，再实施修复：登录新增用例初次为 14 failed / 1 passed，修复后解析器与适配器 83 passed；相邻容器及完整清点入口初次为 8 failed / 4 passed，注释用例另复现为 7 failed / 2 passed，修复后浏览器 16 passed。新增用例共 26 项；原本通过的保护用例如实保留，不当作失败证据。
+
+当前 Agent 再次审查本轮差异，核对登录分类、全部模式回退、错误页检查点、文本读取边界、账号变化与租约保护，未发现遗留的可操作问题。没有独立第二位审查者。本轮未改公开 Service/Web/CLI/MCP、数据库格式、依赖或静态资源。
+
+最新验证：收藏链路 129 passed；完整离线集 **972 passed, 2 deselected**；Ruff、5 个修改 Python 文件格式检查与差异空白检查通过。只读真实复验再次读到四夹、15 个可访问视频，12 个强制分页请求与正式入口精确 ID 集合相符；作品 ID 和归属与前轮验收一致。“时尚”仍显示 7 条、读到 4 条，`complete=False`，数量提示保留。临时 Profile 已删除；本轮没有重新操作 Chrome，沿用前轮页面对照证据。前述真实登录中断的具体原因仍未确认。
+
+证据：[本轮复审记录](/var/folders/s_/pbv327pj05j9rjk26h50qqrr0000gn/T/douyin-favorites-api-20261004-eoowenh1/fixes-20261004/review.md)、[全量离线日志](/var/folders/s_/pbv327pj05j9rjk26h50qqrr0000gn/T/douyin-favorites-api-20261004-eoowenh1/fixes-20261004/final-suite.log)、[真实只读复验](/var/folders/s_/pbv327pj05j9rjk26h50qqrr0000gn/T/douyin-favorites-api-20261004-eoowenh1/fixes-20261004/integration/favorites-api-d0e0a69074af.json)。保留 `codex/favorites-api-reading` 与 worktree，未合并、部署或重启现用服务。
