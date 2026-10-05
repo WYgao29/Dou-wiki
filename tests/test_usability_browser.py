@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, expect
 
 from douyin_wiki.models import CaptureRequest, JobStatus
 from douyin_wiki.webapp.app import create_app
@@ -103,6 +103,20 @@ async def test_command_search_closes_with_one_escape_and_keeps_query(ui):
     await page.keyboard.press("Escape")
     assert not await page.locator("#command-dialog").evaluate("dialog => dialog.open")
     assert await page.locator("#command-input").input_value() == "jev"
+
+
+@pytest.mark.parametrize("work_id,matching", [(A, 0), ("123", 1)])
+async def test_direct_batch_library_keeps_global_counts(ui, work_id, matching):
+    page, service, _client, _calls = ui
+    parent = await scan(service, snapshot(kinds=[(work_id, "video")]))
+    service.favorites.confirm(parent.id)
+    await page.goto(f"http://testserver/?favorites_job={parent.id}")
+    await expect(page.locator(".nav-item[data-section='all'] .nav-count")).to_have_text("3")
+    assert await page.locator("#library-results [data-entry-id]").count() == matching
+    if not matching:
+        await expect(page.locator("#info-pane .library-statistics dd").first).to_have_text("3")
+    await page.reload()
+    await expect(page.locator(".nav-item[data-section='all'] .nav-count")).to_have_text("3")
 
 
 @pytest.mark.parametrize("state", ["cancelled", "deleted", "failed"])

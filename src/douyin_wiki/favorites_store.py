@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS favorites_items (
     position INTEGER NOT NULL,
     data_json TEXT NOT NULL,
     selected INTEGER NOT NULL,
+    selection_explicit INTEGER NOT NULL DEFAULT 0,
     child_id TEXT REFERENCES jobs(id),
     entry_id TEXT,
     PRIMARY KEY(parent_id, work_id)
@@ -121,20 +122,29 @@ class FavoritesStore:
 
     def previous_work_ids(self, job_id: str) -> set[str]:
         with self.database.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             run = self._run(conn, job_id)
             snapshot = run["snapshot"]
             if "_baseline_work_ids" not in snapshot:
                 if not snapshot.get("account_id"):
                     return set()
-                # Lazily freeze legacy runs using only an earlier run of this account.
+                # Compatibility fallback is read-only; initialization freezes legacy baselines.
                 source_id = self._previous_run_conn(conn, job_id, run, snapshot["account_id"])
-                snapshot["_baseline_work_ids"] = self._work_ids_conn(conn, source_id)
-                conn.execute(
-                    "UPDATE favorites_runs SET snapshot_json=? WHERE parent_id=?",
-                    (json.dumps(snapshot, ensure_ascii=False), job_id),
-                )
+                return set(self._work_ids_conn(conn, source_id))
             return set(snapshot["_baseline_work_ids"])
+
+    @classmethod
+    def migrate_legacy_baselines(cls, conn: sqlite3.Connection) -> None:
+        for row in conn.execute("SELECT * FROM favorites_runs").fetchall():
+            snapshot = json.loads(row["snapshot_json"])
+            if "_baseline_work_ids" in snapshot or not snapshot.get("account_id"):
+                continue
+            run = {"options": json.loads(row["options_json"])}
+            source_id = cls._previous_run_conn(conn, row["parent_id"], run, snapshot["account_id"])
+            snapshot["_baseline_work_ids"] = cls._work_ids_conn(conn, source_id)
+            conn.execute(
+                "UPDATE favorites_runs SET snapshot_json=? WHERE parent_id=?",
+                (json.dumps(snapshot, ensure_ascii=False), row["parent_id"]),
+            )
 
     @staticmethod
     def _work_ids_conn(conn: sqlite3.Connection, source_id: str | None) -> list[str]:
@@ -171,18 +181,32 @@ class FavoritesStore:
     @staticmethod
     def _seed_previous_conn(
         conn: sqlite3.Connection, job_id: str, source_id: str, options: dict
-    ) -> None:
+    ) -> dict:
+        source_confirmed = FavoritesStore._run(conn, source_id)["confirmed"]
+        inheritance = {
+            "source_job_id": source_id,
+            "selected_work_ids": [],
+            "ignored_legacy_ids": [],
+        }
         rows = conn.execute(
             "SELECT * FROM favorites_items WHERE parent_id=? ORDER BY position,work_id",
             (source_id,),
         ).fetchall()
         for index, row in enumerate(rows, start=1):
-            selected = bool(row["selected"]) and eligible(json.loads(row["data_json"]), options)
+            allowed = eligible(json.loads(row["data_json"]), options)
+            explicit = bool(row["selection_explicit"]) or source_confirmed
+            selected = bool(row["selected"]) and explicit and allowed
+            if selected:
+                inheritance["selected_work_ids"].append(row["work_id"])
+            elif row["selected"] and not explicit and allowed:
+                inheritance["ignored_legacy_ids"].append(row["work_id"])
             conn.execute(
                 """INSERT OR IGNORE INTO favorites_items
-                   (parent_id,work_id,position,data_json,selected) VALUES (?,?,?,?,?)""",
-                (job_id, row["work_id"], index, row["data_json"], int(selected)),
+                   (parent_id,work_id,position,data_json,selected,selection_explicit)
+                   VALUES (?,?,?,?,?,?)""",
+                (job_id, row["work_id"], index, row["data_json"], int(selected), int(explicit)),
             )
+        return inheritance
 
     def checkpoint(self, job_id: str, snapshot: FavoriteInventory) -> None:
         payload = snapshot.model_dump(mode="json")
@@ -195,6 +219,8 @@ class FavoritesStore:
                 raise BrowserAuthRequiredError("专用浏览器账号已变化，请登录原账号或新建清点任务")
             if run["confirmed"]:
                 raise JobStateError("已提交的收藏清单不能重新清点")
+            if "_selection_inheritance" in run["snapshot"]:
+                payload["_selection_inheritance"] = run["snapshot"]["_selection_inheritance"]
             if "_baseline_work_ids" in run["snapshot"]:
                 payload["_baseline_work_ids"] = run["snapshot"]["_baseline_work_ids"]
             else:
@@ -206,7 +232,9 @@ class FavoritesStore:
                     and not run["options"].get("directory_only")
                     and run["options"].get("update_mode", "incremental") == "incremental"
                 ):
-                    self._seed_previous_conn(conn, job_id, source_id, run["options"])
+                    payload["_selection_inheritance"] = self._seed_previous_conn(
+                        conn, job_id, source_id, run["options"]
+                    )
             works = payload.pop("works")
             wanted = set(run["options"].get("folder_ids") or [])
             if wanted:
@@ -291,7 +319,9 @@ class FavoritesStore:
                     continue
                 targets.append((int(selected), job_id, row["work_id"]))
             conn.executemany(
-                "UPDATE favorites_items SET selected=? WHERE parent_id=? AND work_id=?", targets
+                "UPDATE favorites_items SET selected=?,selection_explicit=1 "
+                "WHERE parent_id=? AND work_id=?",
+                targets,
             )
 
     def confirm(self, job_id: str, *, accept_partial: bool, entry_intact) -> None:

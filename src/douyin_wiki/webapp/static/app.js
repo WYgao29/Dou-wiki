@@ -394,14 +394,18 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
   if (query) params.set("q", query);
   if (favoritesJob) params.set("favorites_job", favoritesJob);
   try {
-    const data = await api(`/api/library${params.size ? `?${params}` : ""}`);
+    const [data, allData] = await Promise.all([
+      api(`/api/library${params.size ? `?${params}` : ""}`),
+      favoritesJob ? api("/api/library") : null,
+    ]);
     if (!isCurrent()) return;
-    if (query && !state.allItems.length) await ensureCommandItems();
+    if (query && !favoritesJob && !state.allItems.length) await ensureCommandItems();
     if (!isCurrent()) return;
     state.items = data.items;
     state.facets = data.facets;
     state.tags = [...new Set(state.tags.map(tag => state.facets.tag_aliases?.[tag] || tag))];
-    if (!query && !favoritesJob) state.allItems = data.items;
+    if (allData) state.allItems = allData.items;
+    else if (!query && !favoritesJob) state.allItems = data.items;
     state.catalogHasItems = Boolean(
       (!query && data.items.length)
       || data.facets.authors?.length

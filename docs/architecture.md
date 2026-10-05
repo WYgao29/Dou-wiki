@@ -77,6 +77,8 @@ Provider 的完整分段汇总超出模型预算时，保留各段内容与证�
 
 ## 开发验证
 
+收藏状态库 schema 14 按作品记录 `selection_explicit`：选择接口标记用户明确操作，已确认批次亦可作为可信选择来源。增量读取仍以最近同账号、同范围的作品清单作为新增比较基线，但只继承可信选择；旧记录与旧勾选保留。初始化时一次性冻结旧批次缺失的 `_baseline_work_ids`，详情查询的兼容回退只读，不再为了冻结基线取得写锁或补写状态库。Web/Worker 同时初始化时，新增选择来源列及旧基线补写在一个写事务中完成。
+
 ```bash
 uv sync --extra dev --extra embeddings
 uv run ruff check src tests

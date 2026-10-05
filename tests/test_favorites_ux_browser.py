@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, expect
 
 
 @pytest.fixture
@@ -251,6 +251,58 @@ async def test_large_import_requires_exact_count_before_dispatch(ux_ui):
     await confirm.click()
     await ux_ui.page.wait_for_timeout(100)
     assert len([c for c in ux_ui.calls if c["path"].endswith("/confirm")]) == 1
+
+
+@pytest.mark.parametrize("value,confirmed", [("34", False), ("35", True)])
+async def test_count_input_enter_confirms_only_when_the_count_matches(ux_ui, value, confirmed):
+    await ux_ui.open("bulk")
+    page = ux_ui.page
+    await page.locator("#favorites-confirm").click()
+    dialog = page.locator("#favorites-confirm-dialog")
+    await expect(dialog).to_be_visible()
+    await page.locator("#favorites-confirm-count").fill(value)
+    await page.locator("#favorites-confirm-count").press("Enter")
+    if confirmed:
+        await page.wait_for_url("**/jobs/bulk")
+        await expect(dialog).not_to_be_visible()
+        assert len([c for c in ux_ui.calls if c["path"].endswith("/confirm")]) == 1
+    else:
+        await expect(dialog).to_be_visible()
+        await expect(page.locator("#favorites-confirm-submit")).to_be_disabled()
+        assert not any(c["path"].endswith("/confirm") for c in ux_ui.calls)
+
+
+async def test_exclude_page_keeps_selections_on_other_pages(ux_ui):
+    await ux_ui.open("many")
+    page = ux_ui.page
+    await page.locator("#favorites-select-all").click()
+    await expect(page.locator("#favorites-selected-count")).to_contain_text("125 件")
+    await page.locator("#favorites-exclude-page").click()
+    await page.wait_for_function("""() =>
+        document.querySelector('#favorites-selected-count').textContent.includes('75 件') &&
+        document.querySelector('#favorites-save-hint').textContent === '选择已保存'""")
+    selected = {i["work_id"] for i in ux_ui.states["many"]["items"] if i["selected"]}
+    assert len(selected) == 75
+    assert "10000" not in selected
+    assert "10050" in selected
+
+
+async def test_exclude_filtered_keeps_selections_outside_the_search(ux_ui):
+    await ux_ui.open("many")
+    page = ux_ui.page
+    await page.locator("#favorites-select-all").click()
+    await expect(page.locator("#favorites-selected-count")).to_contain_text("125 件")
+    await page.locator("#favorites-query").fill("目标标题1")
+    await expect(page.locator("#favorites-page")).to_contain_text("匹配 36 件")
+    await page.locator("#favorites-exclude-filtered").click()
+    await expect(page.locator("#favorites-selected-count")).to_contain_text("89 件")
+    selected = {i["work_id"] for i in ux_ui.states["many"]["items"] if i["selected"]}
+    assert "10000" in selected
+    assert "10001" not in selected
+    assert "10124" not in selected
+    request = [c for c in ux_ui.calls if c["path"].endswith("/selection")][-1]
+    assert request["body"]["selected"] is False
+    assert request["body"]["filters"]["query"] == "目标标题1"
 
 
 async def test_fast_choices_are_batched_without_locking_the_page(ux_ui):

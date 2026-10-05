@@ -387,7 +387,7 @@ class Database:
                 raise JobLeaseLostError("任务的 Worker 租约已失效")
 
     def initialize(self) -> None:
-        from .favorites_store import FAVORITES_SCHEMA
+        from .favorites_store import FAVORITES_SCHEMA, FavoritesStore
         from .tags import TAG_SCHEMA
 
         with self.connect() as conn:
@@ -396,6 +396,18 @@ class Database:
             conn.executescript(TAG_SCHEMA)
             conn.executescript(FAVORITES_SCHEMA)
             conn.executescript(AUTH_SESSIONS_SCHEMA)
+            # Web and Worker may initialize together; inspect and migrate under one write lock.
+            conn.execute("BEGIN IMMEDIATE")
+            favorite_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(favorites_items)")
+            }
+            if "selection_explicit" not in favorite_columns:
+                conn.execute(
+                    "ALTER TABLE favorites_items ADD COLUMN "
+                    "selection_explicit INTEGER NOT NULL DEFAULT 0"
+                )
+            FavoritesStore.migrate_legacy_baselines(conn)
+            conn.commit()
             self._migrate_chat_sessions_for_topics(conn)
             chunk_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()
@@ -430,7 +442,7 @@ class Database:
             ).fetchall():
                 self._remember_tags_conn(conn, json.loads(row["tags_json"]), row["created_at"])
             self._retire_undeliverable_events_conn(conn)
-            conn.execute("PRAGMA user_version=13")
+            conn.execute("PRAGMA user_version=14")
 
     @staticmethod
     def _rebuild_fts_conn(conn: sqlite3.Connection) -> None:

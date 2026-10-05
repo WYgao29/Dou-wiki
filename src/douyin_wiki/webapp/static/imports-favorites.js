@@ -64,12 +64,13 @@
       Boolean(saving) || saveError || (!current.complete && !$("partial").checked);
     $("confirm").hidden = Boolean(current?.confirmed || current?.directory_only || current?.status === "cancelled");
     if (jobId) $("history").value = jobId;
-    ["select-all", "exclude-all", "select-page", "select-filtered", "select-folder"].forEach((id) => {
+    ["select-all", "exclude-all", "select-page", "exclude-page", "select-filtered", "exclude-filtered", "select-folder", "exclude-folder"].forEach((id) => {
       $(id).disabled = busy || !canSelect();
     });
     $("select-page").disabled ||= !$("items").querySelector('input[data-eligible="true"]');
-    $("select-filtered").disabled ||= !current?.total;
-    $("select-folder").hidden = !$("filter").value || !searchable;
+    $("exclude-page").disabled ||= !$("items").querySelector('input[data-eligible="true"]:checked');
+    ["select-filtered", "exclude-filtered"].forEach((id) => { $(id).disabled ||= !current?.total; });
+    ["select-folder", "exclude-folder"].forEach((id) => { $(id).hidden = !$("filter").value || !searchable; });
     $("previous").disabled = busy || !current || page <= 1;
     $("next").disabled = busy || !current?.has_more;
     $("retry").hidden = !current?.can_retry;
@@ -167,7 +168,7 @@
     $("status").textContent = message;
     $("summary").textContent = "更新抖音收藏会读取清单，勾选并确认后才会导入。";
     ["waits", "warnings", "items", "folder-list", "error"].forEach((id) => $(id).replaceChildren());
-    ["auth", "gateway", "partial-row", "cancelled", "progress", "elapsed", "library"].forEach((id) => { $(id).hidden = true; });
+    ["auth", "gateway", "partial-row", "cancelled", "progress", "elapsed", "library", "selection-inheritance"].forEach((id) => { $(id).hidden = true; });
     $("filter").replaceChildren(node("option", "全部收藏夹")); $("filter").firstChild.value = "";
     $("filter").hidden = true; $("page").textContent = "第 1 / 1 页 · 匹配 0 件";
     $("folder-hint").textContent = "先读取目录，再选择要更新的收藏夹。";
@@ -226,14 +227,23 @@
     $("waits").textContent = Object.entries(waits).filter(([status]) => summary.child_status_counts?.[status])
       .map(([status, text]) => text + " " + summary.child_status_counts[status]).join(" · ");
     $("warnings").replaceChildren(...(data.warnings || []).map((text) => node("li", text)));
-    if (legacy(data)) $("warnings").prepend(node("li", "这是旧版本留下的读取结果。点击“读取我的收藏夹”可用当前版本重新读取，旧记录不会被改写。"));
+    if (legacy(data)) {
+      const action = data.directory_only ? "读取我的收藏夹" : data.status === "cancelled" ? "重新读取清单" : "更新抖音收藏";
+      $("warnings").prepend(node("li", "这是旧版本留下的读取结果。点击“" + action + "”可用当前版本重新读取，旧记录不会被改写。"));
+    }
+    const inheritance = data.selection_inheritance || {}, hints = [];
+    if (inheritance.selected) hints.push("沿用了上次的 " + inheritance.selected + " 件选择，已入库作品仍会跳过。");
+    if (inheritance.ignored_legacy) hints.push("旧批次中 " + inheritance.ignored_legacy + " 件勾选的来源无法确认，本次未沿用。需要导入的作品请重新勾选。");
+    $("selection-inheritance").textContent = hints.join(" ");
+    $("selection-inheritance").hidden = !hints.length;
     $("auth").hidden = !(data.status === "needs_auth" || summary.child_status_counts?.needs_auth);
     $("gateway").hidden = !(data.analysis_mode === "gateway" && data.confirmed && ongoing.has(data.status));
     $("partial-row").hidden = data.complete || data.directory_only || data.confirmed || data.status !== "needs_selection";
     $("retry").textContent = data.confirmed ? "重试失败作品" : data.status === "needs_auth" ? "授权好了，重试读取" : "重试读取";
     $("cancelled").hidden = data.status !== "cancelled";
     $("restart").textContent = data.directory_only ? "重新读取目录" : "重新读取清单";
-    $("error").textContent = data.error_message || "";
+    const cancellationOnly = data.status === "cancelled" && ["已取消", "任务已取消"].includes(String(data.error_message || "").trim());
+    $("error").textContent = cancellationOnly ? "" : data.error_message || "";
     const entryIds = data.imported_entry_ids || [];
     $("library").hidden = !entryIds.length;
     $("library").href = "/?favorites_job=" + encodeURIComponent(jobId);
@@ -296,7 +306,8 @@
       if (match && display !== item.title) content.append(node("small", match[0].trim(), "favorites-item-topics"));
       content.append(node("small", (item.author || "未知作者") + " · " + (item.source_kind_label || (item.source_kind === "video" ? "视频" : item.source_kind === "image_note" ? "图文" : "文章")) + (item.is_new && !data.first_read ? " · 新发现" : "")));
       if (item.error_message) content.append(node("small", item.error_message, "dialog-error"));
-      const status = item.entry_id ? "已在资料库" : item.disposition === "excluded" ? input.checked ? "待导入" : "未选择" : item.disposition_label || ({pending: "待导入", unsupported: "暂不支持", unavailable: "不可用", active: "处理中", completed: "已完成", failed: "失败"}[item.disposition] || item.disposition);
+      const cancelledPending = data.status === "cancelled" && ["pending", "excluded"].includes(item.disposition);
+      const status = item.entry_id ? "已在资料库" : cancelledPending ? "未导入（已取消）" : item.disposition === "excluded" ? input.checked ? "待导入" : "未选择" : item.disposition_label || ({pending: "待导入", unsupported: "暂不支持", unavailable: "不可用", active: "处理中", completed: "已完成", failed: "失败"}[item.disposition] || item.disposition);
       const badge = node("span", status, "favorites-item-state"); badge.dataset.state = item.entry_id ? "imported" : item.disposition;
       const meta = node("div", null, "favorites-item-side"); meta.append(badge);
       if (item.entry_id) {
@@ -342,10 +353,13 @@
     $("confirm-description").textContent = "将处理 " + count + " 件所选作品" +
       (preview.new_tasks != null ? "：新建 " + preview.new_tasks + " 个任务，复用 " + (preview.reused_tasks || 0) + " 个进行中任务" : "") +
       "。清单中 " + (preview.already_imported ?? current.summary?.in_library ?? current.summary?.imported ?? 0) +
-      " 件已在资料库，会跳过。后续会下载、识别并分析作品。分析方式：" + mode + "。";
+      " 件已在资料库，会跳过。后续会下载、识别并分析作品。分析方式：" + mode + "。预计下载量和总用时暂无法估算。";
     const dialog = $("confirm-dialog"), form = $("confirm-form"), input = $("confirm-count"), button = $("confirm-submit");
     $("confirm-count-label").hidden = count <= 30; input.value = "";
-    const update = () => { button.disabled = count > 30 && input.value.trim() !== String(count); };
+    const update = () => {
+      button.disabled = count > 30 && input.value.trim() !== String(count);
+      input.setCustomValidity(""); input.removeAttribute("aria-invalid");
+    };
     update();
     const ok = await new Promise((resolve) => {
       let settled = false;
@@ -353,6 +367,7 @@
         if (settled) return; settled = true;
         form.removeEventListener("submit", submit); dialog.removeEventListener("cancel", cancel);
         dialog.removeEventListener("close", close); input.removeEventListener("input", update);
+        input.removeEventListener("keydown", enter);
         dialog.close(); resolve(value);
       };
       const submit = (event) => {
@@ -362,8 +377,17 @@
       };
       const cancel = (event) => { event.preventDefault(); finish(false); };
       const close = () => finish(false);
+      const enter = (event) => {
+        if (event.key !== "Enter" || event.isComposing) return;
+        event.preventDefault(); update();
+        if (button.disabled) {
+          input.setCustomValidity("请输入本次选择的 " + count + " 件。");
+          input.setAttribute("aria-invalid", "true"); input.reportValidity();
+        } else form.requestSubmit(button);
+      };
       form.addEventListener("submit", submit); dialog.addEventListener("cancel", cancel);
       dialog.addEventListener("close", close); input.addEventListener("input", update);
+      input.addEventListener("keydown", enter);
       dialog.showModal(); (count > 30 ? input : button).focus();
     });
     if (!ok) return;
@@ -413,16 +437,18 @@
   $("query").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); search(); } });
   $("previous").addEventListener("click", () => run(async () => { page--; await load(); }));
   $("next").addEventListener("click", () => run(async () => { page++; await load(); }));
-  $("select-page").addEventListener("click", () => queueChoices(
-    [...$("items").querySelectorAll('input[data-eligible="true"]')].map((box) => box.dataset.work), true));
-  $("select-filtered").addEventListener("click", () => run(async () => {
-    await request(base + "/" + encodeURIComponent(jobId) + "/selection", {selected: true, filters: filters()}); await load();
-  }));
-  $("select-folder").addEventListener("click", () => run(async () => {
-    await request(base + "/" + encodeURIComponent(jobId) + "/selection", {selected: true, filters: {
-      folder_id: $("filter").value, only_unimported: true,
-    }}); await load();
-  }));
+  [true, false].forEach((selected) => {
+    $(selected ? "select-page" : "exclude-page").addEventListener("click", () => queueChoices(
+      [...$("items").querySelectorAll('input[data-eligible="true"]')].map((box) => box.dataset.work), selected));
+    $(selected ? "select-filtered" : "exclude-filtered").addEventListener("click", () => run(async () => {
+      await request(base + "/" + encodeURIComponent(jobId) + "/selection", {selected, filters: filters()}); await load();
+    }));
+    $(selected ? "select-folder" : "exclude-folder").addEventListener("click", () => run(async () => {
+      await request(base + "/" + encodeURIComponent(jobId) + "/selection", {selected, filters: {
+        folder_id: $("filter").value, only_unimported: true,
+      }}); await load();
+    }));
+  });
   [true, false].forEach((selected) => $(selected ? "select-all" : "exclude-all").addEventListener("click", () => run(async () => {
     await request(base + "/" + encodeURIComponent(jobId) + "/selection", {selected}); await load();
   })));

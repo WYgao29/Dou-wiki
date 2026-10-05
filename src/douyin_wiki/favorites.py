@@ -249,6 +249,16 @@ class FavoritesService:
             only_unimported=only_unimported,
         )
         snapshot = run["snapshot"]
+        inheritance = snapshot.get("_selection_inheritance", {})
+        selectable_ids = {
+            i["work_id"] for i in items if not i["entry_id"] and eligible(i, run["options"])
+        }
+        selection_inheritance = {
+            "selected": len(selectable_ids.intersection(inheritance.get("selected_work_ids", []))),
+            "ignored_legacy": len(
+                selectable_ids.intersection(inheritance.get("ignored_legacy_ids", []))
+            ),
+        }
         start = (page - 1) * limit
         return {
             "job_id": job_id,
@@ -257,6 +267,7 @@ class FavoritesService:
             "created_at": job.created_at.isoformat(),
             "updated_at": job.updated_at.isoformat(),
             "first_read": not previous_ids,
+            "selection_inheritance": selection_inheritance,
             **run["options"],
             "account_id": snapshot.get("account_id"),
             "nickname": snapshot.get("nickname", ""),
