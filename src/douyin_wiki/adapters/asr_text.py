@@ -4,8 +4,9 @@ Left to right:
 - Strip a leading ``language Name<asr_text>`` envelope, then delete known tags in place.
 - Keep clock times, vague phrases (including a hedge after the whole unit), skipped-place
   numerals, ordinary counters, and a bare 分/元 stem inside a longer word.
-- Otherwise convert a percentage, a decimal, a quantity with an allowed unit, or a bare
-  numeral glued to an ASCII identifier. A trailing counter stays, separated from a decimal.
+- Otherwise convert a percentage, a decimal, a quantity with an allowed unit, or an
+  identifier numeral at a closed boundary or a grammatical continuation. A trailing
+  counter stays, separated from a decimal.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ _VAGUE_PREFIX = frozenset("几数成多来余")
 _LARGE_PREFIX = frozenset("十百千万亿")
 _MAGNITUDE = frozenset("万亿")
 _AMBIGUOUS_UNITS = frozenset({"分", "元"})
-_PLAIN_COUNTERS = frozenset("年天")
+_VERSION_CONTINUATIONS = ("其实", "的", "在", "是")
 _UNIT_BOUNDARIES = frozenset("，。、；：！？…—～·（）【】《》「」『』“”‘’\"'()[]{}")
 
 _LANGUAGE_ENVELOPE = re.compile(r"^(?:<\|[^|]*\|>|\s)*language[ \t]+[A-Za-z]+<asr_text>")
@@ -448,6 +449,13 @@ def _prefer_quantity(
     return current
 
 
+def _version_continues(text: str, end: int) -> bool:
+    """Closed token or a grammatical continuation. Any other Chinese suffix stays."""
+    if _closed_after_unit(text, end):
+        return True
+    return any(text.startswith(word, end) for word in _VERSION_CONTINUATIONS)
+
+
 def _match_version(text: str, start: int) -> tuple[str, int] | None:
     if not _identifier_gap(text, start):
         return None
@@ -455,13 +463,6 @@ def _match_version(text: str, start: int) -> tuple[str, int] | None:
     if parsed is None:
         return None
     value, end = parsed
-    if _vague_suffix(text, end):
-        return None
-    if end < len(text) and (
-        text[end] in _MEASURE_CHARS
-        or text[end] in _PLAIN_COUNTERS
-        or text[end] in _PHRASE_CHARS
-        or text[end] in "点分秒小万亿元"
-    ):
+    if _vague_suffix(text, end) or not _version_continues(text, end):
         return None
     return str(value), end

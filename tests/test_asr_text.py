@@ -49,6 +49,10 @@ EXPLICIT_NUMBERS = [
     ("两分三十秒", "2分30秒"),
     ("Fable五。", "Fable 5。"),
     ("Fable五十", "Fable 50"),
+    ("Fable五的表现", "Fable 5的表现"),
+    ("Fable五在此前发布", "Fable 5在此前发布"),
+    ("Fable五其实也仅差一分。", "Fable 5其实也仅差1分。"),
+    ("Fable五是最高分", "Fable 5是最高分"),
     ("一百分", "100分"),
     ("3.14五点六", "3.14 5.6"),
     ("3.五点六", "3. 5.6"),
@@ -117,6 +121,10 @@ PRESERVED_PHRASES = [
     "十二元二次方程",
     "Fable五年",
     "GPT三天",
+    "Fable五月",
+    "GPT三日",
+    "Model五人",
+    "Foo五米",
 ]
 
 
