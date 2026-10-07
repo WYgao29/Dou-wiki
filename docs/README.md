@@ -21,6 +21,8 @@
 
 ## 开发中的功能
 
+[Qwen3 ASR 单引擎替换设计](superpowers/specs/2026-10-07-qwen3-asr-design.md)与[实施计划](superpowers/plans/2026-10-07-qwen3-asr.md)为待审阅草案，尚未实现。按用户要求，先完成 Qwen3 的分段、数字规范化、离线与下游兼容验收，再删除 SenseVoice 和 Whisper。用户已确认热词和上下文提示本期不做，后续另建独立术语仓库及 Agent 维护规则；已有逐字稿继续读取，本次不做旧数据重转。
+
 [Gateway token 优化规格](superpowers/specs/2026-10-03-gateway-token-optimization-design.md)与[实施计划](superpowers/plans/2026-10-03-gateway-token-optimization.md)已确认并在 `codex/gateway-token-optimization` 实现；现有四工具可显式选择协议 2，覆盖 OCR 投影、增量校正、证据引用与简短回执，默认保留旧协议。调用规范见 [Gateway 指南](gateway-agents.md#紧凑协议gateway_protocol2)；主线集成与真实客户端切换尚未执行。
 
 [画面检索方案](design/visual-search-indexed-plan.md)仍用于独立分支 `codex/visual-search-phase1` 的开发；当前主线尚未集成此功能。该方案保留原有设计范围，实际进度以对应分支为准。
