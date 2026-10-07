@@ -197,3 +197,25 @@ def test_itn_can_be_disabled() -> None:
     assert normalize_asr_text("五点<asr_text>六", itn=False) == "五点六"
     assert normalize_asr_text("五点<asr_text>六", itn=True) == "5.6"
     assert normalize_asr_text(normalize_asr_text(raw, itn=True), itn=True) == "50%，5.6 三个模型。"
+
+
+def test_protected_number_spans_follow_the_existing_converter() -> None:
+    from douyin_wiki.adapters.asr_text import protected_number_spans
+
+    assert protected_number_spans("五点六") == ((0, 3),)
+    assert protected_number_spans("百分之五十") == ((0, 5),)
+    assert protected_number_spans("一百五十万元") == ((0, 6),)
+    assert protected_number_spans("Fable五") == ((0, 6),)
+    assert protected_number_spans("Fable五点六") == ((0, 8),)
+    assert protected_number_spans("Fable五点六三个模型") == ((0, 8),)
+    assert protected_number_spans("已有5.6个") == ((2, 5),)
+    assert protected_number_spans("3.14五点六") == ((0, 4), (4, 7))
+    assert protected_number_spans("Fable 5") == ((0, 7),)
+    assert protected_number_spans("GPT-4") == ((0, 5),)
+    assert protected_number_spans("v1.2.3") == ((0, 6),)
+    for phrase in ("三个模型", "一下", "两点十分", "一百五", "Fable五个", "三点零五秒"):
+        assert protected_number_spans(phrase) == ()
+        assert normalize_zh_numbers(phrase) == phrase
+    assert normalize_zh_numbers("五点六") == "5.6"
+    assert normalize_zh_numbers("Fable五点六三个模型") == "Fable 5.6 三个模型"
+    assert protected_number_spans("") == ()

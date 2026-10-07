@@ -466,3 +466,96 @@ def _match_version(text: str, start: int) -> tuple[str, int] | None:
     if _vague_suffix(text, end) or not _version_continues(text, end):
         return None
     return str(value), end
+
+
+# Existing Arabic forms are not seen by the Chinese scanner. Versions may contain
+# spaces or hyphens; bare decimals and integers stay separate when they only touch.
+_ARABIC_DECIMAL = re.compile(r"(?<![0-9A-Za-z.])\d+(?:\.\d+)+(?![0-9])")
+_ARABIC_INTEGER = re.compile(r"(?<![0-9A-Za-z.])\d+(?![0-9.])")
+_ASCII_VERSION = re.compile(
+    r"(?<![A-Za-z0-9])[A-Za-z][A-Za-z0-9]*(?:[ \t.\-]\d+|\d+)(?:\.\d+)*(?![0-9])"
+)
+
+
+def protected_number_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Source spans that normalization would rewrite, plus Arabic numbers.
+
+    The spans share ``_convert_at``. Ambiguous phrases and clock times are not
+    protected. Touching spans stay separate so ``3.14五点六`` can split between them.
+    """
+    if not text:
+        return ()
+    spans: list[tuple[int, int]] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text[index] not in _NUMERAL_START:
+            index += 1
+            continue
+        clock = _CLOCK.match(text, index)
+        if clock is not None:
+            index = clock.end()
+            continue
+        converted = _convert_at(text, index)
+        if converted is None:
+            glued = _glued_identifier_numeral(text, index)
+            if glued is None:
+                index = _phrase_end(text, index)
+                continue
+            spans.append(glued)
+            index = glued[1]
+            continue
+        _replacement, end = converted
+        start = _identifier_prefix(text, index)
+        spans.append((start, end))
+        index = end
+    for pattern in (_ARABIC_DECIMAL, _ARABIC_INTEGER, _ASCII_VERSION):
+        spans.extend((match.start(), match.end()) for match in pattern.finditer(text))
+    return _merge_overlapping_spans(spans)
+
+
+def _glued_identifier_numeral(text: str, start: int) -> tuple[int, int] | None:
+    """Keep an ASCII identifier on a finished numeral when prose, not a counter, follows.
+
+    ``Fable五吧`` is not rewritten because 吧 is not a closed continuation, but the
+    numeral is still one value. ``Fable五个`` stays unprotected.
+    """
+    if not _identifier_gap(text, start) or _blocked_prefix(text, start):
+        return None
+    parsed = _parse_strict_integer(text, start)
+    if parsed is None:
+        return None
+    _value, end = parsed
+    if _vague_suffix(text, end) or (end < len(text) and text[end] == "点"):
+        return None
+    if end < len(text) and (
+        text[end] in _MEASURE_CHARS
+        or text[end] in _PHRASE_CHARS
+        or text[end] in _CONTINUING_NUMERALS
+    ):
+        return None
+    return _identifier_prefix(text, start), end
+
+
+def _identifier_prefix(text: str, start: int) -> int:
+    """Include an ASCII letter identifier glued to a converted numeral."""
+    if not _identifier_gap(text, start):
+        return start
+    cursor = start
+    while cursor > 0 and text[cursor - 1].isascii() and text[cursor - 1].isalpha():
+        cursor -= 1
+    return cursor
+
+
+def _merge_overlapping_spans(spans: list[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+    if not spans:
+        return ()
+    ordered = sorted(spans)
+    merged: list[tuple[int, int]] = [ordered[0]]
+    for start, end in ordered[1:]:
+        previous_start, previous_end = merged[-1]
+        if start < previous_end:
+            merged[-1] = (previous_start, max(previous_end, end))
+            continue
+        merged.append((start, end))
+    return tuple(merged)
