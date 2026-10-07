@@ -2,7 +2,8 @@
 
 Left to right:
 - Strip a leading ``language Name<asr_text>`` envelope, then delete known tags in place.
-- Keep clock times, vague phrases, skipped-place numerals, and ordinary counters.
+- Keep clock times, vague phrases (including a hedge after the whole unit), skipped-place
+  numerals, ordinary counters, and a one-character 分/元 stem inside a longer word.
 - Otherwise convert a percentage, a decimal, a quantity with an allowed unit, or a bare
   numeral glued to an ASCII identifier. A trailing counter stays, separated from a decimal.
 """
@@ -43,6 +44,8 @@ _QUANTITY_UNITS = ("分钟", "小时", "万元", "亿元", "秒", "分", "元", 
 _VAGUE_PREFIX = frozenset("几数成多来余")
 _LARGE_PREFIX = frozenset("十百千万亿")
 _MAGNITUDE = frozenset("万亿")
+_AMBIGUOUS_UNITS = frozenset({"分", "元"})
+_UNIT_BOUNDARIES = frozenset("，。、；：！？…—～·（）【】《》「」『』“”‘’\"'()[]{}")
 
 _LANGUAGE_ENVELOPE = re.compile(r"^(?:<\|[^|]*\|>|\s)*language[ \t]+[A-Za-z]+<asr_text>")
 _SPECIAL_TAG = re.compile(r"<\|[^|]*\|>|</?asr_text>")
@@ -324,7 +327,7 @@ def _match_quantity(text: str, start: int) -> tuple[str, int] | None:
         limit += 1
     if limit == start:
         return None
-    best: tuple[int, str, str] | None = None
+    candidates: list[tuple[int, str, str]] = []
     for unit in _QUANTITY_UNITS:
         search = start + 1
         window = min(len(text), limit + len(unit))
@@ -334,10 +337,18 @@ def _match_quantity(text: str, start: int) -> tuple[str, int] | None:
                 break
             candidate = _quantity_at(text, start, found, unit)
             if candidate is not None:
-                best = candidate if best is None else _prefer_quantity(best, candidate)
+                candidates.append(candidate)
             search = found + 1
-    if best is None:
+    if not candidates:
         return None
+    # A hedge after the longest reading applies to the whole amount: 一百元左右
+    # must not fall back to a shorter unit and become 100元左右.
+    longest_span = max(candidate[0] for candidate in candidates)
+    if _vague_suffix(text, longest_span):
+        return None
+    best = candidates[0]
+    for candidate in candidates[1:]:
+        best = _prefer_quantity(best, candidate)
     span, _unit, replacement = best
     return replacement, span
 
@@ -357,7 +368,31 @@ def _quantity_at(
     coefficient = text[start:unit_at]
     if _has_magnitude(coefficient) and _has_magnitude(unit):
         return None
+    if _ambiguous_small_stem(text, start, unit_at, unit, span):
+        return None
     return span, unit, f"{parsed[0]}{unit}"
+
+
+def _ambiguous_small_stem(text: str, start: int, unit_at: int, unit: str, span: int) -> bool:
+    """Keep 一分为二 / 三元组, but still allow 两分三十秒 and a closed 五元."""
+    if unit not in _AMBIGUOUS_UNITS or unit_at - start != 1:
+        return False
+    if _closed_after_unit(text, span):
+        return False
+    return not _has_measured_follower(text, span)
+
+
+def _closed_after_unit(text: str, span: int) -> bool:
+    if span >= len(text):
+        return True
+    char = text[span]
+    return char.isspace() or char.isascii() or char in _UNIT_BOUNDARIES
+
+
+def _has_measured_follower(text: str, span: int) -> bool:
+    if span >= len(text) or text[span] not in _NUMERAL_START or _blocked_prefix(text, span):
+        return False
+    return _match_quantity(text, span) is not None
 
 
 def _unit_allowed(text: str, start: int, unit_at: int, unit: str) -> bool:

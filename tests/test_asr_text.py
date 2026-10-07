@@ -52,6 +52,8 @@ EXPLICIT_NUMBERS = [
     ("一百分", "100分"),
     ("3.14五点六", "3.14 5.6"),
     ("3.五点六", "3. 5.6"),
+    ("一百元", "100元"),
+    ("一百元左右，两分三十秒。", "一百元左右，2分30秒。"),
 ]
 
 PRESERVED_PHRASES = [
@@ -96,7 +98,57 @@ PRESERVED_PHRASES = [
     "百分五十",
     "百分比",
     "千分之五十",
+    "一分为二",
+    "他一分为二地看问题。",
+    "二分法",
+    "二分查找",
+    "三元组",
+    "一元二次方程",
+    "一分耕耘",
+    "一元复始",
+    "一百五十万左右",
+    "一百元左右",
+    "五十九分左右",
+    "三十秒左右",
 ]
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "一分为二",
+        "他一分为二地看问题。",
+        "二分法",
+        "二分查找",
+        "三元组",
+        "一元二次方程",
+        "一分耕耘",
+        "一元复始",
+    ],
+)
+def test_ordinary_unit_stems_stay_unchanged(phrase: str) -> None:
+    assert normalize_zh_numbers(phrase) == phrase
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    ["一百五十万左右", "一百元左右", "五十九分左右", "三十秒左右"],
+)
+def test_hedge_after_full_unit_stays_unchanged(phrase: str) -> None:
+    assert normalize_zh_numbers(phrase) == phrase
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("两分三十秒", "2分30秒"),
+        ("一百元", "100元"),
+        ("一百五十万", "150万"),
+        ("五十九分", "59分"),
+    ],
+)
+def test_measured_quantities_beside_ambiguous_stems(raw: str, expected: str) -> None:
+    assert normalize_zh_numbers(raw) == expected
 
 
 @pytest.mark.parametrize(("raw", "expected"), EXPLICIT_NUMBERS)
