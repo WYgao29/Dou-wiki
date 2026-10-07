@@ -454,6 +454,20 @@ def build_compact_context(
         "confidence_note",
         "warning",
         "warnings",
+        "fallback_reason",
+        "revision",
+        "vad_model",
+        "vad_revision",
+        "alignment_model",
+        "alignment_revision",
+        "segmentation",
+        "timestamp_kind",
+        "recognition_window_seconds",
+        "alignment_target_seconds",
+        "alignment_window_limit_seconds",
+        "boundary_limit_count",
+        "boundary_limit_max_delta_ms",
+        "itn",
     }
     provenance = {
         name: {key: value for key, value in info.items() if key in provenance_keys}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import platform
 import plistlib
 import re
 import shutil
@@ -22,8 +23,78 @@ from .config import (
     llm_is_configured,
     render_default_config,
 )
+from .errors import ExternalToolError
 from .models import AnalysisMode
 from .secrets import get_secret
+
+
+def qwen3_health(settings) -> dict[str, Any]:
+    """Inspect pinned local data and packages without instantiating models."""
+    from .adapters.qwen3_runtime import inspect_snapshot
+
+    missing = [
+        name
+        for name in ("mlx", "mlx_audio", "transformers", "soundfile", "huggingface_hub")
+        if importlib.util.find_spec(name) is None
+    ]
+    platform_ok = platform.system() == "Darwin" and platform.machine().lower() in {
+        "arm64",
+        "aarch64",
+    }
+    cache = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if cache is None:
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            cache = HF_HUB_CACHE
+        except ImportError:
+            home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+            cache = str(home / "hub")
+    models = {}
+    messages = []
+    for kind, repo, revision in (
+        ("asr", settings.asr_model, settings.asr_model_revision),
+        ("vad", settings.vad_model, settings.vad_model_revision),
+        ("alignment", settings.alignment_model, settings.alignment_model_revision),
+    ):
+        path = Path(cache) / ("models--" + repo.replace("/", "--")) / "snapshots" / revision
+        command = (
+            f"hf download {repo} --revision {revision} --include '*.safetensors' '*.json' '*.txt'"
+        )
+        reason = None
+        try:
+            if not re.fullmatch(r"[0-9a-f]{40}", revision):
+                raise ValueError("revision 不是完整 SHA")
+            inspect_snapshot(path, kind)
+            if kind != "vad":
+                required = ("tokenizer_config.json", "preprocessor_config.json")
+                if any(not (path / name).is_file() for name in required):
+                    raise ValueError("缺少 tokenizer / feature extractor 配置")
+                if not (path / "tokenizer.json").is_file() and not all(
+                    (path / name).is_file() for name in ("vocab.json", "merges.txt")
+                ):
+                    raise ValueError("缺少 tokenizer 数据")
+        except (ExternalToolError, OSError, ValueError) as exc:
+            reason = str(exc)
+            messages.append(f"{kind}: {reason}；{command}")
+        models[kind] = {
+            "ok": reason is None,
+            "model": repo,
+            "revision": revision,
+            "message": reason,
+            "prepare_command": command,
+        }
+    if missing:
+        messages.insert(0, f"缺少依赖 {', '.join(missing)}；运行 uv sync --extra qwen3")
+    if not platform_ok:
+        messages.insert(0, "Qwen3 MLX 需要 Apple Silicon Mac")
+    return {
+        "ok": platform_ok and not missing and all(item["ok"] for item in models.values()),
+        "platform_ok": platform_ok,
+        "missing_dependencies": missing,
+        "models": models,
+        "message": "\n".join(messages) or None,
+    }
 
 
 class VaultSetupMode(StrEnum):
@@ -153,17 +224,13 @@ def update_config_values(
     return path
 
 
-def _patch_toml_value(
-    lines: list[str], section: str | None, key: str, rendered: str
-) -> list[str]:
+def _patch_toml_value(lines: list[str], section: str | None, key: str, rendered: str) -> list[str]:
     records = _toml_records(lines)
     existing = next(
         (
             record
             for record in records
-            if record["kind"] == "key"
-            and record["section"] == section
-            and record["name"] == key
+            if record["kind"] == "key" and record["section"] == section and record["name"] == key
         ),
         None,
     )
@@ -183,9 +250,7 @@ def _patch_toml_value(
     if section is None:
         insertion = int(section_records[0]["start"]) if section_records else len(lines)
     else:
-        header = next(
-            (record for record in section_records if record["name"] == section), None
-        )
+        header = next((record for record in section_records if record["name"] == section), None)
         if header is None:
             result = list(lines)
             if result and not result[-1].endswith(("\n", "\r")):
@@ -195,11 +260,7 @@ def _patch_toml_value(
             result.extend([f"[{section}]\n", f"{key} = {rendered}\n"])
             return result
         following = next(
-            (
-                record
-                for record in section_records
-                if int(record["start"]) > int(header["start"])
-            ),
+            (record for record in section_records if int(record["start"]) > int(header["start"])),
             None,
         )
         insertion = int(following["start"]) if following else len(lines)
@@ -221,17 +282,13 @@ def _toml_records(lines: list[str]) -> list[dict[str, object]]:
     for line_index, line in enumerate(lines):
         at_top_level = string_state is None and square_depth == 0 and brace_depth == 0
         if at_top_level:
-            header_match = re.match(
-                r"^\s*\[([A-Za-z0-9_.-]+)\]\s*(?:#.*)?$", line.rstrip("\r\n")
-            )
+            header_match = re.match(r"^\s*\[([A-Za-z0-9_.-]+)\]\s*(?:#.*)?$", line.rstrip("\r\n"))
             if header_match:
                 section = header_match.group(1)
                 records.append(
                     {"kind": "section", "section": section, "name": section, "start": line_index}
                 )
-            elif key_match := re.match(
-                r"^\s*([A-Za-z0-9_-]+)\s*=", line.rstrip("\r\n")
-            ):
+            elif key_match := re.match(r"^\s*([A-Za-z0-9_-]+)\s*=", line.rstrip("\r\n")):
                 pending_key = {
                     "kind": "key",
                     "section": section,
@@ -492,7 +549,11 @@ def doctor(config: AppConfig) -> dict[str, Any]:
     asr_provider = config.media.asr_provider
     whisper_asr_ok = checks["mlx_whisper"]["ok"] or checks["whisper"]["ok"]
     sensevoice_ok = checks["funasr"]["ok"]
-    if asr_provider == "sensevoice":
+    if asr_provider == "qwen3":
+        checks["qwen3"] = qwen3_health(config.media)
+        transcription_ok = checks["qwen3"]["ok"]
+        transcription_message = checks["qwen3"]["message"]
+    elif asr_provider == "sensevoice":
         transcription_ok = sensevoice_ok
         transcription_message = (
             None
@@ -523,9 +584,7 @@ def doctor(config: AppConfig) -> dict[str, Any]:
     if ocr_provider == "rapidocr":
         ocr_ok = rapidocr_ok
         ocr_message = (
-            None
-            if ocr_ok
-            else "ocr_provider=rapidocr 但未安装 rapidocr；运行 uv sync --extra ocr"
+            None if ocr_ok else "ocr_provider=rapidocr 但未安装 rapidocr；运行 uv sync --extra ocr"
         )
     elif ocr_provider == "vision":
         ocr_ok = vision_ocr_ok

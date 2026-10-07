@@ -501,6 +501,7 @@ def test_render_default_config_preserves_llm_response_format(tmp_path: Path) -> 
     assert loaded.llm.response_format == "json_schema"
     assert loaded.llm.context_window_tokens == 32768
 
+
 def test_doctor_transcription_and_ocr_follow_media_providers(tmp_path: Path, monkeypatch) -> None:
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -534,3 +535,63 @@ def test_doctor_transcription_and_ocr_follow_media_providers(tmp_path: Path, mon
     assert checks["transcription"]["provider"] == "whisper"
     assert checks["ocr"]["provider"] == "vision"
     assert checks["ocr"]["ok"] is False
+
+
+def test_qwen_doctor_requires_all_exact_snapshots_without_loading(tmp_path, monkeypatch) -> None:
+    from douyin_wiki.adapters.qwen3_runtime import Qwen3Runtime
+    from douyin_wiki.config import MediaSettings
+
+    media = MediaSettings(
+        asr_provider="qwen3",
+        asr_model="mlx-community/Qwen3-ASR-1.7B-bf16",
+        asr_model_revision="e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+        vad_model="mlx-community/silero-vad",
+        vad_model_revision="7bc17f22d3c0451bd3a6cd71e759b009271ff49a",
+    )
+    config = AppConfig(vault_path=tmp_path / "vault", media=media)
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache))
+    monkeypatch.setattr("importlib.util.find_spec", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        Qwen3Runtime, "ensure_ready", lambda self: pytest.fail("doctor loaded weights")
+    )
+    checks = doctor(config)
+    assert checks["transcription"]["ok"] is False
+    assert checks["qwen3"]["ok"] is False
+    assert "hf download" in checks["qwen3"]["message"]
+    paths = []
+    for role, repo, revision in (
+        ("asr", media.asr_model, media.asr_model_revision),
+        ("vad", media.vad_model, media.vad_model_revision),
+        ("alignment", media.alignment_model, media.alignment_model_revision),
+    ):
+        path = cache / ("models--" + repo.replace("/", "--")) / "snapshots" / revision
+        path.mkdir(parents=True)
+        config_data = {"model_type": "qwen3_asr"}
+        if role == "vad":
+            config_data = {"model_type": "silero_vad", "architecture": "silero_vad"}
+        if role == "alignment":
+            config_data.update(timestamp_segment_time=80, timestamp_token_id=151705)
+        (path / "config.json").write_text(json.dumps(config_data))
+        (path / "model.safetensors").write_bytes(b"weights")
+        if role != "vad":
+            for name in ("tokenizer_config.json", "vocab.json", "preprocessor_config.json"):
+                (path / name).write_text("{}")
+            (path / "merges.txt").write_text("#version: 0.2")
+        paths.append(path)
+    assert doctor(config)["transcription"]["ok"] is True
+    (paths[-1] / "model.safetensors").unlink()
+    assert doctor(config)["transcription"]["ok"] is False
+    assert doctor(config)["qwen3"]["models"]["alignment"]["ok"] is False
+
+
+def test_qwen_doctor_missing_dependency_is_not_rescued_by_legacy(tmp_path, monkeypatch) -> None:
+    config = AppConfig(vault_path=tmp_path)
+    config.media.asr_provider = "qwen3"
+    monkeypatch.setattr(
+        "importlib.util.find_spec", lambda name, *args: None if name == "mlx_audio" else object()
+    )
+    monkeypatch.setattr("shutil.which", lambda command: "/bin/true")
+    checks = doctor(config)
+    assert checks["transcription"]["ok"] is False
+    assert "mlx_audio" in checks["qwen3"]["missing_dependencies"]

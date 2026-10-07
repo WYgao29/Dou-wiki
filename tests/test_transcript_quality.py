@@ -14,8 +14,9 @@ from douyin_wiki.worker import Worker
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [AnalysisMode.PROVIDER, AnalysisMode.GATEWAY])
 @pytest.mark.parametrize("has_issue", [False, True])
+@pytest.mark.parametrize("asr_provider", ["sensevoice", "qwen3"])
 async def test_model_correction_notes_do_not_block(
-    service, monkeypatch, mode, has_issue
+    service, monkeypatch, mode, has_issue, asr_provider
 ):
     source = TranscriptSegment(id=0, start_ms=0, end_ms=9000, text="AI课程售价2000元。")
     issue = ReviewIssue(
@@ -34,7 +35,7 @@ async def test_model_correction_notes_do_not_block(
         return [source], [issue] if has_issue else []
 
     service.transcriber = SimpleNamespace(
-        transcribe=transcribe, provenance={"provider": "sensevoice", "model": "test"}
+        transcribe=transcribe, provenance={"provider": asr_provider, "model": "test"}
     )
     service.config.analysis_mode = mode
     monkeypatch.setattr(service.analysis, "correct_transcript", correct)

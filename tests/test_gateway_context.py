@@ -43,6 +43,43 @@ def test_ocr_projection_filters_nearby_subtitles_and_keeps_late_material():
     assert artifacts == before
 
 
+def test_compact_context_preserves_qwen_and_historical_provenance(service):
+    info = {
+        "provider": "qwen3",
+        "revision": "a" * 40,
+        "vad_model": "silero-vad",
+        "vad_revision": "b" * 40,
+        "alignment_model": "forced-aligner",
+        "alignment_revision": "c" * 40,
+        "segmentation": "qwen3-anchored-alignment-v1",
+        "timestamp_kind": "forced-alignment",
+        "recognition_window_seconds": 600,
+        "alignment_target_seconds": 150,
+        "alignment_window_limit_seconds": 180,
+        "boundary_limit_count": 1,
+        "boundary_limit_max_delta_ms": 40,
+        "language": "Chinese",
+        "itn": "zh-numbers-v1",
+    }
+    job = make_gateway_job(
+        service, artifacts={"media_provenance": {"asr": {**info, "secret": "exclude"}}}
+    )
+    ctx = service.get_analysis_context(job.id, gateway_protocol=2)
+    assert ctx["media_provenance"]["asr"] == info
+    service.database.update_job(
+        job.id,
+        artifacts={
+            "media_provenance": {"asr": {"provider": "whisper", "fallback_reason": "historical"}}
+        },
+    )
+    assert (
+        service.get_analysis_context(job.id, gateway_protocol=2)["media_provenance"]["asr"][
+            "fallback_reason"
+        ]
+        == "historical"
+    )
+
+
 @pytest.mark.parametrize("times", [[0, 60000, 60001], [60000, 60001, 0]])
 def test_ocr_dedup_uses_last_retained_time(times):
     catalog = build_source_catalog(

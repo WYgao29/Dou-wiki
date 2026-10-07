@@ -24,6 +24,7 @@
     web_llm: "共用模型",
     embeddings: "向量检索",
     mlx_whisper: "MLX Whisper",
+    qwen3: "Qwen3-ASR 模型与依赖",
     transcription: "语音识别",
     ocr: "画面文字识别",
     reminders: "提醒事项",
@@ -161,6 +162,7 @@
     ));
     const rows = D.node("div", null, "system-rows");
     const providerNames = {
+      qwen3: "Qwen3-ASR 语音识别",
       sensevoice: "SenseVoice 语音识别",
       whisper: "Whisper 语音识别",
       rapidocr: "RapidOCR 文字识别",

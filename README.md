@@ -78,6 +78,18 @@ uv run douyin-wiki init --vault /absolute/path/to/抖库
 uv sync --extra dev --extra embeddings --extra asr --extra ocr --extra mlx
 ```
 
+Qwen3-ASR 的显式验证入口使用 Apple Silicon 上的 `uv sync --extra qwen3`，依赖已固定为 `mlx-audio==0.5.8`。普通转写和体检只读取本地缓存，不自动下载三份模型。首次准备模型时执行：
+
+```bash
+hf download mlx-community/Qwen3-ASR-1.7B-bf16 --revision e1f6c266914abc5a46e8756e02580f834a6cf8a7 --include '*.safetensors' '*.json' '*.txt'
+hf download mlx-community/silero-vad --revision 7bc17f22d3c0451bd3a6cd71e759b009271ff49a --include '*.safetensors' '*.json' '*.txt'
+hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revision 0e1a68e91d815300c7c9754b2a7639378b23db15 --include '*.safetensors' '*.json' '*.txt'
+```
+
+需要镜像时由调用方设置 `HF_ENDPOINT` 后执行准备命令；准备成功后转写继续离线。显式 Qwen 配置同时填写 `asr_provider="qwen3"`、上述 ASR/VAD 模型及各自 `asr_model_revision` / `vad_model_revision`；对齐模型/SHA、`asr_language="Chinese"`、`asr_itn=true`、`asr_segment_seconds=30` 使用配置默认值。识别窗口最多 600 秒，对齐窗口最多 180 秒，展示段最长 5–60 秒；本期不传热词或上下文提示。Qwen ASR 与对齐权重遵循 Apache-2.0，Silero 上游为 MIT，MLX 转换模型卡未声明许可，项目不分发权重。
+
+本机已安装服务使用源码仓库的 `.venv`。开发验证使用独立环境；升级现用服务依赖前先停止服务，升级后再启动，不能把开发环境同步到正在运行的服务环境。
+
 未安装时，Embedding 降级到字符 n-gram；新配置的 ASR/OCR `auto` 分别尝试 Whisper 和 macOS Vision。Whisper 的 `auto` 在没有 MLX 包时尝试 `whisper` CLI；若两个 ASR 后端都不可用，导入会报错。
 
 新生成配置的 `[media]` 含 `asr_provider = "auto"` 与 `ocr_provider = "auto"`，优先使用 SenseVoiceSmall + FSMN-VAD 和 RapidOCR PP-OCRv6 small。已存在的配置若没有这两个字段，会继续使用 Whisper / Vision；要切换，可在 `[media]` 中明确加入这两个字段。`asr_provider = "sensevoice"` 或 `ocr_provider = "rapidocr"` 可要求指定模型，模型缺失时会显示错误。`whisper_provider` 只控制 Whisper 内部的 MLX/CLI 选择。首次安装或初始化可能下载权重；任务产物和完成结果记录实际后端及回退原因。OCR 推理失败仍按现有规则写入任务警告。
