@@ -3,7 +3,7 @@
 Left to right:
 - Strip a leading ``language Name<asr_text>`` envelope, then delete known tags in place.
 - Keep clock times, vague phrases (including a hedge after the whole unit), skipped-place
-  numerals, ordinary counters, and a one-character 分/元 stem inside a longer word.
+  numerals, ordinary counters, and a bare 分/元 stem inside a longer word.
 - Otherwise convert a percentage, a decimal, a quantity with an allowed unit, or a bare
   numeral glued to an ASCII identifier. A trailing counter stays, separated from a decimal.
 """
@@ -45,6 +45,7 @@ _VAGUE_PREFIX = frozenset("几数成多来余")
 _LARGE_PREFIX = frozenset("十百千万亿")
 _MAGNITUDE = frozenset("万亿")
 _AMBIGUOUS_UNITS = frozenset({"分", "元"})
+_PLAIN_COUNTERS = frozenset("年天")
 _UNIT_BOUNDARIES = frozenset("，。、；：！？…—～·（）【】《》「」『』“”‘’\"'()[]{}")
 
 _LANGUAGE_ENVELOPE = re.compile(r"^(?:<\|[^|]*\|>|\s)*language[ \t]+[A-Za-z]+<asr_text>")
@@ -322,6 +323,17 @@ def _match_decimal(text: str, start: int) -> tuple[str, int] | None:
 
 
 def _match_quantity(text: str, start: int) -> tuple[str, int] | None:
+    found = _structural_quantity(text, start)
+    if found is None:
+        return None
+    span, unit, replacement = found
+    if _ambiguous_unit_stem(text, unit, span):
+        return None
+    return replacement, span
+
+
+def _structural_quantity(text: str, start: int) -> tuple[int, str, str] | None:
+    """Best integer-plus-unit reading, with no stem lookahead."""
     limit = start
     while limit < len(text) and text[limit] in _PHRASE_CHARS:
         limit += 1
@@ -349,8 +361,7 @@ def _match_quantity(text: str, start: int) -> tuple[str, int] | None:
     best = candidates[0]
     for candidate in candidates[1:]:
         best = _prefer_quantity(best, candidate)
-    span, _unit, replacement = best
-    return replacement, span
+    return best
 
 
 def _quantity_at(
@@ -368,16 +379,12 @@ def _quantity_at(
     coefficient = text[start:unit_at]
     if _has_magnitude(coefficient) and _has_magnitude(unit):
         return None
-    if _ambiguous_small_stem(text, start, unit_at, unit, span):
-        return None
     return span, unit, f"{parsed[0]}{unit}"
 
 
-def _ambiguous_small_stem(text: str, start: int, unit_at: int, unit: str, span: int) -> bool:
-    """Keep 一分为二 / 三元组, but still allow 两分三十秒 and a closed 五元."""
-    if unit not in _AMBIGUOUS_UNITS or unit_at - start != 1:
-        return False
-    if _closed_after_unit(text, span):
+def _ambiguous_unit_stem(text: str, unit: str, span: int) -> bool:
+    """Keep 十二元组 / 一分为二. A closed 十二元 or a following quantity still converts."""
+    if unit not in _AMBIGUOUS_UNITS or _closed_after_unit(text, span):
         return False
     return not _has_measured_follower(text, span)
 
@@ -390,9 +397,30 @@ def _closed_after_unit(text: str, span: int) -> bool:
 
 
 def _has_measured_follower(text: str, span: int) -> bool:
+    """Walk later quantities in a loop. Each chunk is at least two characters."""
     if span >= len(text) or text[span] not in _NUMERAL_START or _blocked_prefix(text, span):
         return False
-    return _match_quantity(text, span) is not None
+    index = span
+    chunks: list[tuple[str, int]] = []
+    while index < len(text):
+        found = _structural_quantity(text, index)
+        if found is None:
+            break
+        end, unit, _replacement = found
+        if end <= index:
+            break
+        chunks.append((unit, end))
+        standalone = unit not in _AMBIGUOUS_UNITS or _closed_after_unit(text, end)
+        if _vague_suffix(text, end) or standalone:
+            break
+        index = end
+    resolved = False
+    for unit, end in reversed(chunks):
+        if _vague_suffix(text, end):
+            resolved = False
+            continue
+        resolved = unit not in _AMBIGUOUS_UNITS or _closed_after_unit(text, end) or resolved
+    return resolved
 
 
 def _unit_allowed(text: str, start: int, unit_at: int, unit: str) -> bool:
@@ -430,7 +458,10 @@ def _match_version(text: str, start: int) -> tuple[str, int] | None:
     if _vague_suffix(text, end):
         return None
     if end < len(text) and (
-        text[end] in _MEASURE_CHARS or text[end] in _PHRASE_CHARS or text[end] in "点分秒小万亿元"
+        text[end] in _MEASURE_CHARS
+        or text[end] in _PLAIN_COUNTERS
+        or text[end] in _PHRASE_CHARS
+        or text[end] in "点分秒小万亿元"
     ):
         return None
     return str(value), end
