@@ -92,6 +92,54 @@ def normalize_zh_numbers(text: str) -> str:
     return "".join(parts)
 
 
+def render_normalized_slices(
+    text: str, spans: tuple[tuple[int, int], ...], *, itn: bool
+) -> tuple[str, ...]:
+    """Render source slices using numeral decisions made in the complete source."""
+    cursor = 0
+    for start, end in spans:
+        if start != cursor or not start < end <= len(text):
+            raise ValueError("展示区间必须连续覆盖原文")
+        cursor = end
+    if cursor != len(text):
+        raise ValueError("展示区间必须连续覆盖原文")
+    if not itn:
+        return tuple(text[start:end] for start, end in spans)
+    edits: list[tuple[int, int, str]] = []
+    index = 0
+    while index < len(text):
+        if text[index] not in _NUMERAL_START:
+            index += 1
+            continue
+        clock = _CLOCK.match(text, index)
+        if clock is not None:
+            index = clock.end()
+            continue
+        converted = _convert_at(text, index)
+        if converted is None:
+            index = _phrase_end(text, index)
+            continue
+        replacement, end = converted
+        edits.append((index, end, replacement))
+        index = end
+    output = []
+    for start, end in spans:
+        parts = []
+        cursor = start
+        for edit_start, edit_end, replacement in edits:
+            if edit_end <= start or edit_start >= end:
+                continue
+            if edit_start < start or edit_end > end:
+                raise ValueError("数词替换不能跨越展示区间")
+            parts.extend((text[cursor:edit_start], replacement))
+            cursor = edit_end
+        parts.append(text[cursor:end])
+        output.append("".join(parts))
+    if "".join(output) != normalize_zh_numbers(text):
+        raise ValueError("展示文字与整窗规范化结果不一致")
+    return tuple(output)
+
+
 def normalize_asr_text(text: str, *, itn: bool) -> str:
     """Clean model formatting, then optionally normalize explicit numerals."""
     cleaned = clean_qwen_text(text)
@@ -224,10 +272,7 @@ def _parse_strict_integer(
                 break
             if pending is None:
                 bare = (
-                    char in _IMPLICIT_ONE
-                    and section == 0
-                    and last_small is None
-                    and not saw_zero
+                    char in _IMPLICIT_ONE and section == 0 and last_small is None and not saw_zero
                 )
                 if not bare:
                     break
@@ -365,9 +410,7 @@ def _structural_quantity(text: str, start: int) -> tuple[int, str, str] | None:
     return best
 
 
-def _quantity_at(
-    text: str, start: int, unit_at: int, unit: str
-) -> tuple[int, str, str] | None:
+def _quantity_at(text: str, start: int, unit_at: int, unit: str) -> tuple[int, str, str] | None:
     parsed = _parse_strict_integer(text, start, unit_at)
     if parsed is None or parsed[1] != unit_at or _vague_suffix(text, unit_at):
         return None

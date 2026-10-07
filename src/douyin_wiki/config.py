@@ -77,7 +77,7 @@ class MediaSettings(BaseModel):
     frame_interval_seconds: int = 10
     scene_threshold: float = 0.35
     max_frames: int = 60
-    asr_provider: Literal["auto", "sensevoice", "whisper"] = "auto"
+    asr_provider: Literal["auto", "sensevoice", "whisper", "qwen3"] = "auto"
     ocr_provider: Literal["auto", "rapidocr", "vision"] = "auto"
     asr_model: str = "iic/SenseVoiceSmall"
     vad_model: str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
@@ -89,6 +89,35 @@ class MediaSettings(BaseModel):
     whisper_provider: str = "auto"
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     whisper_cli_model: str = "large-v3-turbo"
+    alignment_model: str = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
+    alignment_model_revision: str = "0e1a68e91d815300c7c9754b2a7639378b23db15"
+    asr_language: str = "Chinese"
+    asr_itn: bool = True
+    asr_segment_seconds: int = Field(default=30, ge=5, le=60)
+
+    @field_validator("asr_language")
+    @classmethod
+    def validate_asr_language(cls, value: str) -> str:
+        languages = {
+            language.lower(): language
+            for language in (
+                "Chinese",
+                "Cantonese",
+                "English",
+                "German",
+                "Spanish",
+                "French",
+                "Italian",
+                "Portuguese",
+                "Russian",
+                "Korean",
+                "Japanese",
+                "auto",
+            )
+        }
+        if value.lower() not in languages:
+            raise ValueError("ASR 语言不在 Qwen3 识别与对齐共同支持的列表中")
+        return languages[value.lower()]
 
 
 class WorkerSettings(BaseModel):
@@ -265,6 +294,11 @@ asr_device = {_toml_string(cfg.media.asr_device)}
 whisper_provider = {_toml_string(cfg.media.whisper_provider)}
 whisper_model = {_toml_string(cfg.media.whisper_model)}
 whisper_cli_model = {_toml_string(cfg.media.whisper_cli_model)}
+alignment_model = {_toml_string(cfg.media.alignment_model)}
+alignment_model_revision = {_toml_string(cfg.media.alignment_model_revision)}
+asr_language = {_toml_string(cfg.media.asr_language)}
+asr_itn = {str(cfg.media.asr_itn).lower()}
+asr_segment_seconds = {cfg.media.asr_segment_seconds}
 
 [worker]
 poll_seconds = {cfg.worker.poll_seconds}

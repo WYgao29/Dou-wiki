@@ -221,6 +221,7 @@ class SelectedTranscriber:
         self.settings = settings
         self._whisper: WhisperTranscriber | None = None
         self._sensevoice: SenseVoiceTranscriber | None = None
+        self._qwen3 = None
         self.provenance: dict[str, str] = {}
 
     @property
@@ -240,6 +241,14 @@ class SelectedTranscriber:
     async def transcribe(self, audio_path: Path, output_dir: Path) -> list[TranscriptSegment]:
         self.provenance = {}
         provider = self.settings.asr_provider
+        if provider == "qwen3":
+            if self._qwen3 is None:
+                from .qwen3_asr import Qwen3Transcriber
+
+                self._qwen3 = Qwen3Transcriber(self.settings)
+            result = await self._qwen3.transcribe(audio_path, output_dir)
+            self.provenance = dict(self._qwen3.provenance)
+            return result
         fallback_reason: str | None = None
         if provider != "whisper":
             try:

@@ -20,6 +20,7 @@ from douyin_wiki.adapters.asr_segments import (
     AnchorMatch,
     AsrSegmentationError,
     AudioSplitter,
+    BoundaryTrace,
     DisplaySegment,
     OperationalToken,
     QwenEnergySplitter,
@@ -1165,18 +1166,18 @@ def test_public_signatures_match_the_task4_contract() -> None:
     recognize = inspect.signature(ScriptedRecognizer.recognize)
     assert recognize.parameters["max_tokens"].kind is inspect.Parameter.KEYWORD_ONLY
     fields = (
-        ("RecognitionWindow", ("start_sample", "audio")),
+        (RecognitionWindow, ("start_sample", "audio")),
         (
-            "AlignedToken",
+            AlignedToken,
             ("text", "raw_start_ms", "raw_end_ms", "native_start_ms", "native_end_ms"),
         ),
         (
-            "BoundaryTrace",
+            BoundaryTrace,
             ("nominal_ms", "sample", "char_index", "delta_ms", "preference", "token_index"),
         ),
-        ("DisplaySegment", ("text", "start_ms", "end_ms", "char_start", "char_end")),
+        (DisplaySegment, ("text", "start_ms", "end_ms", "char_start", "char_end")),
         (
-            "TimeLimit",
+            TimeLimit,
             (
                 "token_index",
                 "edge",
@@ -1188,6 +1189,5 @@ def test_public_signatures_match_the_task4_contract() -> None:
             ),
         ),
     )
-    namespace = globals()
-    for type_name, expected_fields in fields:
-        assert tuple(namespace[type_name].__dataclass_fields__) == expected_fields
+    for data_type, expected_fields in fields:
+        assert tuple(data_type.__dataclass_fields__) == expected_fields
