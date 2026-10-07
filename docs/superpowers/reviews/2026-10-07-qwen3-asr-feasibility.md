@@ -6,7 +6,7 @@
 
 ## 已完成的验证
 
-worktree 位于 `/Users/weisengao/.codex/worktrees/qwen3-asr/douyin-wiki`，从 `main@5a3ce45` 建立。获批设计与计划已复制并提交；运行适配器、项目依赖及旧引擎仍未修改。任务 2 的文字模块最终提交为 `2c75976`，115 项定向测试与 Ruff 通过；当前 Codex 对普通词语、数量、标签及实际全文的独立审查通过。生产服务继续使用主仓库原环境。
+worktree 位于 `/Users/weisengao/.codex/worktrees/qwen3-asr/douyin-wiki`，从 `main@5a3ce45` 建立。获批设计与计划已复制并提交；运行适配器与旧引擎仍未修改。最小 `qwen3` extra / lock 已提交 `28030d5`，冻结独立安装与离线导入通过。任务 2 的文字模块最终提交为 `2c75976`，115 项定向测试与 Ruff 通过；当前 Codex 对普通词语、数量、标签及实际全文的独立审查通过。生产服务继续使用主仓库原环境。
 
 原代码基线：`UV_PROJECT_ENVIRONMENT=<验证目录>/venv uv run --no-sync ruff check src tests` 通过；同一环境的 `pytest -q -m 'not live'` 为 **1016 passed, 2 deselected**。
 
@@ -104,3 +104,5 @@ Codex 逐项核对冻结参考稿与旧稿哈希，用冻结 CER 函数重新计
 - [Codex 最终审查](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/root-review-final.md)
 
 审查裁定：用户指定的 Grok 4.7 high 覆盖技能内的模型分档建议；用户指定当前 Codex 审查覆盖审查委派步骤；初始 VAD 参数可作有限校准。前两项改变执行分工，后一项的代价是两组额外实验。质量门槛与删除顺序均保持原要求。
+
+依赖完成证据：[Grok 依赖报告](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/agent-report-dependency.md)与[Codex 依赖审查](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/root-dependency-review.md)。现用环境与模型缓存未改变。
