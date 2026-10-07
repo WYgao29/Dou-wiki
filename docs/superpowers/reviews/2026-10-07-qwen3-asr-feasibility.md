@@ -2,11 +2,11 @@
 
 日期：2026-10-07。分支：`codex/qwen3-asr`。审查人：当前 Codex Agent；实现与实验：Grok Build `grok-4.7 high` 子 Agent。
 
-**结论：任务 1 的质量门未通过，不能继续采用当前分段参数实现，也不能删除 SenseVoice 或 Whisper。** 最小依赖与安全加载可行；先 VAD 分段再独立识别损失了上下文。原设计已把较长识别加对齐列为分段退化后的重新评估对象；继续完成仓库外实验，再提交处理方案修订审阅。对齐模型尚未下载或运行。
+**结论：原 VAD 分段方案失败；长上下文识别加短窗口对齐的固定原型通过两条素材的原始文字质量与数值格式检查。** 最小依赖与安全加载可行。最终 150 秒对齐目标的处理 RTF 为 0.08050 / 0.09619，但尚不含 ITN，也未完成正式冷加载、长音频和下游验收。产品架构修订见[待审阅说明](../specs/2026-10-07-qwen3-asr-alignment-revision.md)；SenseVoice 与 Whisper 仍保留。
 
 ## 已完成的验证
 
-worktree 位于 `/Users/weisengao/.codex/worktrees/qwen3-asr/douyin-wiki`，从 `main@5a3ce45` 建立。获批设计与计划已复制并提交；运行代码、项目依赖及旧引擎仍未修改。生产服务继续使用主仓库原环境。
+worktree 位于 `/Users/weisengao/.codex/worktrees/qwen3-asr/douyin-wiki`，从 `main@5a3ce45` 建立。获批设计与计划已复制并提交；运行适配器、项目依赖及旧引擎仍未修改。任务 2 的文字模块已完成初稿，85 项定向测试与 Ruff 通过，但独立审查发现普通词语及模糊数量误改，正在修复。生产服务继续使用主仓库原环境。
 
 原代码基线：`UV_PROJECT_ENVIRONMENT=<验证目录>/venv uv run --no-sync ruff check src tests` 通过；同一环境的 `pytest -q -m 'not live'` 为 **1016 passed, 2 deselected**。
 
@@ -46,6 +46,48 @@ worktree 位于 `/Users/weisengao/.codex/worktrees/qwen3-asr/douyin-wiki`，从 
 
 当前先完成候选的隔离可行性实验。两条素材未通过前，不提交项目依赖或新运行适配器；旧引擎删除继续受正式验收约束。热词、术语仓库与旧视频重转仍不在本期范围。
 
+## 识别与对齐共用窗口的复评结果
+
+固定 ForcedAligner 数据已完成下载、大小与 SHA-256 校验。沿用无 `sentencepiece` / `zstandard` 的最小环境，安全加载完成；量化先于参数键检查，1104 个键完全匹配，tokenizer 不执行远端代码。
+
+| 识别 / 对齐窗口 | 视频 1 原算法 / 统一算法距离 | 视频 2 原算法 / 统一算法距离 | 质量结论 |
+| --- | --- | --- | --- |
+| 基线 | 76 / 66 | 26 / 13 | 冻结对照 |
+| 180 秒 | 74 / 64 | 29 / 16 | 视频 2 回归，新增「圣人感」 |
+| 300 秒 | 97 / 87 | 26 / 13 | 视频 1 回归，新增 11 处 `Soul` |
+
+当前 Codex 独立复算四组距离，核对原始与冻结输入哈希、完整采样覆盖、生成预算及原文字符覆盖。四次含读取、识别、对齐与分段的处理 RTF 为 0.074–0.090，峰值 physical footprint 为 10.68–13.24 GB；这些运行没有 ITN，也没有首次页缓存冷加载、10 分钟或 2 小时验证，不能当成正式验收。
+
+Grok 的初始复评额外禁止了原始时间戳修正。审查纠正：Qwen 官方和 MLX 固定版本都在正常解析中使用 `fix_timestamp`，包括邻值替换和插值，原始类别后退不能直接证明正常 API 不可用。只对已保存预测重新解析后，180 秒窗口的修正最大为 960 ms，生成的全轨段满足原文覆盖、有序、不重叠及 ≤30 秒；300 秒主窗口的单点修正超过 200 秒，排序正确不能证明音频定位准确。文字质量失败在修正前后都成立。[官方处理代码](https://github.com/QwenLM/Qwen3-ASR/blob/main/qwen_asr/inference/qwen3_forced_aligner.py)、[固定 MLX 实现](https://github.com/Blaizzy/mlx-audio/blob/v0.5.8/mlx_audio/stt/models/qwen3_asr/qwen3_forced_aligner.py)
+
+### 识别与对齐分别限制的纠正实验
+
+ForcedAligner 的 300 秒限制只约束对齐输入，不约束 Qwen 识别。上轮把两者窗口绑定，限制了识别上下文，尚不足以排除原设计的替代方案。只再验证一档：两条素材均用完整上下文识别（候选长音频识别窗口最多 600 秒），通过短音频识别及对齐锚点定位原稿中的已有字符边界，再用约 120 秒、硬上限 180 秒的窗口对齐。锚点只定位，不替换原文；含糊或无效匹配使整次实验失败。原质量规则、最终段 ≤30 秒、无提示、本地安全加载及旧引擎删除顺序保持原要求。
+
+该实验在仓库外完成，没有修改产品模型、依赖或运行入口。120 秒对齐目标保留了两条原始全文，但视频 2 的 RTF 为 0.10291，超过 0.1。独立审查推导的 150 秒目标减少一个锚点，主窗口上限仍为 180 秒；首轮发现 40 ms 的窗口末端越界。Grok 随后只修复这一时间栅格问题，没有继续调整匹配阈值或质量规则。
+
+### 最终固定 150 秒原型与独立审查
+
+模型每 80 ms 预测一个时间位置。只有预测超过实际窗口末端不多于一格时，操作时间才限制到实际末端，并单独记录原值、结果、差值和阈值；原始及上游修正时间保持完整。负数、非有限数、倒序和超过一格的越界仍拒绝。探针先因缺少该行为失败，修复后通过；覆盖 40/80 ms、81/160 ms、NaN/Inf、负数、倒序和范围内不变等情况。
+
+| 指标 | 视频 1 | 视频 2 |
+| --- | ---: | ---: |
+| 原算法编辑距离 / 参考字符数 | 76 / 1616，与旧 Qwen 相同 | 26 / 2062，与旧 Qwen 相同 |
+| 统一算法编辑距离 | 66，与旧 Qwen 相同 | 13，与旧 Qwen 相同 |
+| 原始正文 | 与旧 Qwen 相同，少末尾换行 | 与旧 Qwen 相同，少末尾换行 |
+| 展示段数 / 最长段 | 13 / 30 秒 | 14 / 30 秒 |
+| 读取、识别、锚点、对齐、分段耗时 | 29.766 秒 | 38.193 秒 |
+| 处理 RTF，未包含 ITN | 0.08050 | 0.09619 |
+| 热缓存模型加载 | 2.714 秒 | 2.119 秒 |
+| 加上热缓存加载的 RTF | 0.08784 | 0.10153 |
+| physical footprint 峰值 | 10.766 GB | 10.870 GB |
+| 上游最大时间修正幅度 | 480 ms | 160 ms |
+| 项目末端处理 | 无 | 1 处，150080 → 150040 ms |
+
+Codex 逐项核对冻结参考稿与旧稿哈希，用冻结 CER 函数重新计算；重新运行上游 `fix_timestamp`，核对全部原始类别、修正时间和独立边界记录。两条样本完整覆盖 5916467 / 6352608 个采样点和 1821 / 2303 个原文字符，id 连续，段非空、有序、无重叠、长度不超过 30 秒，生成预算未耗尽。唯一的 40 ms 处理位于视频 2 第一主窗口的「突」字，下一段从同一实际时间开始。
+
+原型数值有效不证明每个字的时间准确；仍需正式定位核对。原型先读完整输入再检查 600 秒限制，产品必须重新实现有界读取；Unicode 大小写展开、句读优先及数字表达跨段保护也要覆盖。此次结果不能代替 ITN、首次页缓存冷加载、10 分钟、2 小时、离线连接观察与下游验收。原始失败证据保留，旧引擎删除门保持原计划。
+
 ## 复现记录
 
 验证目录：`/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr`。必要脚本、环境清单、输入哈希、原始段和失败记录均保留。
@@ -53,6 +95,12 @@ worktree 位于 `/Users/weisengao/.codex/worktrees/qwen3-asr/douyin-wiki`，从 
 - [初始 Grok 实验报告](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/agent-report-initial.md)
 - [两档 VAD 校准报告](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/agent-report-calibration.md)
 - [Codex 独立复算与输入哈希](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/root-quality-review.json)
+- [Grok 对齐复评报告](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/agent-report-alignment.md)
+- [Codex 对齐独立复算与正常后处理检查](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/root-alignment-review.json)
+- [Codex 对齐审查](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/root-alignment-review.md)
+- [Grok 固定 150 秒边界修正报告](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/agent-report-boundary-fix.md)
+- [Codex 最终原型独立复算](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/root-boundary-review.json)
+- [Codex 最终原型审查](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/root-boundary-review.md)
 - [Codex 最终审查](/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/task1/root-review-final.md)
 
 审查裁定：用户指定的 Grok 4.7 high 覆盖技能内的模型分档建议；用户指定当前 Codex 审查覆盖审查委派步骤；初始 VAD 参数可作有限校准。前两项改变执行分工，后一项的代价是两组额外实验。质量门槛与删除顺序均保持原要求。
