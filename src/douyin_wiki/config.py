@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import re
 import tomllib
 from ipaddress import ip_address
 from pathlib import Path
@@ -10,6 +12,23 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .models import AnalysisMode
+
+logger = logging.getLogger(__name__)
+_QWEN_DEFAULTS = {
+    "asr": ("mlx-community/Qwen3-ASR-1.7B-bf16", "e1f6c266914abc5a46e8756e02580f834a6cf8a7"),
+    "vad": ("mlx-community/silero-vad", "7bc17f22d3c0451bd3a6cd71e759b009271ff49a"),
+    "alignment": (
+        "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+        "0e1a68e91d815300c7c9754b2a7639378b23db15",
+    ),
+}
+_LEGACY_ASR_MODELS = {
+    "asr": ("iic/SenseVoiceSmall", "70514a3da51f1160f51d18449dab6128bbd4928b"),
+    "vad": (
+        "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+        "662fc7a38813d81305085696d59eb5b1141a204a",
+    ),
+}
 
 
 def default_config_path() -> Path:
@@ -77,23 +96,68 @@ class MediaSettings(BaseModel):
     frame_interval_seconds: int = 10
     scene_threshold: float = 0.35
     max_frames: int = 60
-    asr_provider: Literal["auto", "sensevoice", "whisper", "qwen3"] = "auto"
+    asr_provider: Literal["qwen3"] = "qwen3"
     ocr_provider: Literal["auto", "rapidocr", "vision"] = "auto"
-    asr_model: str = "iic/SenseVoiceSmall"
-    vad_model: str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
-    # Pin hub revisions so weight pulls stay reproducible.
-    # SenseVoice model.pt commit; FSMN-VAD tip of tag v2.0.4.
-    asr_model_revision: str = "70514a3da51f1160f51d18449dab6128bbd4928b"
-    vad_model_revision: str = "662fc7a38813d81305085696d59eb5b1141a204a"
-    asr_device: Literal["auto", "cpu", "mps"] = "auto"
-    whisper_provider: str = "auto"
-    whisper_model: str = "mlx-community/whisper-large-v3-turbo"
-    whisper_cli_model: str = "large-v3-turbo"
-    alignment_model: str = "mlx-community/Qwen3-ForcedAligner-0.6B-8bit"
-    alignment_model_revision: str = "0e1a68e91d815300c7c9754b2a7639378b23db15"
+    asr_model: str = _QWEN_DEFAULTS["asr"][0]
+    vad_model: str = _QWEN_DEFAULTS["vad"][0]
+    asr_model_revision: str = _QWEN_DEFAULTS["asr"][1]
+    vad_model_revision: str = _QWEN_DEFAULTS["vad"][1]
+    alignment_model: str = _QWEN_DEFAULTS["alignment"][0]
+    alignment_model_revision: str = _QWEN_DEFAULTS["alignment"][1]
     asr_language: str = "Chinese"
     asr_itn: bool = True
     asr_segment_seconds: int = Field(default=30, ge=5, le=60)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_asr(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        provider = data.get("asr_provider", "auto")
+        if not isinstance(provider, str) or provider not in {
+            "auto",
+            "sensevoice",
+            "whisper",
+            "qwen3",
+        }:
+            raise ValueError("未知 asr_provider；当前仅支持 qwen3")
+        legacy = provider != "qwen3"
+        changed = "asr_provider" in data and legacy
+        data["asr_provider"] = "qwen3"
+        for role, (default_model, default_revision) in _QWEN_DEFAULTS.items():
+            model_key, revision_key = f"{role}_model", f"{role}_model_revision"
+            explicit_model = model_key in data
+            model = data.get(model_key, default_model)
+            revision = data.get(revision_key)
+            old = _LEGACY_ASR_MODELS.get(role)
+            if old and (model == old[0] or (not explicit_model and revision == old[1])):
+                if revision is not None and revision != old[1]:
+                    raise ValueError(f"旧 {role}_model 自定义 revision 不能自动迁移")
+                data[model_key], data[revision_key] = default_model, default_revision
+                changed = True
+                continue
+            if legacy and explicit_model and role in {"asr", "vad"}:
+                expected = "qwen3-asr" if role == "asr" else "silero-vad"
+                if not isinstance(model, str) or expected not in model.lower():
+                    raise ValueError(f"未知旧 {role}_model；请显式配置 Qwen3 模型与 revision")
+            if explicit_model and revision is None:
+                raise ValueError(f"显式 {model_key} 必须提供 {revision_key}")
+            if revision is not None:
+                if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+                    raise ValueError(f"{revision_key} 必须为完整固定 SHA")
+                if revision in {pair[1] for pair in _LEGACY_ASR_MODELS.values()}:
+                    raise ValueError(f"{model_key} 不能沿用旧模型 revision")
+        retired = [
+            key
+            for key in data
+            if isinstance(key, str) and (key == "asr_device" or key.startswith("whisper_"))
+        ]
+        for key in retired:
+            data.pop(key)
+        if changed or retired:
+            logger.warning("旧 ASR 配置已在内存中迁移为 Qwen3；原配置文件未改写")
+        return data
 
     @field_validator("asr_language")
     @classmethod
@@ -222,9 +286,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         data = tomllib.load(handle)
     media = data.setdefault("media", {})
     if isinstance(media, dict):
-        # Upgrade path: configs written before asr/ocr_provider existed keep Whisper/Vision.
-        # Fresh AppConfig / render_default_config still default to "auto" (SenseVoice/RapidOCR).
-        media.setdefault("asr_provider", "whisper")
+        # ASR migrates in MediaSettings; legacy missing OCR keeps Vision.
         media.setdefault("ocr_provider", "vision")
     return AppConfig.model_validate(data)
 
@@ -290,10 +352,6 @@ asr_model = {_toml_string(cfg.media.asr_model)}
 vad_model = {_toml_string(cfg.media.vad_model)}
 asr_model_revision = {_toml_string(cfg.media.asr_model_revision)}
 vad_model_revision = {_toml_string(cfg.media.vad_model_revision)}
-asr_device = {_toml_string(cfg.media.asr_device)}
-whisper_provider = {_toml_string(cfg.media.whisper_provider)}
-whisper_model = {_toml_string(cfg.media.whisper_model)}
-whisper_cli_model = {_toml_string(cfg.media.whisper_cli_model)}
 alignment_model = {_toml_string(cfg.media.alignment_model)}
 alignment_model_revision = {_toml_string(cfg.media.alignment_model_revision)}
 asr_language = {_toml_string(cfg.media.asr_language)}

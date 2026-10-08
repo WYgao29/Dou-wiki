@@ -37,7 +37,7 @@ flowchart TD
     publish --> done[完成状态与事件]
 ```
 
-视频优先通过专用 Playwright Profile 获取媒体地址，再由下载工具落盘；失败时回退到页面下载。音轨由配置的 ASR 后端转录，视频抽帧与静态图文由 OCR 后端识字。`auto` 优先 SenseVoice 与 RapidOCR，初始化不可用时回退 Whisper 或 Vision；已有配置的兼容行为见根目录 README。
+视频优先通过专用 Playwright Profile 获取媒体地址，再由下载工具保存；失败时回退到页面下载。音轨只由 Qwen3-ASR 转录，使用 Silero 判断静音、ForcedAligner 计算时间，流式识别窗口最多 600 秒，主对齐窗口最多 180 秒，展示段默认最多 30 秒。源样本与字符归属完整；异常预测的有界重新对齐仍保持原文和严格时间检查，不能返回部分成功结果。视频抽帧与静态图文由 OCR 后端识字；`auto` 优先 RapidOCR，初始化不可用时使用 Vision。旧 ASR 配置在内存中迁移，不自动改写旧稿；详情见根目录 README。
 
 新视频由同一分析模型直接校正后继续入库，普通 ASR/OCR 疑点只记录，不新增人工复核步骤。旧 `needs_review` 任务可显式重试。授权失效、长视频需确认、模型错误等仍按对应任务状态处理。
 

@@ -25,7 +25,7 @@ from ..errors import (
     RegionRestrictedError,
     VideoUnavailableError,
 )
-from ..models import AuthCheckResult, OCRObservation, TranscriptSegment, VideoMetadata
+from ..models import AuthCheckResult, OCRObservation, VideoMetadata
 from .image_note import _acquire_file_lock, _release_file_lock
 from .share import extract_creator_sec_uid
 
@@ -1804,85 +1804,6 @@ class FFmpegMediaProcessor:
             if result.returncode == 0 and output.exists():
                 frames.append((timestamp_ms, output))
         return frames
-
-
-class WhisperTranscriber:
-    def __init__(self, settings: MediaSettings) -> None:
-        self.settings = settings
-        self.provenance: dict[str, str] = {}
-
-    async def transcribe(self, audio_path: Path, output_dir: Path) -> list[TranscriptSegment]:
-        return await asyncio.to_thread(self._transcribe_sync, audio_path, output_dir)
-
-    def _transcribe_sync(self, audio_path: Path, output_dir: Path) -> list[TranscriptSegment]:
-        provider = self.settings.whisper_provider
-        if provider in {"auto", "mlx"}:
-            try:
-                result = self._transcribe_mlx(audio_path)
-                self.provenance = {"provider": "whisper-mlx", "model": self.settings.whisper_model}
-                return result
-            except (ImportError, ModuleNotFoundError) as exc:
-                if provider == "mlx":
-                    raise ExternalToolError("未安装 mlx-whisper；运行 uv sync --extra mlx") from exc
-        result = self._transcribe_cli(audio_path, output_dir)
-        self.provenance = {"provider": "whisper-cli", "model": self.settings.whisper_cli_model}
-        return result
-
-    def _transcribe_mlx(self, audio_path: Path) -> list[TranscriptSegment]:
-        import mlx_whisper  # type: ignore[import-not-found]
-
-        result = mlx_whisper.transcribe(
-            str(audio_path),
-            path_or_hf_repo=self.settings.whisper_model,
-            language="zh",
-            word_timestamps=True,
-        )
-        return _segments_from_whisper(result.get("segments", []))
-
-    def _transcribe_cli(self, audio_path: Path, output_dir: Path) -> list[TranscriptSegment]:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        command = [
-            "whisper",
-            str(audio_path),
-            "--model",
-            self.settings.whisper_cli_model,
-            "--language",
-            "zh",
-            "--output_dir",
-            str(output_dir),
-            "--output_format",
-            "json",
-            "--word_timestamps",
-            "True",
-        ]
-        result = _run(command, timeout=14400)
-        _require_success(result, "whisper")
-        output = output_dir / f"{audio_path.stem}.json"
-        if not output.exists():
-            raise ExternalToolError("Whisper 未生成 JSON 逐字稿")
-        payload = json.loads(output.read_text(encoding="utf-8"))
-        return _segments_from_whisper(payload.get("segments", []))
-
-
-def _segments_from_whisper(segments: list[dict[str, Any]]) -> list[TranscriptSegment]:
-    converted: list[TranscriptSegment] = []
-    for index, segment in enumerate(segments):
-        avg_logprob = segment.get("avg_logprob")
-        confidence = None
-        if avg_logprob is not None:
-            confidence = max(0.0, min(1.0, 1.0 + float(avg_logprob) / 3.0))
-        converted.append(
-            TranscriptSegment(
-                id=int(segment.get("id", index)),
-                start_ms=max(0, int(float(segment.get("start", 0)) * 1000)),
-                end_ms=max(0, int(float(segment.get("end", 0)) * 1000)),
-                text=str(segment.get("text", "")).strip(),
-                avg_logprob=avg_logprob,
-                no_speech_prob=segment.get("no_speech_prob"),
-                confidence=confidence,
-            )
-        )
-    return converted
 
 
 class VisionOCR:

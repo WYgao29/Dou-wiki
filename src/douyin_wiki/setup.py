@@ -416,7 +416,7 @@ def doctor(config: AppConfig) -> dict[str, Any]:
             AnalysisMode.LOCAL: "校正与分析使用无 token 的本地降级逻辑",
         }[config.analysis_mode],
     }
-    for command in ("yt-dlp", "ffmpeg", "ffprobe", "whisper", "swift", "osascript", "git"):
+    for command in ("yt-dlp", "ffmpeg", "ffprobe", "swift", "osascript", "git"):
         checks[command] = {"ok": bool(shutil.which(command)), "path": shutil.which(command)}
     playwright_available = importlib.util.find_spec("playwright") is not None
     checks["playwright"] = {
@@ -532,52 +532,23 @@ def doctor(config: AppConfig) -> dict[str, Any]:
         if sentence_transformers
         else "未安装 embeddings extra；将使用字符 n-gram fallback",
     }
-    checks["mlx_whisper"] = {
-        "ok": importlib.util.find_spec("mlx_whisper") is not None,
-        "message": "未安装时自动使用 whisper CLI",
-    }
-    funasr_ok = importlib.util.find_spec("funasr") is not None
-    checks["funasr"] = {
-        "ok": funasr_ok,
-        "message": None if funasr_ok else "未安装 asr extra（funasr）；SenseVoice 不可用",
-    }
+    for retired in ("whisper", "mlx_whisper", "funasr"):
+        checks[retired] = {
+            "ok": False,
+            "retired": True,
+            "path": None,
+            "message": "旧识别引擎已移除；当前使用 Qwen3",
+        }
     rapidocr_ok = importlib.util.find_spec("rapidocr") is not None
     checks["rapidocr"] = {
         "ok": rapidocr_ok,
         "message": None if rapidocr_ok else "未安装 ocr extra（rapidocr）；RapidOCR 不可用",
     }
-    asr_provider = config.media.asr_provider
-    whisper_asr_ok = checks["mlx_whisper"]["ok"] or checks["whisper"]["ok"]
-    sensevoice_ok = checks["funasr"]["ok"]
-    if asr_provider == "qwen3":
-        checks["qwen3"] = qwen3_health(config.media)
-        transcription_ok = checks["qwen3"]["ok"]
-        transcription_message = checks["qwen3"]["message"]
-    elif asr_provider == "sensevoice":
-        transcription_ok = sensevoice_ok
-        transcription_message = (
-            None
-            if transcription_ok
-            else "asr_provider=sensevoice 但未安装 funasr；运行 uv sync --extra asr"
-        )
-    elif asr_provider == "whisper":
-        transcription_ok = whisper_asr_ok
-        transcription_message = (
-            None
-            if transcription_ok
-            else "asr_provider=whisper 但既未安装 MLX Whisper，也找不到 Whisper CLI"
-        )
-    else:
-        transcription_ok = sensevoice_ok or whisper_asr_ok
-        transcription_message = (
-            None
-            if transcription_ok
-            else "未安装 SenseVoice（uv sync --extra asr）且无 Whisper/MLX；视频无法转录"
-        )
+    checks["qwen3"] = qwen3_health(config.media)
     checks["transcription"] = {
-        "ok": transcription_ok,
-        "provider": asr_provider,
-        "message": transcription_message,
+        "ok": checks["qwen3"]["ok"],
+        "provider": "qwen3",
+        "message": checks["qwen3"]["message"],
     }
     ocr_provider = config.media.ocr_provider
     vision_ocr_ok = checks["swift"]["ok"]

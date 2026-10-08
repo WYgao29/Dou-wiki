@@ -500,7 +500,7 @@ def test_in_progress_filter_child_warnings_and_settings_aliases(tmp_path) -> Non
         health = client.get("/api/system/health").json()
         assert health["web"]["version"] == WEB_VERSION
         assert health["web"]["version"] != "0.2.0"
-        assert "SenseVoice" in health["media"]["asr_label"]
+        assert health["media"]["asr_label"] == "Qwen3-ASR"
         assert "RapidOCR" in health["media"]["ocr_label"]
         auth = client.get("/auth", follow_redirects=False)
         assert auth.status_code == 307

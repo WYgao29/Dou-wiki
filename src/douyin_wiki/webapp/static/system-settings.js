@@ -8,7 +8,6 @@
     "yt-dlp": "yt-dlp",
     ffmpeg: "FFmpeg",
     ffprobe: "FFprobe",
-    whisper: "Whisper CLI",
     swift: "Swift",
     osascript: "自动化脚本",
     git: "Git",
@@ -23,7 +22,6 @@
     llm: "后台模型",
     web_llm: "共用模型",
     embeddings: "向量检索",
-    mlx_whisper: "MLX Whisper",
     qwen3: "Qwen3-ASR 模型与依赖",
     transcription: "语音识别",
     ocr: "画面文字识别",
@@ -163,15 +161,13 @@
     const rows = D.node("div", null, "system-rows");
     const providerNames = {
       qwen3: "Qwen3-ASR 语音识别",
-      sensevoice: "SenseVoice 语音识别",
-      whisper: "Whisper 语音识别",
       rapidocr: "RapidOCR 文字识别",
       vision: "苹果 Vision 文字识别",
       auto: "自动选择",
     };
     Object.entries(CHECK_LABELS).forEach(([key, label]) => {
       const check = result[key];
-      if (!check || typeof check !== "object") return;
+      if (!check || typeof check !== "object" || check.retired) return;
       const provider = check.provider ? (providerNames[check.provider] || check.provider) : "";
       const value = provider ? `${check.ok ? "正常" : "异常"} · ${provider}` : (check.ok ? "正常" : "异常");
       const item = row(label, value, check.ok ? "authorized" : "failed");

@@ -369,7 +369,7 @@ async def test_explicit_qwen_has_no_legacy_fallback(fake_audio, tmp_path: Path) 
     selected._qwen3 = Qwen3Transcriber(settings(), runtime=FakeRuntime(fail=True))
     with pytest.raises(ExternalToolError):
         await selected.transcribe(tmp_path / "a.wav", tmp_path)
-    assert selected._whisper is selected._sensevoice is None
+    assert not hasattr(selected, "whisper") and not hasattr(selected, "sensevoice")
     assert selected.provenance == {}
 
 

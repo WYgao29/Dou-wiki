@@ -28,18 +28,18 @@ def test_media_engine_config_preserves_legacy_and_renders_new_defaults(tmp_path:
     legacy = tmp_path / "legacy.toml"
     legacy.write_text('[media]\nwhisper_provider = "mlx"\n', encoding="utf-8")
     old = load_config(legacy)
-    assert old.media.asr_provider == "whisper"
+    assert old.media.asr_provider == "qwen3"
     assert old.media.ocr_provider == "vision"
-    assert old.media.whisper_provider == "mlx"
+    assert not hasattr(old.media, "whisper_provider")
 
     rendered = render_default_config(AppConfig())
     new = tmp_path / "new.toml"
     new.write_text(rendered, encoding="utf-8")
     current = load_config(new)
-    assert current.media.asr_provider == "auto"
+    assert current.media.asr_provider == "qwen3"
     assert current.media.ocr_provider == "auto"
-    assert current.media.asr_model_revision.startswith("70514a3")
-    assert current.media.vad_model_revision == "662fc7a38813d81305085696d59eb5b1141a204a"
+    assert current.media.asr_model_revision == "e1f6c266914abc5a46e8756e02580f834a6cf8a7"
+    assert current.media.vad_model_revision == "7bc17f22d3c0451bd3a6cd71e759b009271ff49a"
 
     partial = tmp_path / "partial.toml"
     partial.write_text('[media]\nasr_provider = "sensevoice"\n', encoding="utf-8")
@@ -514,7 +514,7 @@ def test_doctor_transcription_and_ocr_follow_media_providers(tmp_path: Path, mon
     real_find = importlib_util.find_spec
 
     def fake_find(name, package=None):
-        if name in {"funasr", "rapidocr", "mlx_whisper"}:
+        if name in {"mlx_audio", "rapidocr"}:
             return None
         return real_find(name, package)
 
@@ -525,14 +525,13 @@ def test_doctor_transcription_and_ocr_follow_media_providers(tmp_path: Path, mon
     )
     checks = doctor(config)
     assert checks["transcription"]["ok"] is False
-    assert "SenseVoice" in (checks["transcription"]["message"] or "")
+    assert "mlx_audio" in (checks["transcription"]["message"] or "")
     assert checks["ocr"]["ok"] is False
     assert "RapidOCR" in (checks["ocr"]["message"] or "")
 
-    config.media.asr_provider = "whisper"
     config.media.ocr_provider = "vision"
     checks = doctor(config)
-    assert checks["transcription"]["provider"] == "whisper"
+    assert checks["transcription"]["provider"] == "qwen3"
     assert checks["ocr"]["provider"] == "vision"
     assert checks["ocr"]["ok"] is False
 
