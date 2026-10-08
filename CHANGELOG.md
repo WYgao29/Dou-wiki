@@ -8,7 +8,7 @@
 
 - 数词保护包含零时长词，避免百分数、小数或版本号被拆段后导致转写失败；整个数词零时长时继续归入一个邻组，保留原时间和展示上限检查。
 - 体检给出当前环境中 `hf` 的完整路径并正确处理参数引号；安装说明使用 `uv run --no-sync hf download`，支持未激活环境和项目外准备模型。
-- 新增 10 项回归，完整非 live 测试为 1276 passed / 2 deselected；Ruff、51 次既有对齐片段回放和实际 wheel 的环境命令检查通过。针对修复的复审无新问题，详见[修复与复审记录](docs/superpowers/reviews/2026-10-08-qwen3-asr-review-fixes.md)。
+- 已集成本地主线。新增 10 项回归，主线完整非 live 测试为 1276 passed / 2 deselected；Ruff、51 次既有对齐片段回放和实际 wheel 的环境命令检查通过。针对修复的复审无新问题，开发分支已删除、worktree 已归档，详见[修复与复审记录](docs/superpowers/reviews/2026-10-08-qwen3-asr-review-fixes.md)。
 
 ### Qwen3-ASR 替换（2026-10-08）
 

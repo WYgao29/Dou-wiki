@@ -56,3 +56,30 @@ git diff --check
 本轮新增验证使用合成对齐数据、既有对齐记录和实际安装包，没有重新运行模型推理或速度评测。真实素材质量、120 分钟耐久、首次安装性能例外及覆盖限制沿用[原验收记录](2026-10-08-qwen3-asr-acceptance.md)，不据此扩展质量结论。旧整体审查证据完整保留在同级 `branch-review-2026-10-08-ofsy2oqe` 目录。
 
 主 checkout 的未提交内容、现用 `.venv`、已安装服务、真实 Vault 和模型缓存均未修改。GitHub 集成与生产升级继续按后续明确指令执行。
+
+## 主线集成与清理（2026-10-08）
+
+用户随后要求合并主线、提交、删除分支和清理冗余。合并提交 `194a943b4a5607c3e0adde7c28c28926b59fcff3` 的两个父提交为主线 `5a3ce45` 与开发分支最终提交 `5702667`，合并没有冲突。主仓库中 171 个源码、测试、脚本和安装入口文件与已审查分支逐字节一致；运行代码仍包含 `4fd4f54` 的两项修复。
+
+合并结果使用仓库外环境验证，明确通过 `PYTHONPATH` 导入主仓库源码。完整回归为 **1276 passed / 2 deselected，176.00 秒**，Ruff 和差异检查通过。本阶段没有重新进行模型推理或性能测量。
+
+已删除本地分支 `codex/qwen3-asr`，通过 Codex 归档工具移除其工作目录及生成缓存，保留可恢复 Git 归档。归档标识为 `/Users/weisengao/.codex/worktrees/qwen3-asr/douyin-wiki`。此前不被 Git 归档包含的 75 份执行材料和 8 张截图均已复制并核对字节一致；主线原有三份草案亦保存完整副本和 patch。合并时使用的临时 stash 已删除，其他 stash 未修改。当前活动 worktree 为主仓库和 `visual-search-phase1`。
+
+执行证据位于：
+
+```text
+/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/main-integration-2026-10-08-c166m2vo
+```
+
+`pytest-main.log`、`ruff.log`、`main-import.json`、`source-and-backup-check.json` 记录主线验证；`before-merge.json`、`cleanup.json`、`main-before-merge/` 和 `worktree-ignored/` 保存清理范围与恢复材料。原真实验收和审查材料均保留。
+
+主线测试的复现命令在 `/Users/weisengao/Documents/ChatGPT/douyin-wiki` 执行。开发环境原先绑定旧 worktree 的源码，显式指定源码路径后直接验证主仓库：
+
+```bash
+ASR_VERIFY_ROOT=/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr
+PYTHONPATH="$PWD/src" UV_PROJECT_ENVIRONMENT="$ASR_VERIFY_ROOT/fresh-final" uv run --no-sync ruff check src tests
+PYTHONPATH="$PWD/src" UV_PROJECT_ENVIRONMENT="$ASR_VERIFY_ROOT/fresh-final" uv run --no-sync pytest -q -m 'not live'
+git diff --check
+```
+
+本机三项 LaunchAgent 仍引用主仓库的 `.venv/bin/python`，配置文件哈希保持一致。现用环境缺少 `mlx-audio`，MLX / Transformers 也尚未升级为已验收版本；本轮保留该环境、服务和真实 Vault，生产依赖升级仍待单独执行。本阶段仅完成本地主线集成，GitHub 上的 `main` 尚未更新。

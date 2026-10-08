@@ -17,13 +17,13 @@
 
 ## 近期完成
 
+[Qwen3 ASR 单引擎替换](superpowers/specs/2026-10-07-qwen3-asr-design.md)及两项审查修复已集成本地 `main`，语音识别只使用 Qwen3，旧运行实现与依赖声明已删除。主线完整回归为 1276 passed / 2 deselected；两条真实音轨、7200 秒耐久、离线、下游回放与安装包检查的证据和范围见[验收记录](superpowers/reviews/2026-10-08-qwen3-asr-acceptance.md)及[修复与复审记录](superpowers/reviews/2026-10-08-qwen3-asr-review-fixes.md)。用户已接受新安装环境首次约 39 秒准备、首次 10 分钟任务约 93 秒；后续新进程加载约 3.6 秒、10 分钟任务约 57.6 秒，原始超时记录保留。
+
+开发分支已删除，worktree 已归档，旧草案、日志、截图和验收证据保留，执行结果见[主线集成与清理](superpowers/reviews/2026-10-08-qwen3-asr-review-fixes.md#主线集成与清理2026-10-08)。生产环境依赖升级仍需单独执行。旧逐字稿继续读取；本期不做旧数据重转、热词或上下文提示，独立术语仓库留待后续方案。早期候选与失败记录见[可行性审查](superpowers/reviews/2026-10-07-qwen3-asr-feasibility.md)及[架构修订](superpowers/specs/2026-10-07-qwen3-asr-alignment-revision.md)。
+
 [收藏夹 API 读取设计](superpowers/specs/2026-10-04-favorites-api-reading-design.md)与[实施计划](superpowers/plans/2026-10-04-favorites-api-reading.md)已确认，实现及搜索反馈修复已集成主线。目录与指定夹使用网页原生请求及原始 JSON；真实账号目录、单夹、多夹和主动分页只读验收已完成，数量差异仍要求明确接受不完整清单。作品搜索筛选本次已读清单，刷新保留当前任务。使用契约见[收藏批量导入](favorites-import.md)。
 
 ## 开发中的功能
-
-[Qwen3 ASR 单引擎替换](superpowers/specs/2026-10-07-qwen3-asr-design.md)已在 `codex/qwen3-asr` 完成开发与验收，旧运行引擎已删除，删除后的全新环境回归为 1266 passed / 2 deselected。两条真实音轨、7200 秒耐久、离线、下游回放及 wheel CLI/MCP 检查通过，证据和范围见[验收记录](superpowers/reviews/2026-10-08-qwen3-asr-acceptance.md)与[实施计划](superpowers/plans/2026-10-07-qwen3-asr.md)。用户已接受新安装环境首次约 39 秒的依赖准备、首次 10 分钟任务约 93 秒；后续新进程加载约 3.6 秒，10 分钟任务约 57.6 秒。原始超时记录保留。主线集成与生产升级未执行。旧逐字稿继续读取；本期不做旧数据重转、热词或上下文提示，独立术语仓库留待后续方案。早期候选与失败记录见[可行性审查](superpowers/reviews/2026-10-07-qwen3-asr-feasibility.md)及[架构修订](superpowers/specs/2026-10-07-qwen3-asr-alignment-revision.md)。
-
-该分支整体审查发现的两项问题已在 `4fd4f54` 修复：零时长词保持完整数词分组，模型准备命令调用当前环境的 `hf`。最新完整回归为 1276 passed / 2 deselected，针对修复的复审没有新问题；验证证据和安装包检查见[修复与复审记录](superpowers/reviews/2026-10-08-qwen3-asr-review-fixes.md)。
 
 [Gateway token 优化规格](superpowers/specs/2026-10-03-gateway-token-optimization-design.md)与[实施计划](superpowers/plans/2026-10-03-gateway-token-optimization.md)已确认并在 `codex/gateway-token-optimization` 实现；现有四工具可显式选择协议 2，覆盖 OCR 投影、增量校正、证据引用与简短回执，默认保留旧协议。调用规范见 [Gateway 指南](gateway-agents.md#紧凑协议gateway_protocol2)；主线集成与真实客户端切换尚未执行。
 
