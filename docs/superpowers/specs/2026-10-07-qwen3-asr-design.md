@@ -132,7 +132,7 @@ ITN 在这里指把中文数词改写成数字，同时保留数值和单位。�
 
 删除旧引擎后移除本项目对 `funasr`、`kaldi-native-fbank`、`mlx-whisper` 的依赖。`torch` 仍可能被 Embedding 等功能使用，按最终依赖图决定保留，不能因旧 ASR 删除而一并卸载。
 
-首次模型准备和升级采用 README 中的显式 `hf download ... --revision <sha>` 命令，支持调用方设置 `HF_ENDPOINT`；普通任务和 doctor 不下载模型。Qwen ASR 与本次对齐权重为 Apache-2.0；Silero 上游为 MIT，MLX 转换模型卡未声明 license，记录该事实和上游来源，不随发行包分发任何权重。[Qwen 模型卡](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-bf16)、[Silero 上游许可](https://github.com/snakers4/silero-vad/blob/master/LICENSE)。
+首次模型准备和升级采用 README 中的显式 `uv run --no-sync hf download ... --revision <sha>` 命令，体检给出当前 Python 环境内 `hf` 的完整路径，支持调用方设置 `HF_ENDPOINT`；普通任务和 doctor 不下载模型。Qwen ASR 与本次对齐权重为 Apache-2.0；Silero 上游为 MIT，MLX 转换模型卡未声明 license，记录该事实和上游来源，不随发行包分发任何权重。[Qwen 模型卡](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-bf16)、[Silero 上游许可](https://github.com/snakers4/silero-vad/blob/master/LICENSE)。
 
 ## 配置、旧数据与运行行为
 
