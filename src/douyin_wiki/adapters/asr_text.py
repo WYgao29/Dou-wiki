@@ -183,6 +183,12 @@ def _blocked_prefix(text: str, start: int) -> bool:
     if start == 0:
         return False
     previous = text[start - 1]
+    if previous in "到至" and start >= 2:
+        before_range = text[start - 2]
+        if before_range in _NUMERAL_START or before_range.isdecimal():
+            # A shared trailing unit cannot make only the range's right side a
+            # standalone quantity (六到七分钟 -> 六到7分钟).
+            return True
     if previous in _VAGUE_PREFIX:
         return True
     return previous == "上" and text[start] in _LARGE_PREFIX

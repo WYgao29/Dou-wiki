@@ -25,6 +25,7 @@ ALIGNMENT_LIMIT_MS = 180_000
 ANCHOR_MAX_TOKENS = 2048
 MIN_ANCHOR_CHARS = 40
 MAX_REPAIR_MS = 2_000
+MAX_LOCAL_REALIGNS = 4
 TIMESTAMP_GRID_MS = 80
 MIN_SEGMENT_SECONDS = 5
 MAX_SEGMENT_SECONDS = 60
@@ -123,6 +124,7 @@ class BoundaryTrace:
     delta_ms: int
     preference: str
     token_index: int
+    anchor_shift_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -140,10 +142,21 @@ class RecognitionResult:
 
 
 @dataclass(frozen=True)
+class AlignmentRetry:
+    token_index: int
+    char_start: int
+    audio_start_sample: int
+    samples: int
+    original: AlignedToken
+    replacement: AlignedToken
+
+
+@dataclass(frozen=True)
 class WindowSegmentation:
     segments: tuple[DisplaySegment, ...]
     boundaries: tuple[BoundaryTrace, ...]
     time_limits: tuple[TimeLimit, ...]
+    retries: tuple[AlignmentRetry, ...] = ()
 
 
 class AudioSplitter(Protocol):
@@ -435,12 +448,16 @@ def segment_recognition_window(
         anchor_max_tokens,
         origin,
     )
+    retries: list[AlignmentRetry] = []
     display_tokens, piece_limits = _align_pieces(
         waveform,
         text,
         boundaries,
         aligner,
         origin,
+        recognizer=recognizer,
+        anchor_max_tokens=anchor_max_tokens,
+        retries=retries,
     )
     segments = group_display_segments(
         text,
@@ -458,10 +475,11 @@ def segment_recognition_window(
             boundary.delta_ms,
             boundary.preference,
             boundary.token_index,
+            boundary.anchor_shift_ms,
         )
         for boundary in boundaries
     )
-    return WindowSegmentation(segments, shifted, anchor_limits + piece_limits)
+    return WindowSegmentation(segments, shifted, anchor_limits + piece_limits, tuple(retries))
 
 
 def time_limit_summary(limits: Sequence[TimeLimit]) -> dict[str, int]:
@@ -961,22 +979,9 @@ def _cut_anchors(
     previous_sample = 0
     nominal_list = tuple(nominals)
     for index, nominal in enumerate(nominal_list):
-        anchor_start = (nominal - ALIGNMENT_SLACK_MS) * SAMPLE_RATE // 1000
-        anchor_end = (nominal + ALIGNMENT_SLACK_MS) * SAMPLE_RATE // 1000
-        if (
-            anchor_start < 0
-            or anchor_end > len(waveform)
-            or anchor_end - anchor_start != _ANCHOR_SAMPLES
-        ):
-            raise AsrSegmentationError("锚点超出音频", reason="alignment_window")
-        clip = waveform[anchor_start:anchor_end]
-        result = recognizer.recognize(
-            np.array(clip, dtype=np.float32, copy=True), max_tokens=anchor_max_tokens
+        anchor_start, clip, match, shift = _locate_anchor_audio(
+            waveform, text, nominal, recognizer, anchor_max_tokens
         )
-        query = getattr(result, "text", None)
-        if not isinstance(query, str):
-            raise AsrSegmentationError("识别结果缺少文本", reason="recognizer_result")
-        match = locate_anchor(text, query)
         source_slice = text[match.source_start : match.source_end]
         aligned = aligner.align(np.array(clip, dtype=np.float32, copy=True), source_slice)
         spans = map_source_spans(source_slice, [item.text for item in aligned])
@@ -1014,9 +1019,51 @@ def _cut_anchors(
             previous_sample=previous_sample,
             audio_end_sample=horizon,
         )
-        traces.append(trace)
+        traces.append(
+            BoundaryTrace(
+                trace.nominal_ms,
+                trace.sample,
+                trace.char_index,
+                trace.delta_ms,
+                trace.preference,
+                trace.token_index,
+                shift,
+            )
+        )
         previous_sample = trace.sample
     return tuple(traces), tuple(limits)
+
+
+def _locate_anchor_audio(
+    waveform: np.ndarray,
+    text: str,
+    nominal: int,
+    recognizer: Recognizer,
+    max_tokens: int,
+) -> tuple[int, np.ndarray, AnchorMatch, int]:
+    """Retry poor-distance queries nearby, keeping the same match and cut guards."""
+    last_error = None
+    for shift in (0, 5_000, -5_000):
+        start = (nominal - ALIGNMENT_SLACK_MS + shift) * SAMPLE_RATE // 1000
+        end = start + _ANCHOR_SAMPLES
+        if start < 0 or end > len(waveform):
+            continue
+        clip = np.array(waveform[start:end], dtype=np.float32, copy=True)
+        result = recognizer.recognize(clip, max_tokens=max_tokens)
+        query = getattr(result, "text", None)
+        if not isinstance(query, str):
+            raise AsrSegmentationError("识别结果缺少文本", reason="recognizer_result")
+        try:
+            match = locate_anchor(text, query)
+        except AsrSegmentationError as exc:
+            if exc.reason != "anchor_distance":
+                raise
+            last_error = exc
+            continue
+        return start, clip, match, shift
+    if last_error is not None:
+        raise last_error
+    raise AsrSegmentationError("锚点超出音频", reason="alignment_window")
 
 
 def _align_pieces(
@@ -1025,12 +1072,17 @@ def _align_pieces(
     boundaries: Sequence[BoundaryTrace],
     aligner: Aligner,
     origin: int,
+    *,
+    recognizer: Recognizer | None = None,
+    anchor_max_tokens: int = ANCHOR_MAX_TOKENS,
+    retries: list[AlignmentRetry] | None = None,
 ) -> tuple[tuple[OperationalToken, ...], tuple[TimeLimit, ...]]:
     sample_edges = [0, *[boundary.sample for boundary in boundaries], len(waveform)]
     char_edges = [0, *[boundary.char_index for boundary in boundaries], len(text)]
     file_end = origin + len(waveform)
     display: list[OperationalToken] = []
     limits: list[TimeLimit] = []
+    retry_records = [] if retries is None else retries
     pieces = zip(sample_edges[:-1], sample_edges[1:], char_edges[:-1], char_edges[1:], strict=True)
     for sample_start, sample_end, char_start, char_end in pieces:
         if sample_end <= sample_start or sample_end - sample_start > _LIMIT_SAMPLES:
@@ -1041,12 +1093,35 @@ def _align_pieces(
         slice_text = text[char_start:char_end]
         aligned = aligner.align(np.array(piece, dtype=np.float32, copy=True), slice_text)
         spans = map_source_spans(slice_text, [item.text for item in aligned])
-        operational, piece_limits = bound_alignment_times(
-            aligned,
-            spans,
-            window_limit_ms=samples_to_ms(len(piece)),
-            audio_start_sample=origin + sample_start,
-        )
+        try:
+            operational, piece_limits = bound_alignment_times(
+                aligned,
+                spans,
+                window_limit_ms=samples_to_ms(len(piece)),
+                audio_start_sample=origin + sample_start,
+            )
+        except AsrSegmentationError as exc:
+            if exc.reason != "gross_repair" or recognizer is None:
+                raise
+            aligned, local_limits = _realign_anomalies(
+                piece,
+                slice_text,
+                aligned,
+                spans,
+                recognizer,
+                aligner,
+                anchor_max_tokens,
+                origin + sample_start,
+                char_start,
+                retry_records,
+            )
+            operational, piece_limits = bound_alignment_times(
+                aligned,
+                spans,
+                window_limit_ms=samples_to_ms(len(piece)),
+                audio_start_sample=origin + sample_start,
+            )
+            limits.extend(local_limits)
         limits.extend(
             TimeLimit(
                 item.token_index,
@@ -1074,6 +1149,97 @@ def _align_pieces(
                 )
             )
     return tuple(display), tuple(limits)
+
+
+def _realign_anomalies(
+    audio: np.ndarray,
+    text: str,
+    tokens: Sequence[AlignedToken],
+    spans: Sequence[tuple[int, int]],
+    recognizer: Recognizer,
+    aligner: Aligner,
+    max_tokens: int,
+    origin: int,
+    char_origin: int,
+    retries: list[AlignmentRetry],
+) -> tuple[tuple[AlignedToken, ...], tuple[TimeLimit, ...]]:
+    """Reject gross predictions; obtain independent local predictions once per word.
+
+    The anchor still locates the unchanged source. Only identical word positions
+    may receive a new prediction. All local and combined times pass the original
+    guards; no interpolation or threshold relaxation is performed.
+    """
+    anomalies = []
+    for index, token in enumerate(tokens):
+        raw_start, raw_end, start, end = (
+            _as_milliseconds(value)
+            for value in (
+                token.raw_start_ms,
+                token.raw_end_ms,
+                token.native_start_ms,
+                token.native_end_ms,
+            )
+        )
+        if end < start:
+            raise AsrSegmentationError("对齐时间倒序", reason="disordered")
+        if max(abs(raw_start - start), abs(raw_end - end)) > MAX_REPAIR_MS:
+            anomalies.append(index)
+    if len(anomalies) + len(retries) > MAX_LOCAL_REALIGNS:
+        raise AsrSegmentationError("局部对齐重试预算耗尽", reason="realign_budget")
+    if len(audio) < _ANCHOR_SAMPLES:
+        raise AsrSegmentationError("异常片段不足 30 秒，无法局部对齐", reason="gross_repair")
+    replacements = list(tokens)
+    limits: list[TimeLimit] = []
+    for index in anomalies:
+        original = tokens[index]
+        center = min(
+            max(int(original.native_start_ms), ALIGNMENT_SLACK_MS),
+            len(audio) * 1000 // SAMPLE_RATE - ALIGNMENT_SLACK_MS,
+        )
+        offset_ms = center - ALIGNMENT_SLACK_MS
+        offset = offset_ms * SAMPLE_RATE // 1000
+        clip = np.array(audio[offset : offset + _ANCHOR_SAMPLES], dtype=np.float32, copy=True)
+        query = getattr(recognizer.recognize(clip, max_tokens=max_tokens), "text", None)
+        if not isinstance(query, str):
+            raise AsrSegmentationError("识别结果缺少文本", reason="recognizer_result")
+        match = locate_anchor(text, query)
+        local_text = text[match.source_start : match.source_end]
+        local = aligner.align(clip, local_text)
+        local_spans = map_source_spans(local_text, [item.text for item in local])
+        _, local_limits = bound_alignment_times(
+            local,
+            local_spans,
+            window_limit_ms=samples_to_ms(len(clip)),
+            audio_start_sample=origin + offset,
+        )
+        candidates = [
+            token
+            for token, span in zip(local, local_spans, strict=True)
+            if match.source_start + span[0] == spans[index][0] and token.text == original.text
+        ]
+        if len(candidates) != 1:
+            raise AsrSegmentationError("局部对齐没有定位异常词", reason="anchor_token_missing")
+        token = candidates[0]
+        replacement = AlignedToken(
+            token.text,
+            int(token.raw_start_ms) + offset_ms,
+            int(token.raw_end_ms) + offset_ms,
+            int(token.native_start_ms) + offset_ms,
+            int(token.native_end_ms) + offset_ms,
+        )
+        replacements[index] = replacement
+        retries.append(
+            AlignmentRetry(
+                index,
+                char_origin + spans[index][0],
+                origin + offset,
+                len(clip),
+                original,
+                replacement,
+            )
+        )
+        limits.extend(local_limits)
+    return tuple(replacements), tuple(limits)
 
 
 def _ms_on_slice(origin_sample: int, local_ms: int, end_sample: int) -> int:

@@ -133,6 +133,7 @@ class Qwen3Transcriber:
                             "internal_segments": full.internal_segments,
                             "boundaries": [asdict(item) for item in aligned.boundaries],
                             "time_limits": [asdict(item) for item in aligned.time_limits],
+                            "alignment_retries": [asdict(item) for item in aligned.retries],
                             "display_source_spans": [
                                 (s.char_start, s.char_end) for s in aligned.segments
                             ],

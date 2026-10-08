@@ -219,3 +219,8 @@ def test_protected_number_spans_follow_the_existing_converter() -> None:
     assert normalize_zh_numbers("五点六") == "5.6"
     assert normalize_zh_numbers("Fable五点六三个模型") == "Fable 5.6 三个模型"
     assert protected_number_spans("") == ()
+
+
+@pytest.mark.parametrize("phrase", ["六到七分钟", "十五到二十分钟", "三至四小时", "5到七分钟"])
+def test_shared_unit_range_is_not_partially_converted(phrase: str) -> None:
+    assert normalize_zh_numbers(phrase) == phrase

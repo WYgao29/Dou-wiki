@@ -830,6 +830,43 @@ def test_align_second_anchor_failure_does_not_align_the_remainder() -> None:
     assert [text for _length, text in aligner.calls] == [phrase]
 
 
+def test_distant_anchor_can_retry_adjacent_audio_without_loosening_match() -> None:
+    phrase = "".join(chr(0x4E80 + i) for i in range(60))
+    source = "前" * 40 + phrase + "后" * 40
+    distant = "嚓" * 10 + phrase[10:]
+    recognizer = ScriptedRecognizer([distant, phrase])
+    aligner = ScriptedAligner(
+        {
+            phrase: [
+                _token(phrase[:20], 0, 10_000),
+                _token(phrase[20:40], 10_000, 20_000),
+                _token(phrase[40:], 20_000, 30_000),
+            ]
+        }
+    )
+    result = segment_recognition_window(
+        np.zeros(200 * SAMPLE_RATE),
+        source,
+        recognizer=recognizer,
+        aligner=aligner,
+    )
+    assert "".join(s.text for s in result.segments) == source
+    assert recognizer.calls == [(30 * SAMPLE_RATE, ANCHOR_MAX_TOKENS)] * 2
+    assert result.boundaries[0].anchor_shift_ms == 5_000
+    assert result.boundaries[0].sample == 150 * SAMPLE_RATE
+    assert result.boundaries[0].delta_ms == 0
+    recognizer = ScriptedRecognizer([distant] * 3)
+    with pytest.raises(AsrSegmentationError) as failed:
+        segment_recognition_window(
+            np.zeros(200 * SAMPLE_RATE),
+            source,
+            recognizer=recognizer,
+            aligner=aligner,
+        )
+    assert failed.value.reason == "anchor_distance"
+    assert len(recognizer.calls) == 3
+
+
 def test_align_short_window_offsets_public_time_without_an_anchor() -> None:
     text = "你好，世界。"
     audio = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
@@ -849,6 +886,89 @@ def test_align_short_window_offsets_public_time_without_an_anchor() -> None:
     assert [(item.start_ms, item.end_ms, item.text) for item in result.segments] == [
         (600_000, 610_000, text)
     ]
+
+
+def _anomalous_alignment():
+    source = "".join(chr(0x4E80 + i) for i in range(120))
+    good = []
+    for i, char in enumerate(source):
+        start = i * 500 if i < 55 else 32_000 + (i - 55) * 500
+        good.append(_token(char, start, start + 500))
+    good[54] = _token(source[54], 27_120, 27_440)
+    broken = list(good)
+    broken[54] = _token(source[54], 30_320, 30_320, raw=(30_320, 27_040))
+    query = source[40:80]
+    local = [
+        _token(t.text, t.native_start_ms - 15_320, t.native_end_ms - 15_320) for t in good[40:80]
+    ]
+    return source, broken, query, local
+
+
+def test_gross_prediction_is_replaced_by_new_local_alignment_not_interpolation() -> None:
+    source, broken, query, local = _anomalous_alignment()
+    recognizer = ScriptedRecognizer([query])
+    aligner = ScriptedAligner({source: broken, query: local})
+    result = segment_recognition_window(
+        np.zeros(150 * SAMPLE_RATE), source, recognizer=recognizer, aligner=aligner
+    )
+    assert "".join(s.text for s in result.segments) == source
+    assert recognizer.calls == [(30 * SAMPLE_RATE, ANCHOR_MAX_TOKENS)]
+    assert aligner.calls == [(150 * SAMPLE_RATE, source), (30 * SAMPLE_RATE, query)]
+    assert len(result.retries) == 1
+    retry = result.retries[0]
+    assert retry.original == broken[54]
+    assert (retry.replacement.native_start_ms, retry.replacement.native_end_ms) == (27_120, 27_440)
+    assert retry.audio_start_sample == 15_320 * SAMPLE_RATE // 1000
+
+
+@pytest.mark.parametrize("failure", ["unmatched", "still_invalid", "overlapping"])
+def test_local_realign_failure_keeps_the_whole_task_failed(failure: str) -> None:
+    source, broken, query, local = _anomalous_alignment()
+    if failure == "unmatched":
+        query = "丙" * 40
+    elif failure == "still_invalid":
+        local[14] = _token(source[54], 15_000, 15_000, raw=(15_000, 11_000))
+    else:
+        local[14] = _token(source[54], 10_000, 10_500)
+    with pytest.raises(AsrSegmentationError) as failed:
+        segment_recognition_window(
+            np.zeros(150 * SAMPLE_RATE),
+            source,
+            recognizer=ScriptedRecognizer([query]),
+            aligner=ScriptedAligner({source: broken, query: local}),
+        )
+    expected = {
+        "unmatched": "anchor_no_match",
+        "still_invalid": "gross_repair",
+        "overlapping": "disordered",
+    }
+    assert failed.value.reason == expected[failure]
+
+
+def test_local_realign_budget_is_bounded_and_invalid_values_do_not_retry() -> None:
+    source, broken, query, local = _anomalous_alignment()
+    for index in range(5):
+        broken[index] = _token(source[index], 0, 0, raw=(0, 3000))
+    recognizer = ScriptedRecognizer([])
+    with pytest.raises(AsrSegmentationError) as failed:
+        segment_recognition_window(
+            np.zeros(150 * SAMPLE_RATE),
+            source,
+            recognizer=recognizer,
+            aligner=ScriptedAligner({source: broken, query: local}),
+        )
+    assert failed.value.reason == "realign_budget"
+    assert recognizer.calls == []
+    broken[0] = _token(source[0], 0, 0, raw=(-1, 0))
+    with pytest.raises(AsrSegmentationError) as failed:
+        segment_recognition_window(
+            np.zeros(150 * SAMPLE_RATE),
+            source,
+            recognizer=recognizer,
+            aligner=ScriptedAligner({source: broken}),
+        )
+    assert failed.value.reason == "negative"
+    assert recognizer.calls == []
 
 
 def test_time_keeps_raw_and_native_and_limits_one_grid() -> None:
@@ -1173,7 +1293,15 @@ def test_public_signatures_match_the_task4_contract() -> None:
         ),
         (
             BoundaryTrace,
-            ("nominal_ms", "sample", "char_index", "delta_ms", "preference", "token_index"),
+            (
+                "nominal_ms",
+                "sample",
+                "char_index",
+                "delta_ms",
+                "preference",
+                "token_index",
+                "anchor_shift_ms",
+            ),
         ),
         (DisplaySegment, ("text", "start_ms", "end_ms", "char_start", "char_end")),
         (
