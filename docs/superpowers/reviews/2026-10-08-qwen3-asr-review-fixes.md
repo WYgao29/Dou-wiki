@@ -82,4 +82,37 @@ PYTHONPATH="$PWD/src" UV_PROJECT_ENVIRONMENT="$ASR_VERIFY_ROOT/fresh-final" uv r
 git diff --check
 ```
 
-本机三项 LaunchAgent 仍引用主仓库的 `.venv/bin/python`，配置文件哈希保持一致。现用环境缺少 `mlx-audio`，MLX / Transformers 也尚未升级为已验收版本；本轮保留该环境、服务和真实 Vault，生产依赖升级仍待单独执行。本阶段仅完成本地主线集成，GitHub 上的 `main` 尚未更新。
+主线集成时，本机三项 LaunchAgent 仍引用主仓库的 `.venv/bin/python`，配置文件哈希保持一致。现用环境缺少 `mlx-audio`，MLX / Transformers 也尚未升级为已验收版本；该阶段保留该环境、服务和真实 Vault，生产依赖升级待后续明确指令执行。该阶段仅完成本地主线集成，GitHub 上的 `main` 尚未更新。
+
+## 本机依赖升级与服务验收（2026-10-08）
+
+用户随后要求安装所需依赖、重启本地服务并检查。运行源码为主线 `b57b6b4`，本阶段没有修改运行代码。停止服务前确认没有排队或持有任务租约的任务，备份原配置、三份 LaunchAgent plist 和原 `.venv` 的 APFS clone 副本，再按锁文件同步现用环境：
+
+```bash
+UV_PROJECT_ENVIRONMENT=/Users/weisengao/Documents/ChatGPT/douyin-wiki/.venv uv sync --frozen --offline --extra dev --extra embeddings --extra qwen3 --extra ocr
+uv pip check --python /Users/weisengao/Documents/ChatGPT/douyin-wiki/.venv/bin/python
+```
+
+安装使用已有缓存。Python 保持 3.12.13；`mlx-audio==0.5.8`、`mlx==0.32.3`、`mlx-metal==0.32.3`、`transformers==5.19.0`、`soundfile==0.14.0` 已就绪，OCR、embeddings 与开发依赖也按锁文件保留。100 个包的依赖兼容检查通过，`funasr` 和 `mlx_whisper` 已从运行环境移除，主包从主仓库源码导入。
+
+Web、Worker 已重新注册并启动，当前健康接口显示 `Qwen3-ASR`，Worker 心跳持续更新，Web PID 2116、Worker PID 2114 在本轮检查中保持稳定。定时维护恢复原每周计划，本次未主动触发维护。原配置和三份 plist 的哈希保持一致，原任务状态数量未变化，新服务日志未见运行异常。
+
+| 检查 | 结果 |
+| --- | --- |
+| Qwen3 缓存 | ASR、VAD、ForcedAligner 的固定 revision 本地快照完整，Web doctor 总体通过 |
+| 真实转写 | 使用现用解释器与原验收素材的 90 秒片段；已有缓存下初始化 6.926 秒，转写 7.589 秒，共 3 段，最长 30000 ms；时间及字符覆盖检查通过，无联网尝试 |
+| 向量模型 | 缓存 `BAAI/bge-small-zh-v1.5` 实际生成两个 512 维向量，无加载错误 |
+| OCR | RapidOCR 使用已有 PP-OCRv6 small ONNX 模型完成独立生成图片的实际识别 |
+| MCP | 现用安装入口完成握手，44 个公开工具与源码一致，未调用业务工具 |
+| Web 与 CLI | 6 个页面/API 和 15 个不同静态资源 URL 检查通过；CLI doctor 本地化总体结果为“是” |
+| 本地模型服务 | 补充检查发现 oMLX 此前未运行；使用已有 `omlx start --timeout 30` 恢复端口 8000，配置模型 `Qwen3.6-35B-A3B-4bit` 实际请求返回 `OK`，耗时 9.199 秒，包含模型加载；oMLX settings 哈希保持一致 |
+
+执行证据与恢复材料位于：
+
+```text
+/Users/weisengao/asr/verification/2026-10-07-qwen3-asr-mv_d_dtr/production-upgrade-2026-10-08-yoo2oyix
+```
+
+`REPORT.md` 汇总结果；`configuration-before/`、`venv-before-upgrade/`、`freeze-before.txt` 与环境清单保存升级前材料。依赖安装、实际转写、OCR、向量模型、MCP、HTTP、CLI、本地模型请求及重启后日志各自保留记录，最终状态见 `final-verification.json`。
+
+本轮结果写入独立验证目录，没有下载新视频或重新转写用户旧资料。完整质量评分、120 分钟耐久和整套离线回归沿用此前验收，本轮没有重复这些测量。浏览器登录是否仍有效没有通过下载任务验证。
