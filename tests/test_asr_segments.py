@@ -39,6 +39,7 @@ from douyin_wiki.adapters.asr_segments import (
     segment_recognition_window,
     time_limit_summary,
 )
+from douyin_wiki.adapters.asr_text import render_normalized_slices
 
 WINDOW_SAMPLES = 600 * SAMPLE_RATE
 TAIL_SAMPLES = SAMPLE_RATE
@@ -1091,6 +1092,103 @@ def test_time_zero_length_tokens_join_neighbors_and_cannot_form_a_segment() -> N
             duration_ms=2_000,
         )
     assert alone.value.reason == "zero_length_segment"
+
+
+@pytest.mark.parametrize("segment_seconds", [5, 30, 60])
+def test_zero_duration_numeric_prefix_stays_with_the_whole_percentage(
+    segment_seconds: int,
+) -> None:
+    source = "涨幅百分之九十"
+    limit_ms = segment_seconds * 1000
+    prefix_end = ((limit_ms - 1200) // 80) * 80
+    middle = (prefix_end // 2 // 80) * 80
+    digit_start = (limit_ms // 80) * 80
+    duration_ms = digit_start + 2000
+    times = [
+        (0, middle),
+        (middle, prefix_end),
+        (prefix_end, prefix_end),
+        (prefix_end, prefix_end),
+        (prefix_end, prefix_end),
+        (digit_start, digit_start + 800),
+        (digit_start + 800, duration_ms),
+    ]
+    aligned = [_token(char, start, end) for char, (start, end) in zip(source, times, strict=True)]
+    tokens, limits = bound_alignment_times(
+        aligned, map_source_spans(source, list(source)), window_limit_ms=duration_ms
+    )
+
+    segments = group_display_segments(
+        source, tokens, segment_seconds=segment_seconds, duration_ms=duration_ms
+    )
+
+    assert limits == ()
+    assert [(item.text, item.start_ms, item.end_ms) for item in segments] == [
+        ("涨幅", 0, prefix_end),
+        ("百分之九十", prefix_end, duration_ms),
+    ]
+    spans = tuple((item.char_start, item.char_end) for item in segments)
+    assert spans == ((0, 2), (2, len(source)))
+    assert render_normalized_slices(source, spans, itn=True) == ("涨幅", "90%")
+    assert render_normalized_slices(source, spans, itn=False) == ("涨幅", "百分之九十")
+    assert all(0 < item.end_ms - item.start_ms <= limit_ms for item in segments)
+
+
+@pytest.mark.parametrize(
+    ("expression", "words", "normalized"),
+    [("五点六", ["五", "点", "六"], "5.6"), ("Fable五", ["Fable", "五"], "Fable 5")],
+)
+def test_zero_duration_words_stay_inside_a_decimal_or_version(
+    expression: str, words: list[str], normalized: str
+) -> None:
+    source = "甲" + expression
+    times = [(0, 4_000)] + [(4_000, 4_000)] * (len(words) - 1) + [(4_000, 6_000)]
+    tokens = _operational(source, ["甲", *words], times)
+
+    segments = group_display_segments(source, tokens, segment_seconds=5, duration_ms=6_000)
+
+    assert [(item.text, item.start_ms, item.end_ms) for item in segments] == [
+        ("甲", 0, 4_000),
+        (expression, 4_000, 6_000),
+    ]
+    spans = tuple((item.char_start, item.char_end) for item in segments)
+    assert render_normalized_slices(source, spans, itn=True) == ("甲", normalized)
+
+
+@pytest.mark.parametrize(
+    ("source", "times", "expected"),
+    [
+        (
+            "甲百分之九十乙",
+            [(0, 4_000)] + [(4_000, 4_000)] * 5 + [(4_000, 8_000)],
+            [("甲90%", 0, 4_000), ("乙", 4_000, 8_000)],
+        ),
+        (
+            "百分之九十甲",
+            [(0, 0)] * 5 + [(0, 4_000)],
+            [("90%甲", 0, 4_000)],
+        ),
+        (
+            "甲百分之九十",
+            [(0, 4_000)] + [(4_000, 4_000)] * 5,
+            [("甲90%", 0, 4_000)],
+        ),
+    ],
+)
+def test_entirely_zero_duration_number_joins_one_timed_neighbor(
+    source: str, times: list[tuple[int, int]], expected: list[tuple[str, int, int]]
+) -> None:
+    tokens = _operational(source, list(source), times)
+    segments = group_display_segments(
+        source, tokens, segment_seconds=5, duration_ms=times[-1][1]
+    )
+    spans = tuple((item.char_start, item.char_end) for item in segments)
+    assert "".join(item.text for item in segments) == source
+    rendered = render_normalized_slices(source, spans, itn=True)
+    assert [
+        (text, item.start_ms, item.end_ms)
+        for text, item in zip(rendered, segments, strict=True)
+    ] == expected
 
 
 def test_time_public_bounds_are_integers_inside_the_source() -> None:

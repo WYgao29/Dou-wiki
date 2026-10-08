@@ -852,6 +852,7 @@ def _display_atoms(
 ) -> tuple[_Atom, ...]:
     count = len(tokens)
     parent = list(range(count))
+    has_duration = [int(token.start_ms) < int(token.end_ms) for token in tokens]
 
     def find(index: int) -> int:
         while parent[index] != index:
@@ -864,6 +865,7 @@ def _display_atoms(
         right_root = find(right)
         if left_root != right_root:
             parent[right_root] = left_root
+            has_duration[left_root] = has_duration[left_root] or has_duration[right_root]
 
     def overlaps(token: OperationalToken, span: tuple[int, int]) -> bool:
         return int(token.char_start) < span[1] and int(token.char_end) > span[0]
@@ -871,15 +873,13 @@ def _display_atoms(
     for token in tokens:
         if int(token.start_ms) > int(token.end_ms):
             raise AsrSegmentationError("展示时间倒序", reason="time_bounds")
-    positives = [
-        index for index, token in enumerate(tokens) if int(token.start_ms) < int(token.end_ms)
-    ]
     for span in spans:
-        members = [index for index in positives if overlaps(tokens[index], span)]
+        members = [index for index, token in enumerate(tokens) if overlaps(token, span)]
         for other in members[1:]:
             union(members[0], other)
-    for index, token in enumerate(tokens):
-        if int(token.start_ms) < int(token.end_ms):
+    for index in range(count):
+        # Zero-time words inside a timed numeral already have a valid display group.
+        if has_duration[find(index)]:
             continue
         if any(
             int(tokens[earlier].start_ms) < int(tokens[earlier].end_ms) for earlier in range(index)

@@ -325,6 +325,44 @@ async def test_transcriber_returns_integer_segments_and_provenance(
 
 
 @pytest.mark.asyncio
+async def test_transcriber_normalizes_a_percentage_with_zero_duration_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class ZeroPrefixRuntime(FakeRuntime):
+        def align(self, audio, text, *, language):
+            times = [
+                (0, 16_000),
+                (16_000, 28_800),
+                (28_800, 28_800),
+                (28_800, 28_800),
+                (28_800, 28_800),
+                (30_000, 30_800),
+                (30_800, 32_000),
+            ]
+            return [
+                AlignedToken(char, start, end, start, end)
+                for char, (start, end) in zip(text, times, strict=True)
+            ]
+
+    monkeypatch.setattr(
+        "douyin_wiki.adapters.qwen3_asr.iter_recognition_windows",
+        lambda *_args: iter([RecognitionWindow(0, np.ones(40 * 16000, dtype=np.float32))]),
+    )
+    runtime = ZeroPrefixRuntime(text="涨幅百分之九十")
+    engine = Qwen3Transcriber(settings(), runtime=runtime)
+
+    result = await engine.transcribe(tmp_path / "percentage.wav", tmp_path)
+
+    assert [(item.id, item.text, item.start_ms, item.end_ms) for item in result] == [
+        (0, "涨幅", 0, 28_800),
+        (1, "90%", 28_800, 32_000),
+    ]
+    assert engine.last_trace[0]["raw_text"] == "涨幅百分之九十"
+    assert engine.last_trace[0]["display_source_spans"] == [(0, 2), (2, 7)]
+    assert runtime.cleared == 0
+
+
+@pytest.mark.asyncio
 async def test_failure_clears_state_and_next_task_works(fake_audio, tmp_path: Path) -> None:
     runtime = FakeRuntime(fail=True)
     engine = Qwen3Transcriber(settings(), runtime=runtime)

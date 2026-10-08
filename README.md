@@ -81,9 +81,9 @@ uv sync --extra dev --extra embeddings --extra asr --extra ocr --extra mlx
 Qwen3-ASR 使用 Apple Silicon 上的 `uv sync --extra qwen3`，依赖已固定为 `mlx-audio==0.5.8`。普通转写和体检只读取本地缓存，不自动下载三份模型。首次准备模型时执行：
 
 ```bash
-hf download mlx-community/Qwen3-ASR-1.7B-bf16 --revision e1f6c266914abc5a46e8756e02580f834a6cf8a7 --include '*.safetensors' '*.json' '*.txt'
-hf download mlx-community/silero-vad --revision 7bc17f22d3c0451bd3a6cd71e759b009271ff49a --include '*.safetensors' '*.json' '*.txt'
-hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revision 0e1a68e91d815300c7c9754b2a7639378b23db15 --include '*.safetensors' '*.json' '*.txt'
+uv run --no-sync hf download mlx-community/Qwen3-ASR-1.7B-bf16 --revision e1f6c266914abc5a46e8756e02580f834a6cf8a7 --include '*.safetensors' '*.json' '*.txt'
+uv run --no-sync hf download mlx-community/silero-vad --revision 7bc17f22d3c0451bd3a6cd71e759b009271ff49a --include '*.safetensors' '*.json' '*.txt'
+uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revision 0e1a68e91d815300c7c9754b2a7639378b23db15 --include '*.safetensors' '*.json' '*.txt'
 ```
 
 需要镜像时由调用方设置 `HF_ENDPOINT` 后执行准备命令；准备成功后转写继续离线。显式 Qwen 配置同时填写 `asr_provider="qwen3"`、上述 ASR/VAD 模型及各自 `asr_model_revision` / `vad_model_revision`；对齐模型/SHA、`asr_language="Chinese"`、`asr_itn=true`、`asr_segment_seconds=30` 使用配置默认值。识别窗口最多 600 秒，对齐窗口最多 180 秒，展示段最长 5–60 秒；本期不传热词或上下文提示。Qwen ASR 与对齐权重遵循 Apache-2.0，Silero 上游为 MIT，MLX 转换模型卡未声明许可，项目不分发权重。

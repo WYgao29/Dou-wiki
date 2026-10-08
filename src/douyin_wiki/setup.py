@@ -6,10 +6,12 @@ import os
 import platform
 import plistlib
 import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import tomllib
 from enum import StrEnum
@@ -58,8 +60,18 @@ def qwen3_health(settings) -> dict[str, Any]:
         ("alignment", settings.alignment_model, settings.alignment_model_revision),
     ):
         path = Path(cache) / ("models--" + repo.replace("/", "--")) / "snapshots" / revision
-        command = (
-            f"hf download {repo} --revision {revision} --include '*.safetensors' '*.json' '*.txt'"
+        command = shlex.join(
+            [
+                str(Path(sysconfig.get_path("scripts")) / "hf"),
+                "download",
+                repo,
+                "--revision",
+                revision,
+                "--include",
+                "*.safetensors",
+                "*.json",
+                "*.txt",
+            ]
         )
         reason = None
         try:

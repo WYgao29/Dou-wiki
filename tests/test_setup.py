@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -9,12 +11,19 @@ from typer.testing import CliRunner
 import douyin_wiki.cli as cli_module
 from douyin_wiki.auth_guidance import SubprocessAuthGuidanceLauncher
 from douyin_wiki.cli import app
-from douyin_wiki.config import AppConfig, LLMSettings, load_config, render_default_config
+from douyin_wiki.config import (
+    AppConfig,
+    LLMSettings,
+    MediaSettings,
+    load_config,
+    render_default_config,
+)
 from douyin_wiki.models import AnalysisMode
 from douyin_wiki.setup import (
     VaultSetupMode,
     doctor,
     obsidian_vault_status,
+    qwen3_health,
     update_config_values,
     validate_vault_target,
     write_config,
@@ -22,6 +31,60 @@ from douyin_wiki.setup import (
 from douyin_wiki.vault import VaultWriter
 
 runner = CliRunner()
+
+
+def test_qwen_model_commands_use_the_current_environment_outside_the_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts = tmp_path / "environment with spaces" / "bin"
+    scripts.mkdir(parents=True)
+    hf = scripts / "hf"
+    hf.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+    hf.chmod(0o755)
+    get_path = sysconfig.get_path
+    monkeypatch.setattr(
+        sysconfig,
+        "get_path",
+        lambda name, *args, **kwargs: str(scripts)
+        if name == "scripts"
+        else get_path(name, *args, **kwargs),
+    )
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-model-cache"))
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: object())
+    other_directory = tmp_path / "outside-project"
+    other_directory.mkdir()
+
+    health = qwen3_health(MediaSettings())
+
+    for kind, model, revision in (
+        ("asr", "mlx-community/Qwen3-ASR-1.7B-bf16", "e1f6c266914abc5a46e8756e02580f834a6cf8a7"),
+        ("vad", "mlx-community/silero-vad", "7bc17f22d3c0451bd3a6cd71e759b009271ff49a"),
+        (
+            "alignment",
+            "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+            "0e1a68e91d815300c7c9754b2a7639378b23db15",
+        ),
+    ):
+        result = subprocess.run(
+            health["models"][kind]["prepare_command"],
+            shell=True,
+            executable="/bin/sh",
+            cwd=other_directory,
+            env={"PATH": ""},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [
+            "download",
+            model,
+            "--revision",
+            revision,
+            "--include",
+            "*.safetensors",
+            "*.json",
+            "*.txt",
+        ]
 
 
 def test_media_engine_config_preserves_legacy_and_renders_new_defaults(tmp_path: Path) -> None:
