@@ -21,7 +21,7 @@
 - 博主作品按“待入库、已入库、未入库”分区；所有用户可见日期时间统一使用北京时间。
 - 视频优先用专用 Playwright Profile 拦截 CDN 地址再下载；失败时才回退 `yt-dlp`（优先读专用 Profile Cookie，系统 Chrome 仅作最后手段）。
 - 图文与博主采集同样使用独立 Playwright 浏览器会话，不接触日常 Chrome Profile。
-- 通过 `ffmpeg`、SenseVoiceSmall + FSMN-VAD 和 RapidOCR PP-OCRv6 small 完成本地转录与 OCR；Whisper 和 macOS Vision 可作为旧配置或回退后端。
+- 通过 `ffmpeg`、Qwen3-ASR、Silero VAD 与 Qwen3 ForcedAligner 完成本地转录；OCR 使用 RapidOCR PP-OCRv6 small 或 macOS Vision。
 - 默认由 OpenClaw/Hermes 当前会话模型校正与分析文字；原视频不上传给模型。
 - 本地 Worker 在转录后暂停，通过持久任务事件把校正、人工确认和完成结果交回原会话。
 - 可选切换为后台 OpenAI-compatible provider，或无 token 的本地降级模式。
@@ -72,21 +72,33 @@ uv run douyin-wiki init --vault /absolute/path/to/抖库
 初始化后会注入 `.obsidian/`、`raw/`、`wiki/`、`index.md`、`log.md`、`AGENTS.md`、
 `.gitignore` 和 `.douyin-wiki/`。如果目标目录属于已有 Vault，原文件保持不变。
 
-本地中文语义 Embedding、SenseVoice ASR、RapidOCR 和 Apple Silicon Whisper 是可选依赖：
+Apple Silicon 的 Qwen3-ASR、本地中文语义 Embedding 与 RapidOCR 是可选依赖：
 
 ```bash
 uv sync --extra dev --extra embeddings --extra asr --extra ocr --extra mlx
 ```
 
-未安装时，Embedding 降级到字符 n-gram；新配置的 ASR/OCR `auto` 分别尝试 Whisper 和 macOS Vision。Whisper 的 `auto` 在没有 MLX 包时尝试 `whisper` CLI；若两个 ASR 后端都不可用，导入会报错。
+Qwen3-ASR 使用 Apple Silicon 上的 `uv sync --extra qwen3`，依赖已固定为 `mlx-audio==0.5.8`。普通转写和体检只读取本地缓存，不自动下载三份模型。首次准备模型时执行：
 
-新生成配置的 `[media]` 含 `asr_provider = "auto"` 与 `ocr_provider = "auto"`，优先使用 SenseVoiceSmall + FSMN-VAD 和 RapidOCR PP-OCRv6 small。已存在的配置若没有这两个字段，会继续使用 Whisper / Vision；要切换，可在 `[media]` 中明确加入这两个字段。`asr_provider = "sensevoice"` 或 `ocr_provider = "rapidocr"` 可要求指定模型，模型缺失时会显示错误。`whisper_provider` 只控制 Whisper 内部的 MLX/CLI 选择。首次安装或初始化可能下载权重；任务产物和完成结果记录实际后端及回退原因。OCR 推理失败仍按现有规则写入任务警告。
+```bash
+uv run --no-sync hf download mlx-community/Qwen3-ASR-1.7B-bf16 --revision e1f6c266914abc5a46e8756e02580f834a6cf8a7 --include '*.safetensors' '*.json' '*.txt'
+uv run --no-sync hf download mlx-community/silero-vad --revision 7bc17f22d3c0451bd3a6cd71e759b009271ff49a --include '*.safetensors' '*.json' '*.txt'
+uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revision 0e1a68e91d815300c7c9754b2a7639378b23db15 --include '*.safetensors' '*.json' '*.txt'
+```
 
-SenseVoice 与 VAD 模型加载时不执行模型仓的远端 Python 代码。标准 SenseVoiceSmall 与 FSMN-VAD 可正常使用；若自定义 `asr_model` 或 `vad_model` 依赖模型仓自带 Python，实现无法加载时，显式 `sensevoice` 模式会报错，`auto` 模式会回退 Whisper。默认通过 `asr_model_revision` / `vad_model_revision` 钉住 ModelScope 权重版本（SenseVoice 与 FSMN-VAD 均为提交哈希；VAD 对应上游标签 `v2.0.4` 尖端）；升级权重需显式改配置。
+需要镜像时由调用方设置 `HF_ENDPOINT` 后执行准备命令；准备成功后转写继续离线。显式 Qwen 配置同时填写 `asr_provider="qwen3"`、上述 ASR/VAD 模型及各自 `asr_model_revision` / `vad_model_revision`；对齐模型/SHA、`asr_language="Chinese"`、`asr_itn=true`、`asr_segment_seconds=30` 使用配置默认值。识别窗口最多 600 秒，对齐窗口最多 180 秒，展示段最长 5–60 秒；本期不传热词或上下文提示。Qwen ASR 与对齐权重遵循 Apache-2.0，Silero 上游为 MIT，MLX 转换模型卡未声明许可，项目不分发权重。
 
-视频由当前模型一次校对后直接分析入库，不增加独立复核模型，也不要求人工校对。模型结合前后文与对应 OCR 修复同音词、错字和断句；没有依据的数字、金额、人名保留原表述，不扩写或补造事实。长稿按预算分片，每片附有界前后文；原稿、校正版和修改记录均保存。ASR 缺分、低分和普通文字疑点不会暂停新任务或单独产生完成警告；图文 OCR 低分同样只记录说明。模型超限等技术错误仍会重试或失败。SenseVoice 分数缺失、Whisper 启发式分数均不代表经过校准的正确率。历史待复核任务不会自动改动，可在 Web 点击“按新模型校对策略重试”，归档旧疑点并重新校对。
+本机已安装服务使用源码仓库的 `.venv`。开发验证使用独立环境；升级现用服务依赖前先停止服务，升级后再启动，不能把开发环境同步到正在运行的服务环境。
 
-模型权重由上游包或模型仓下载，项目仓库不分发权重。来源与条款见 [SenseVoice 模型仓](https://github.com/QwenAudio/SenseVoice)及其 `MODEL_LICENSE`、[RapidOCR 模型列表](https://rapidai.github.io/RapidOCRDocs/main/model_list/)和 [RapidOCR 许可证](https://github.com/RapidAI/RapidOCR/blob/main/LICENSE)。
+未安装 Embedding 时使用字符 n-gram；OCR 的 `auto` 优先 RapidOCR，初始化不可用时使用 macOS Vision。当前语音识别只有 Qwen3，不回退旧引擎；`asr` / `mlx` 是 `qwen3` 的安装兼容别名，不再安装 FunASR 或 mlx-whisper。
+
+新配置使用 `asr_provider="qwen3"` 与上述三份固定模型。默认 `ocr_provider="auto"`；旧配置缺 OCR 字段仍使用 Vision。缺省、`auto`、`sensevoice`、`whisper` 及已知旧模型/SHA 在读取时成对迁移到 Qwen/Silero，原文件不被改写。`asr_device` / `whisper_*` 只作为废弃输入识别并忽略；新生成 TOML 不包含它们。未知旧自定义模型或不匹配的旧 SHA 会明确报错，需要显式配置兼容 Qwen 的模型与完整 revision。显式设置任一新模型时，必须一起提供对应 revision，不能继承其他模型的 SHA。旧逐字稿、校正稿、provider 与回退原因继续可读，不自动重转。
+
+模型加载仅使用本地固定 revision、已知库架构和 safetensors；拒绝模型仓 Python 文件与 `auto_map`，不执行远端代码。缺缓存时体检提供上面的准备命令，转写本身不下载模型。默认语言 `Chinese`，中文和中英混合已实测；其他语言需要识别器与对齐器共同支持，部分语言还需要独立分词包，缺少时明确报错。本期不加入热词、上下文提示或术语仓库。
+
+视频由当前模型一次校对后直接分析入库，不增加独立复核模型，也不要求人工校对。模型结合前后文与对应 OCR 修复同音词、错字和断句；没有依据的数字、金额、人名保留原表述，不扩写或补造事实。长稿按预算分片，每片附有界前后文；原稿、校正版和修改记录均保存。ASR 缺分、低分和普通文字疑点不会暂停新任务或单独产生完成警告；图文 OCR 低分同样只记录说明。模型超限等技术错误仍会重试或失败。Qwen 不制造置信分数；历史分数也不代表经过校准的正确率。历史待复核任务不会自动改动，可在 Web 点击“按新模型校对策略重试”，归档旧疑点并重新校对。
+
+模型权重由用户显式从模型仓准备，项目不分发权重。Qwen ASR/对齐的 MLX 模型卡标注 Apache-2.0；Silero 上游为 MIT，其 MLX 转换卡未声明许可。来源见 [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)、[ForcedAligner MLX 模型卡](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit)、[Silero](https://github.com/snakers4/silero-vad)、[RapidOCR 模型与许可](https://github.com/RapidAI/RapidOCR)。
 
 ## 分析模式
 
@@ -476,7 +488,7 @@ python3.12 -m venv /tmp/douku-release-check
 ```
 
 发行包不会包含 Vault、SQLite、Cookie、媒体、模型密钥或本机配置。完整媒体处理仍要求 macOS
-以及系统中的 `yt-dlp`、`ffmpeg`、SenseVoice/Whisper、RapidOCR/Swift Vision 和浏览器授权。
+以及系统中的 `yt-dlp`、`ffmpeg`、Qwen3、RapidOCR/Swift Vision 和浏览器授权。
 
 ## 当前边界
 

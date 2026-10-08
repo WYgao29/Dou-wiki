@@ -21,6 +21,7 @@ from douyin_wiki.adapters.llm import (
     _parse_json_content,
     _preserve_partial_coverage,
 )
+from douyin_wiki.adapters.share import ResolvedShare
 from douyin_wiki.config import EmbeddingSettings, LLMSettings
 from douyin_wiki.errors import (
     CookieRequiredError,
@@ -353,6 +354,133 @@ async def test_video_without_audio_still_extracts_frames_without_transcribing(se
     assert completed.artifacts["ocr"]
     assert completed.status == JobStatus.COMPLETED_WITH_WARNINGS, completed.error_message
     assert any("无音轨" in warning for warning in completed.result["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_concurrent_works_capture_their_own_asr_provenance(service) -> None:
+    class Resolver:
+        async def resolve(self, text):
+            return ResolvedShare(
+                original_url=text,
+                canonical_url=text,
+                video_id=text.rsplit("/", 1)[-1],
+                redirect_chain=(text,),
+            )
+
+    entered = asyncio.Event()
+    second_asr = asyncio.Event()
+    calls = []
+
+    class Transcriber(FakeTranscriber):
+        provenance = {}
+
+        async def transcribe(self, audio_path, output_dir):
+            call = len(calls) + 1
+            calls.append(call)
+            if self.provenance:
+                self.provenance["nested"]["clip"] = call
+            self.provenance = {
+                "provider": "qwen3",
+                "language": f"language-{call}",
+                "nested": {"clip": call},
+            }
+            if call == 2:
+                second_asr.set()
+            return await super().transcribe(audio_path, output_dir)
+
+    class Media(FakeMediaProcessor):
+        async def extract_frames(self, *args, **kwargs):
+            if not entered.is_set():
+                entered.set()
+                await asyncio.wait_for(second_asr.wait(), 5)
+            return await super().extract_frames(*args, **kwargs)
+
+    service.resolver = Resolver()
+    service.transcriber = Transcriber()
+    service.media = Media()
+    service.media_semaphore = asyncio.Semaphore(2)
+    first = service.capture_douyin("https://www.douyin.com/video/7660914966170764223")
+    second = service.capture_douyin("https://www.douyin.com/video/7669841546241494310")
+    first_run = asyncio.create_task(Worker(service).run_once())
+    await asyncio.wait_for(entered.wait(), 5)
+    second_run = asyncio.create_task(Worker(service).run_once())
+    results = await asyncio.gather(first_run, second_run)
+    assert {item.id for item in results} == {first.id, second.id}
+    assert all(item.status == JobStatus.COMPLETED for item in results)
+    provenances = [
+        service.database.get_job(item.id).artifacts["media_provenance"]["asr"]
+        for item in (first, second)
+    ]
+    assert [item["language"] for item in provenances] == ["language-1", "language-2"]
+    assert [item["nested"]["clip"] for item in provenances] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_qwen_mid_window_failure_saves_no_partial_raw_and_can_retry(service, monkeypatch):
+    import numpy as np
+
+    from douyin_wiki.adapters.asr_segments import RecognitionWindow
+    from douyin_wiki.adapters.qwen3_asr import Qwen3Transcriber
+    from tests.test_qwen3_asr import FakeRuntime, settings
+
+    class MidFailure(FakeRuntime):
+        full_calls = 0
+
+        def recognize(self, audio, *, max_tokens, language=None):
+            if max_tokens == 8192:
+                self.full_calls += 1
+                if self.full_calls == 2:
+                    raise RuntimeError("Metal mid-window OOM")
+            return super().recognize(audio, max_tokens=max_tokens, language=language)
+
+    monkeypatch.setattr(
+        "douyin_wiki.adapters.qwen3_asr.iter_recognition_windows",
+        lambda *_args: iter(
+            [
+                RecognitionWindow(0, np.ones(16000)),
+                RecognitionWindow(16000, np.ones(16000)),
+            ]
+        ),
+    )
+    runtime = MidFailure()
+    service.transcriber = Qwen3Transcriber(settings(), runtime=runtime)
+    job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
+    failed = await Worker(service).run_once()
+    assert failed.status == JobStatus.FAILED
+    assert "transcript_raw" not in failed.artifacts
+    assert runtime.cleared == 1
+    service.retry_job(job.id)
+    completed = await Worker(service).run_once()
+    assert completed.status == JobStatus.COMPLETED
+    assert len(completed.artifacts["transcript_raw"]) == 2
+    assert [item["id"] for item in completed.artifacts["transcript_raw"]] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_retry_with_historical_raw_skips_asr_and_keeps_provenance(service, monkeypatch):
+    historical = {"provider": "whisper", "fallback_reason": "historical"}
+    service.transcriber.provenance = historical
+
+    async def failed_correction(*_args):
+        raise ExternalToolError("correction unavailable")
+
+    original = service.analysis.correct_transcript
+    monkeypatch.setattr(service.analysis, "correct_transcript", failed_correction)
+    job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
+    failed = await Worker(service).run_once()
+    assert failed.status == JobStatus.FAILED
+    assert failed.artifacts["transcript_raw"]
+
+    async def forbidden(*_args):
+        pytest.fail("已有历史原稿不应再次转写")
+
+    monkeypatch.setattr(service.transcriber, "transcribe", forbidden)
+    monkeypatch.setattr(service.analysis, "correct_transcript", original)
+    service.retry_job(job.id)
+    completed = await Worker(service).run_once()
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.artifacts["transcript_raw"] == failed.artifacts["transcript_raw"]
+    assert completed.artifacts["media_provenance"]["asr"]["fallback_reason"] == "historical"
 
 
 @pytest.mark.asyncio
@@ -1265,8 +1393,7 @@ async def test_long_transcript_uses_bounded_compact_model_requests(monkeypatch) 
         requests.append(json.loads(user))
         result = {
             "segments": [
-                {"id": item["id"], "text": item["text"]}
-                for item in requests[-1]["segments"]
+                {"id": item["id"], "text": item["text"]} for item in requests[-1]["segments"]
             ],
             "review_issues": [],
         }
@@ -1290,7 +1417,12 @@ async def test_long_transcript_uses_bounded_compact_model_requests(monkeypatch) 
     assert len(corrected) == 161
     assert [len(request["segments"]) for request in requests] == [80, 80, 1]
     assert set(requests[0]["segments"][0]) == {
-        "id", "start_ms", "end_ms", "text", "context_before", "context_after"
+        "id",
+        "start_ms",
+        "end_ms",
+        "text",
+        "context_before",
+        "context_after",
     }
     assert requests[1]["segments"][0]["context_before"] == segments[79].text
     assert requests[1]["segments"][0]["context_after"] == segments[81].text
@@ -1316,8 +1448,7 @@ async def test_correction_splits_length_failures_and_reuses_completed_checkpoint
             raise ModelLimitError("模型输出达到 token 上限")
         result = {
             "segments": [
-                {"id": item["id"], "text": item["text"]}
-                for item in json.loads(user)["segments"]
+                {"id": item["id"], "text": item["text"]} for item in json.loads(user)["segments"]
             ],
             "review_issues": [],
         }
@@ -1377,7 +1508,9 @@ async def test_single_segment_output_limit_splits_and_maps_review_to_whole_segme
             "segments": [{"id": item["id"], "text": updated_text}],
             "review_issues": [
                 {"segment_id": item["id"], "reason": "专有名词存疑", "suggestions": ["替换词"]}
-            ] if issue else [],
+            ]
+            if issue
+            else [],
         }
         response_validator(result)
         return result
@@ -1390,7 +1523,6 @@ async def test_single_segment_output_limit_splits_and_maps_review_to_whole_segme
     expected = raw.replace("校对", "校订", 1)
     assert corrected[0].text == expected
     assert issues == []
-
 
 
 @pytest.mark.asyncio
@@ -1428,8 +1560,7 @@ async def test_provider_correction_state_covers_resource_wait_and_failure(
     assert waiting.status == JobStatus.ANALYZING
     assert present_job(waiting, analysis_mode="provider")["stage_label"] == "LLM 校正"
     assert (
-        present_job(waiting, analysis_mode="provider")["message_for_user"]
-        == "等待模型校正资源。"
+        present_job(waiting, analysis_mode="provider")["message_for_user"] == "等待模型校正资源。"
     )
     service.analysis_semaphore.release()
     await asyncio.wait_for(entered.wait(), 2)
@@ -1538,10 +1669,14 @@ async def test_correction_recovers_incomplete_or_duplicate_piece_ids(monkeypatch
 
     async def fake_json_call(system, user, *, response_schema, response_validator):
         item = json.loads(user)["segments"][0]
-        returned = [] if invalid == "missing" else [
-            {"id": item["id"], "text": "已校对"},
-            {"id": item["id"], "text": "重复应忽略"},
-        ]
+        returned = (
+            []
+            if invalid == "missing"
+            else [
+                {"id": item["id"], "text": "已校对"},
+                {"id": item["id"], "text": "重复应忽略"},
+            ]
+        )
         result = {"segments": returned, "review_issues": []}
         response_validator(result)
         return result
@@ -1580,7 +1715,6 @@ async def test_correction_empty_input_and_minimum_piece_limit(monkeypatch) -> No
     with pytest.raises(ModelOutputError, match="最小文本块"):
         await provider.correct_transcript([tiny], [])
     assert calls == 1
-
 
 
 @pytest.mark.asyncio
@@ -1671,15 +1805,16 @@ async def test_analysis_respects_reduced_context_budget(monkeypatch) -> None:
     parts = [payload for _, payload, _ in requests if "transcript" in payload]
     assert len(parts) > 1
     assert max(len(payload["transcript"]) for payload in parts) <= 20
-    assert "".join(
-        item["text"] for payload in parts for item in payload["transcript"]
-    ) == "".join(segment.text for segment in segments)
+    assert "".join(item["text"] for payload in parts for item in payload["transcript"]) == "".join(
+        segment.text for segment in segments
+    )
     assert all(provider._fits(system, payload, schema) for system, payload, schema in requests)
 
 
 @pytest.mark.asyncio
 async def test_analysis_presplits_one_long_segment_and_preserves_coarse_citations(
-    monkeypatch, service,
+    monkeypatch,
+    service,
 ) -> None:
     monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
     provider = OpenAICompatibleProvider(
@@ -1708,14 +1843,17 @@ async def test_analysis_presplits_one_long_segment_and_preserves_coarse_citation
                     "end_ms": 9000,
                     "title": "原段",
                     "summary": "原段内容",
-                    "evidence": [
-                        {"timestamp_ms": 1000, "quote": quote, "evidence_type": "audio"}
-                    ],
+                    "evidence": [{"timestamp_ms": 1000, "quote": quote, "evidence_type": "audio"}],
                 }
             ],
             knowledge_atoms=[
-                {"id": "local", "statement": piece["text"], "timestamp_ms": 1000,
-                 "quote": quote, "provenance": "audio"}
+                {
+                    "id": "local",
+                    "statement": piece["text"],
+                    "timestamp_ms": 1000,
+                    "quote": quote,
+                    "provenance": "audio",
+                }
             ],
         ).model_dump(mode="json")
 
@@ -1727,14 +1865,11 @@ async def test_analysis_presplits_one_long_segment_and_preserves_coarse_citation
     assert all(item["start_ms"] == 1000 and item["end_ms"] == 9000 for item in sent)
     assert all(item["source_segment_id"] == 37 for item in sent)
     assert all(
-        [item["id"] for item in request["transcript"]]
-        == list(range(len(request["transcript"])))
+        [item["id"] for item in request["transcript"]] == list(range(len(request["transcript"])))
         for request in seen
     )
     assert all(item.timestamp_ms == 1000 for item in result.chapters[0].evidence)
-    assert {atom.statement for atom in result.knowledge_atoms} == {
-        item["text"] for item in sent
-    }
+    assert {atom.statement for atom in result.knowledge_atoms} == {item["text"] for item in sent}
     service.validate_analysis_evidence(
         result,
         {
@@ -1780,7 +1915,9 @@ async def test_analysis_splits_output_limit_and_reuses_child_checkpoints(monkeyp
         LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
     )
     source = TranscriptSegment(
-        id=8, start_ms=0, end_ms=10000,
+        id=8,
+        start_ms=0,
+        end_ms=10000,
         text="".join(f"第{index}句话。" for index in range(20)),
     )
     checkpoints: dict = {}
@@ -1795,14 +1932,26 @@ async def test_analysis_splits_output_limit_and_reuses_child_checkpoints(monkeyp
         seen.append(text)
         if len(text) > 50:
             raise ModelLimitError("模型输出达到 token 上限")
-        return AnalysisResult(title="分段", knowledge_atoms=[
-            {"id": "local", "statement": text, "quote": text[:5],
-             "timestamp_ms": 0, "provenance": "audio"}
-        ]).model_dump(mode="json")
+        return AnalysisResult(
+            title="分段",
+            knowledge_atoms=[
+                {
+                    "id": "local",
+                    "statement": text,
+                    "quote": text[:5],
+                    "timestamp_ms": 0,
+                    "provenance": "audio",
+                }
+            ],
+        ).model_dump(mode="json")
 
     monkeypatch.setattr(provider, "_json_call", fake_json_call)
     first = await provider.analyze(
-        [source], [], [], {}, checkpoints=checkpoints,
+        [source],
+        [],
+        [],
+        {},
+        checkpoints=checkpoints,
         on_progress=lambda *args: progress.append(args),
     )
     successful = [text for text in seen if len(text) <= 50]
@@ -2066,9 +2215,7 @@ def test_merge_keeps_timeline_and_claims_from_all_partials() -> None:
                     "title": f"主题 {index}",
                     "summary": f"内容 {index}",
                     "key_points": [f"要点 {index}"],
-                    "evidence": [
-                        {"timestamp_ms": index * 1000, "quote": f"原话 {index}"}
-                    ],
+                    "evidence": [{"timestamp_ms": index * 1000, "quote": f"原话 {index}"}],
                 }
             ],
             knowledge_atoms=[

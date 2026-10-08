@@ -574,9 +574,7 @@ class WebOperationService:
         asr = self.core.config.media.asr_provider
         ocr = self.core.config.media.ocr_provider
         asr_labels = {
-            "auto": "自动（优先 SenseVoice，否则 Whisper）",
-            "sensevoice": "SenseVoice",
-            "whisper": "Whisper",
+            "qwen3": "Qwen3-ASR",
         }
         ocr_labels = {
             "auto": "自动（优先 RapidOCR，否则苹果 Vision）",

@@ -58,6 +58,25 @@ def test_media_provenance_is_available_in_job_detail(tmp_path) -> None:
     assert detail["media_provenance"] == provenance
 
 
+def test_qwen_health_label_and_full_provenance(tmp_path) -> None:
+    config, service = _web_fixture(tmp_path)
+    config.media.asr_provider = "qwen3"
+    job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
+    provenance = {
+        "asr": {
+            "provider": "qwen3",
+            "revision": "a" * 40,
+            "alignment_revision": "b" * 40,
+            "timestamp_kind": "forced-alignment",
+        }
+    }
+    service.database.update_job(job.id, artifacts={"media_provenance": provenance})
+    app = create_app(config, service=service, start_watcher=False)
+    with local_client(app) as client:
+        assert client.get("/api/system/health").json()["media"]["asr_label"] == "Qwen3-ASR"
+        assert client.get(f"/api/jobs/{job.id}").json()["media_provenance"] == provenance
+
+
 class FakeAuthDownloader:
     def __init__(
         self, state: str = "needs_login", *, ok: bool = False, verified: bool = False
@@ -481,7 +500,7 @@ def test_in_progress_filter_child_warnings_and_settings_aliases(tmp_path) -> Non
         health = client.get("/api/system/health").json()
         assert health["web"]["version"] == WEB_VERSION
         assert health["web"]["version"] != "0.2.0"
-        assert "SenseVoice" in health["media"]["asr_label"]
+        assert health["media"]["asr_label"] == "Qwen3-ASR"
         assert "RapidOCR" in health["media"]["ocr_label"]
         auth = client.get("/auth", follow_redirects=False)
         assert auth.status_code == 307

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -361,6 +362,9 @@ class CaptureMixin:
                         if audio_ready
                         else []
                     )
+                    asr_provenance = (
+                        deepcopy(getattr(self.transcriber, "provenance", {})) if audio_ready else {}
+                    )
                     frames = await self.media.extract_frames(
                         video_path,
                         frames_dir,
@@ -380,7 +384,7 @@ class CaptureMixin:
             artifacts["transcript_raw"] = [item.model_dump(mode="json") for item in transcript]
             artifacts["ocr"] = [item.model_dump(mode="json") for item in ocr]
             artifacts["media_provenance"] = {
-                "asr": getattr(self.transcriber, "provenance", {}) if audio_ready else {},
+                "asr": asr_provenance,
                 "ocr": getattr(self.ocr, "provenance", {}),
             }
             self.database.update_job(
