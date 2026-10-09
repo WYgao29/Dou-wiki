@@ -934,6 +934,105 @@ def test_gross_prediction_is_replaced_by_new_local_alignment_not_interpolation()
     assert retry.audio_start_sample == 15_320 * SAMPLE_RATE // 1000
 
 
+@pytest.mark.parametrize(
+    ("side", "expected_neighbors", "expected_times"),
+    [
+        ("left", [53], [(26_500, 26_880)]),
+        ("right", [55], [(32_040, 32_440)]),
+        ("right_chain", [55, 56], [(32_040, 32_640), (32_640, 32_960)]),
+    ],
+)
+def test_local_realign_updates_conflicting_neighbors_from_the_same_prediction(
+    side: str, expected_neighbors: list[int], expected_times: list[tuple[int, int]]
+) -> None:
+    source, broken, query, local = _anomalous_alignment()
+    if side == "left":
+        local[13] = _token(source[53], 11_180, 11_560)
+        local[14] = _token(source[54], 11_560, 12_120)
+    else:
+        # The new word is 40ms after its old neighbor, as in the real failure.
+        local[14] = _token(source[54], 16_720, 16_720)
+        local[15] = _token(source[55], 16_720, 17_120)
+        if side == "right_chain":
+            local[15] = _token(source[55], 16_720, 17_320)
+            local[16] = _token(source[56], 17_320, 17_640)
+    result = segment_recognition_window(
+        np.zeros(150 * SAMPLE_RATE),
+        source,
+        recognizer=ScriptedRecognizer([query]),
+        aligner=ScriptedAligner({source: broken, query: local}),
+    )
+    assert "".join(segment.text for segment in result.segments) == source
+    assert all(
+        left.end_ms <= right.start_ms
+        for left, right in zip(result.segments, result.segments[1:], strict=False)
+    )
+    assert len(result.retries) == 1
+    retry = result.retries[0]
+    assert retry.original == broken[54]
+    assert [item.token_index for item in retry.neighbor_replacements] == expected_neighbors
+    assert [
+        (item.replacement.native_start_ms, item.replacement.native_end_ms)
+        for item in retry.neighbor_replacements
+    ] == expected_times
+    assert [item.original for item in retry.neighbor_replacements] == [
+        broken[index] for index in expected_neighbors
+    ]
+    assert [item.char_start for item in retry.neighbor_replacements] == expected_neighbors
+
+
+def test_local_realign_does_not_repeat_a_neighbor_already_repaired_in_the_group() -> None:
+    source, broken, query, local = _anomalous_alignment()
+    broken[55] = _token(source[55], 32_000, 32_500, raw=(32_000, 28_000))
+    local[14] = _token(source[54], 16_720, 16_720)
+    local[15] = _token(source[55], 16_720, 17_120)
+    result = segment_recognition_window(
+        np.zeros(150 * SAMPLE_RATE),
+        source,
+        recognizer=ScriptedRecognizer([query]),
+        aligner=ScriptedAligner({source: broken, query: local}),
+    )
+    assert "".join(segment.text for segment in result.segments) == source
+    assert len(result.retries) == 1
+    neighbor = result.retries[0].neighbor_replacements[0]
+    assert neighbor.token_index == 55
+    assert (neighbor.replacement.native_start_ms, neighbor.replacement.native_end_ms) == (
+        32_040,
+        32_440,
+    )
+
+
+@pytest.mark.parametrize("missing_neighbor", ["outside_window", "different_token"])
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_local_realign_rejects_conflicts_without_a_matching_neighbor_prediction(
+    side: str,
+    missing_neighbor: str,
+) -> None:
+    source, broken, query, local = _anomalous_alignment()
+    if side == "left" and missing_neighbor == "outside_window":
+        query = source[54:94]
+        local = [_token(char, 12_000 + i * 400, 12_200 + i * 400) for i, char in enumerate(query)]
+        local[0] = _token(source[54], 11_560, 12_120)
+    elif side == "left":
+        local[14] = _token(source[54], 11_560, 12_120)
+        local[12:14] = [_token(source[52:54], 10_680, 11_560)]
+    elif missing_neighbor == "outside_window":
+        query = source[15:55]
+        local = [_token(char, i * 400, i * 400 + 200) for i, char in enumerate(query)]
+        local[-1] = _token(source[54], 16_720, 16_720)
+    else:
+        local[14] = _token(source[54], 16_720, 16_720)
+        local[15:17] = [_token(source[55:57], 16_720, 17_640)]
+    with pytest.raises(AsrSegmentationError) as failed:
+        segment_recognition_window(
+            np.zeros(150 * SAMPLE_RATE),
+            source,
+            recognizer=ScriptedRecognizer([query]),
+            aligner=ScriptedAligner({source: broken, query: local}),
+        )
+    assert failed.value.reason == "disordered"
+
+
 @pytest.mark.parametrize("failure", ["unmatched", "still_invalid", "overlapping"])
 def test_local_realign_failure_keeps_the_whole_task_failed(failure: str) -> None:
     source, broken, query, local = _anomalous_alignment()
@@ -1191,15 +1290,12 @@ def test_entirely_zero_duration_number_joins_one_timed_neighbor(
     source: str, times: list[tuple[int, int]], expected: list[tuple[str, int, int]]
 ) -> None:
     tokens = _operational(source, list(source), times)
-    segments = group_display_segments(
-        source, tokens, segment_seconds=5, duration_ms=times[-1][1]
-    )
+    segments = group_display_segments(source, tokens, segment_seconds=5, duration_ms=times[-1][1])
     spans = tuple((item.char_start, item.char_end) for item in segments)
     assert "".join(item.text for item in segments) == source
     rendered = render_normalized_slices(source, spans, itn=True)
     assert [
-        (text, item.start_ms, item.end_ms)
-        for text, item in zip(rendered, segments, strict=True)
+        (text, item.start_ms, item.end_ms) for text, item in zip(rendered, segments, strict=True)
     ] == expected
 
 

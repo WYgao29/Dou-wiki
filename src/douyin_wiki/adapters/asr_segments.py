@@ -140,6 +140,14 @@ class RecognitionResult:
 
 
 @dataclass(frozen=True)
+class AlignmentReplacement:
+    token_index: int
+    char_start: int
+    original: AlignedToken
+    replacement: AlignedToken
+
+
+@dataclass(frozen=True)
 class AlignmentRetry:
     token_index: int
     char_start: int
@@ -147,6 +155,7 @@ class AlignmentRetry:
     samples: int
     original: AlignedToken
     replacement: AlignedToken
+    neighbor_replacements: tuple[AlignmentReplacement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1159,11 +1168,12 @@ def _realign_anomalies(
     char_origin: int,
     retries: list[AlignmentRetry],
 ) -> tuple[tuple[AlignedToken, ...], tuple[TimeLimit, ...]]:
-    """Reject gross predictions; obtain independent local predictions once per word.
+    """Reject gross predictions; merge the smallest consistent local word group.
 
     The anchor still locates the unchanged source. Only identical word positions
-    may receive a new prediction. All local and combined times pass the original
-    guards; no interpolation or threshold relaxation is performed.
+    may receive a new prediction. Conflicting neighbors use the same local
+    prediction until its edges join the retained times. All local and combined
+    times pass the original guards; no interpolation or threshold relaxation.
     """
     anomalies = []
     for index, token in enumerate(tokens):
@@ -1185,8 +1195,15 @@ def _realign_anomalies(
     if len(audio) < _ANCHOR_SAMPLES:
         raise AsrSegmentationError("异常片段不足 30 秒，无法局部对齐", reason="gross_repair")
     replacements = list(tokens)
+    source_indexes = {
+        (span[0], token.text): index
+        for index, (token, span) in enumerate(zip(tokens, spans, strict=True))
+    }
+    updated: set[int] = set()
     limits: list[TimeLimit] = []
     for index in anomalies:
+        if index in updated:
+            continue
         original = tokens[index]
         center = min(
             max(int(original.native_start_ms), ALIGNMENT_SLACK_MS),
@@ -1208,22 +1225,46 @@ def _realign_anomalies(
             window_limit_ms=samples_to_ms(len(clip)),
             audio_start_sample=origin + offset,
         )
-        candidates = [
-            token
-            for token, span in zip(local, local_spans, strict=True)
-            if match.source_start + span[0] == spans[index][0] and token.text == original.text
-        ]
-        if len(candidates) != 1:
+        predictions: dict[int, AlignedToken] = {}
+        for token, span in zip(local, local_spans, strict=True):
+            source_index = source_indexes.get((match.source_start + span[0], token.text))
+            if source_index is not None:
+                predictions[source_index] = AlignedToken(
+                    token.text,
+                    int(token.raw_start_ms) + offset_ms,
+                    int(token.raw_end_ms) + offset_ms,
+                    int(token.native_start_ms) + offset_ms,
+                    int(token.native_end_ms) + offset_ms,
+                )
+        if index not in predictions:
             raise AsrSegmentationError("局部对齐没有定位异常词", reason="anchor_token_missing")
-        token = candidates[0]
-        replacement = AlignedToken(
-            token.text,
-            int(token.raw_start_ms) + offset_ms,
-            int(token.raw_end_ms) + offset_ms,
-            int(token.native_start_ms) + offset_ms,
-            int(token.native_end_ms) + offset_ms,
+
+        left = right = index
+        while left > 0 and replacements[left - 1].native_end_ms > predictions[left].native_start_ms:
+            left -= 1
+            if left not in predictions:
+                raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
+        while (
+            right + 1 < len(replacements)
+            and predictions[right].native_end_ms > replacements[right + 1].native_start_ms
+        ):
+            right += 1
+            if right not in predictions:
+                raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
+
+        neighbors = tuple(
+            AlignmentReplacement(
+                neighbor,
+                char_origin + spans[neighbor][0],
+                replacements[neighbor],
+                predictions[neighbor],
+            )
+            for neighbor in range(left, right + 1)
+            if neighbor != index
         )
-        replacements[index] = replacement
+        for neighbor in range(left, right + 1):
+            replacements[neighbor] = predictions[neighbor]
+            updated.add(neighbor)
         retries.append(
             AlignmentRetry(
                 index,
@@ -1231,7 +1272,8 @@ def _realign_anomalies(
                 origin + offset,
                 len(clip),
                 original,
-                replacement,
+                predictions[index],
+                neighbors,
             )
         )
         limits.extend(local_limits)
