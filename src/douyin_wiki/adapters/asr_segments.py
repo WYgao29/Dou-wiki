@@ -30,14 +30,12 @@ TIMESTAMP_GRID_MS = 80
 MIN_SEGMENT_SECONDS = 5
 MAX_SEGMENT_SECONDS = 60
 DEFAULT_SEGMENT_SECONDS = 30
-MAX_SOURCE_SECONDS = 7_200
 ENERGY_CHUNK_SECONDS = 599
 ENERGY_SEARCH_EXPAND_SECONDS = 1
 ENERGY_MIN_WINDOW_MS = 20
 ENERGY_MIN_CHUNK_SECONDS = 0
 
 _WINDOW_SAMPLES = RECOGNITION_WINDOW_SECONDS * SAMPLE_RATE
-_SOURCE_SAMPLES = MAX_SOURCE_SECONDS * SAMPLE_RATE
 _LIMIT_SAMPLES = ALIGNMENT_LIMIT_MS * SAMPLE_RATE // 1000
 _ANCHOR_SAMPLES = (ALIGNMENT_SLACK_MS * 2) * SAMPLE_RATE // 1000
 _BOUNDARY_PUNCTUATION = frozenset("，。、；：！？…,.!?;:\n")
@@ -508,8 +506,6 @@ def _iter_open_audio(handle: object, splitter: AudioSplitter) -> Iterator[Recogn
     total = int(frames)
     if total < 0:
         raise AsrSegmentationError("音频长度无效", reason="length")
-    if total > _SOURCE_SAMPLES:
-        raise AsrSegmentationError("音频超过 120 分钟", reason="too_long")
     if total == 0:
         return
     pending = np.zeros(0, dtype=np.float32)

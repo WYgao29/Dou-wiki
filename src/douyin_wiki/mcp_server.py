@@ -27,10 +27,22 @@ from .models import (
 from .service import DouyinWikiService
 
 INSTRUCTIONS = """这是抖库，本地抖音知识库默认由当前 Gateway Agent 完成 AI 校正与分析。
+使用 tools/list 返回的全部工具，按用户任务和已有授权执行，不逐项重复审批。
+源码仓库由 Codex 维护，外部 Agent 对仓库只读，不修改源码、项目配置、依赖或 Git 状态；
+所有客户端配置、技能、脚本、日志和临时文件放在仓库外。
+复用已有抖库配置、Vault 和已登录浏览器 Profile。
 工具会保留英文内部状态码供程序判断，并同时返回对应的中文 label 字段。
 轮询与分支必须读英文 `status`（或事件中的机读状态），禁止用中文 label 做相等判断；
 面向用户回复时只能使用中文 label，不得展示英文状态码。
-采集时调用 capture_douyin，并传入 gateway_context 以便异步结果回到原会话。任务显示为
+采集时调用 capture_douyin，并传入实际可获得的 gateway_context。收到 job_id 后用进度消息告知用户，
+继续执行同一任务，用 get_job / list_job_events 检查状态；处理未结束时等待后再检查，
+先检查 get_job 的 input schema；支持 gateway_protocol=2 时，所有状态查询显式传 2，读取简短状态，
+这个选择独立于校正和分析所用的协议。默认完整 get_job 不用于反复轮询；
+旧服务以持久事件为主要等待入口，
+必要时兼容读取完整任务，不传不支持的参数。job_id 是中间回执，不结束任务、不要求用户再发检查指令。
+用户选定的视频直接处理，不按时长增加确认或提示。当前对话内继续执行和回复结果不依赖后台回投，
+只有对话结束后仍需处理时才使用客户端的自动续跑、会话心跳或事件桥；原生自动接续无需额外常驻监控器，
+自建事件桥按 Gateway 指南单独配置。任务显示为
 “待 AI 处理”后：调用 get_analysis_context；根据原话上下文及对应 OCR 用当前模型直接校正，
 只修复识别错误、不扩写，无依据的数字或金额保留原表述；再调用 submit_transcript_correction，
 如 source_kind=image_note 且 phase=analysis，则直接根据 analysis_schema 调用
@@ -43,19 +55,23 @@ submit_gateway_analysis；视频校正后重新读取分析上下文再提交，
 先调用 get_auth_status，再根据 auth_scope
 提示用户运行
 douyin-wiki auth video 或 douyin-wiki auth douyin，并在登录后重试；
-“等待用户确认”表示长视频将消耗 Agent 模型
-token，必须经用户确认后调用 approve_job。无常驻 Agent 时可用 list_job_events 轮询可操作
-事件，处理成功后调用 acknowledge_job_event。查询时优先调用 search_knowledge，并保留
-original_url，以及视频 timestamp_ms 或图文 image_index；创建提醒前必须获得用户明确确认。
+旧版本的“等待用户确认”任务，已有授权覆盖继续处理时直接调用 approve_job 恢复。
+事件处理成功或结果已交付后调用 acknowledge_job_event，不确认其他 Gateway/会话的事件。
+查询时优先调用 search_knowledge，并保留 original_url，以及视频 timestamp_ms 或图文 image_index。
+创建提醒按用户任务和已有授权执行，时间完整后传 confirmed=true，不重复询问已授权操作。
 博主批量采集调用 capture_douyin_creator。任务显示为“待选择作品”后，调用
 get_creator_inventory 一次读取并展示全部作品，再用 set_creator_work_selection 保存选择；全部作品均已
-选择或跳过后才可调用 confirm_creator_import。
+选择或跳过后调用 confirm_creator_import；已有选择条件时直接执行，不重复确认。
 带 favorites_context.batch_silent=true 或 creator_context.batch_silent=true 的子任务仍需
-完成校正和分析，但不要逐条向用户发送完成消息；以父任务汇总结果为准。同步只在用户明确调用
-sync_creator 时执行，不得自动或定时访问博主主页。
+完成校正和分析，但不要逐条向用户发送完成消息；以父任务汇总结果为准。用户任务包含同步时调用
+sync_creator，包含定期同步时由客户端安排，普通一次性任务不扩展为长期订阅。
 专题研究必须使用 create_topic 等专题工具；search_topic 只检索当前启用来源。专题没有相关证据时
-明确回复“当前专题没有相关证据”，不得调用 search_knowledge 回退到全库。成果只在用户明确要求时
-调用 generate_topic_artifact，专题笔记只有用户确认后才能调用 save_topic_note。
+明确回复“当前专题没有相关证据”，不得调用 search_knowledge 回退到全库。成果按用户任务和已有授权
+调用 generate_topic_artifact；用户要求保存或已有授权覆盖保存时调用 save_topic_note，不重复确认。
+持续执行到完成（含提示）、失败、取消或确实需要用户补充信息。
+completed、completed_with_warnings、failed、cancelled 都是终态；回复对应结果并按事件确认规则处理后，
+停止该任务的轮询和自动接续，保留其他任务与共用调度；取消后不自动 retry_job。
+完成结果需要补充详情时，按回执的 entry_id 读取一次 get_entry。
 """
 
 
@@ -109,7 +125,7 @@ def capture_douyin(
     gateway_context: dict[str, Any] | None = None,
     purposes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """提交分享文本和灵感并返回 job_id；Gateway 应同时传入原会话路由上下文。"""
+    """提交作品并返回中间回执 job_id；Agent 随后继续跟进，旧时长批准参数无需填写。"""
     values = inspirations if inspirations is not None else purposes or []
     job = _service().capture_douyin(
         share_text,
@@ -244,7 +260,7 @@ def sync_creator(creator_id: str, gateway_context: dict[str, Any] | None = None)
 
 @mcp.tool()
 def get_job(job_id: str, gateway_protocol: GatewayProtocol = 1) -> dict[str, Any]:
-    """读取任务状态；默认完整记录，gateway_protocol=2 返回简短状态与 next_tool。"""
+    """状态轮询显式传 gateway_protocol=2，返回简短状态与 next_tool；默认 1 保留完整记录。"""
     protocol = validate_gateway_protocol(gateway_protocol)
     job = _service().get_job(job_id)
     return _payload(compact_job_payload(job) if protocol == 2 else job)
@@ -350,7 +366,7 @@ def submit_gateway_analysis(
 
 @mcp.tool()
 def approve_job(job_id: str) -> dict[str, Any]:
-    """用户确认后，批准超过 30 分钟的视频继续消耗 Agent/模型 token。"""
+    """恢复旧版本留下的待确认任务，沿用已有授权和处理检查点。"""
     return _payload(_service().approve_job(job_id))
 
 
@@ -497,7 +513,7 @@ def save_topic_note(
     title: str = "专题笔记",
     confirmed: bool = False,
 ) -> dict[str, Any]:
-    """用户明确确认后，把内容逐字保存为专题笔记；AI 不自动写入。"""
+    """按用户任务和已有授权传 confirmed=true，把内容逐字保存为专题笔记。"""
     return _payload(_service().save_topic_note(topic_id, content, title=title, confirmed=confirmed))
 
 
@@ -545,7 +561,7 @@ def confirm_reminder(
     title: str | None = None,
     confirmed: bool = False,
 ) -> dict[str, Any]:
-    """用户明确确认后传 confirmed=true，在 macOS 提醒事项中创建候选提醒。"""
+    """已有授权且时间完整时传 confirmed=true，在 macOS 提醒事项中创建候选提醒。"""
     return _payload(
         _service().confirm_reminder(
             entry_id,
@@ -578,7 +594,7 @@ def scan_favorites(
     directory_only: bool = False,
     gateway_context: dict[str, Any] | None = None,
 ) -> dict:
-    """只清点收藏，不下载或导入。后续展示清单并取得用户确认后才调用 confirm_favorites_import。"""
+    """清点收藏，不下载或导入；按已有选择条件完成清单，再调用 confirm_favorites_import。"""
     job = _service().favorites.start(
         folder_ids=folder_ids,
         include_images=include_images,
@@ -618,7 +634,7 @@ def set_favorites_selection(
 
 @mcp.tool()
 def confirm_favorites_import(job_id: str, accept_partial: bool = False) -> dict:
-    """用户明确确认后批量入队；不完整清单需单独接受。重复确认不会重复创建任务。"""
+    """按用户选择和已有授权批量入队；部分导入需覆盖不完整清单，重复调用不重复创建任务。"""
     job = _service().favorites.confirm(job_id, accept_partial=accept_partial)
     return _payload({"job_id": job.id, "status": job.status})
 

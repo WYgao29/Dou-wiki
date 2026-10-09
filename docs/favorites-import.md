@@ -36,7 +36,7 @@
 - 收藏清点和图文采集使用专用 Playwright Profile。首次或登录过期时在 Web「设置 › 授权状态」完成抖音账号授权，或运行 `douyin-wiki auth douyin`，然后重试。账号变化会暂停原批次。
 - 视频主下载路径也使用专用 Profile；能否下载以具体作品的探测结果为准。`douyin-wiki auth video` 用于准备系统浏览器 Cookie，供 yt-dlp 最后回退使用。
 - 后台 Worker 必须运行。Gateway 模式需 Agent 继续消费事件完成校正与分析；待 AI 处理、待确认及历史待复核任务不算完成。
-- 新建子任务沿用默认媒体临时保留规则及现有长视频确认规则。已入库作品跳过，进行中的采集任务复用，不覆盖已有灵感、保留策略或原任务 Gateway 上下文。
+- 新建子任务沿用默认媒体临时保留规则，选定的视频直接处理，不因时长再次确认。已入库作品跳过，进行中的采集任务复用，不覆盖已有灵感、保留策略或原任务 Gateway 上下文。
 - 批次汇总通过父任务及 `favorites_context.batch_silent` 表达；Agent 仍应报告需要用户处理的等待项。失败重试只重试失败子任务；需要登录的子任务通过原任务队列或授权流程恢复。
 - 清点和重扫均由用户手动触发。没有定时同步，也不会在打开网页时自动清点或导入。
 
@@ -63,8 +63,8 @@ douyin-wiki favorites retry JOB_ID
 
 `scan` 可传 `--gateway openclaw --conversation-id ...` 绑定后续事件。
 MCP 对应工具为 `scan_favorites`、`list_favorites_imports`、`get_favorites_import`、`set_favorites_selection`、`confirm_favorites_import`、`retry_favorites_import`。
-Agent 必须先展示清单并获得用户的导入指令，才能调用确认工具。
-Web 的确认框和件数输入属于网页交互；CLI/MCP 仍使用明确选择与原有确认参数。
+Agent 根据用户已给出的范围和选择完成清单后直接调用确认工具，不要求展示清单后再次确认已有导入指令；只有缺少范围、选择或接受部分清单的决定时才补充输入。
+Web 的确认框和件数输入属于网页交互；CLI/MCP 的原有确认参数按用户任务和已有授权填写。
 
 ## 验证边界
 

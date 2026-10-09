@@ -305,18 +305,30 @@ def test_windows_keep_only_the_uncommitted_splitter_tail() -> None:
     _assert_coverage(windows, total)
 
 
-def test_windows_two_hours_never_reads_or_holds_more_than_600_seconds() -> None:
-    total = 120 * 60 * SAMPLE_RATE
+@pytest.mark.parametrize(
+    "total",
+    [120 * 60 * SAMPLE_RATE, 120 * 60 * SAMPLE_RATE + 1, 180 * 60 * SAMPLE_RATE],
+    ids=["two_hours", "past_two_hours", "three_hours"],
+)
+def test_long_audio_windows_keep_reads_bounded_and_cover_entire_source(total: int) -> None:
     wave = MemoryWave(frames=total, synthetic=True)
     splitter = CutSplitter(tail=TAIL_SAMPLES)
-    windows = _windows(wave, splitter)
-    assert len(windows) > 1
-    _assert_coverage(windows, total)
+    covered = 0
+    window_count = 0
+    for window in iter_recognition_windows("memory.wav", splitter, opener=_opener(wave)):
+        assert window.start_sample == covered
+        assert 0 < len(window.audio) <= WINDOW_SAMPLES
+        assert window.audio[0] == _marker(covered)
+        assert window.audio[-1] == _marker(covered + len(window.audio) - 1)
+        if window_count == 0:
+            assert len(window.audio) == WINDOW_SAMPLES - TAIL_SAMPLES
+        covered += len(window.audio)
+        window_count += 1
+    assert covered == total
+    assert window_count > 1
     assert all(count <= WINDOW_SAMPLES for count in wave.reads)
     assert all(length <= WINDOW_SAMPLES for length, seconds in splitter.calls)
     assert {seconds for _length, seconds in splitter.calls} == {600}
-    assert windows[0].start_sample == 0
-    assert len(windows[0].audio) == WINDOW_SAMPLES - TAIL_SAMPLES
 
 
 def test_windows_reject_bad_containers() -> None:
@@ -331,11 +343,11 @@ def test_windows_reject_bad_containers() -> None:
     assert bad_channels.value.reason == "channels"
     assert stereo.reads == []
 
-    too_long = MemoryWave(frames=120 * 60 * SAMPLE_RATE + 1, synthetic=True)
+    negative_length = MemoryWave(frames=-1, synthetic=True)
     with pytest.raises(AsrSegmentationError) as bad_length:
-        _windows(too_long, splitter)
-    assert bad_length.value.reason == "too_long"
-    assert too_long.reads == []
+        _windows(negative_length, splitter)
+    assert bad_length.value.reason == "length"
+    assert negative_length.reads == []
 
     short = MemoryWave(np.zeros(10, dtype=np.float32), frames=1000)
     with pytest.raises(AsrSegmentationError) as truncated:

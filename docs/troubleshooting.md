@@ -32,7 +32,7 @@ Web 授权成功后会恢复对应范围内仍需授权的任务。专用 Profil
 | `needs_auth` | 按任务的授权范围登录，验证后重试 |
 | `needs_selection` | 查看博主或收藏清单，完成选择并确认导入 |
 | `awaiting_agent_analysis` | Gateway 模式需外部 Agent 接续；见 [接入指南](gateway-agents.md) |
-| `waiting_confirmation` | 检查长视频提示，确认后继续 |
+| `waiting_confirmation` | 旧版本保留的待确认任务；已有授权覆盖继续处理时调用 `approve_job` 恢复，新采集不因时长进入该状态 |
 | `needs_review` | 历史复核任务；可显式按当前模型校对策略重试 |
 | `failed` | 先读取错误原因，修正配置或外部条件后重试 |
 | `completed_with_warnings` | 查看任务详情提示与已入库资料，批次还需查看子任务 |

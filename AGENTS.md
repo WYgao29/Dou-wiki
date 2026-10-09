@@ -1,6 +1,6 @@
 # 仓库维护入口
 
-本文件适用于维护 `douyin-wiki` 源码仓库的 Agent 和开发者。只通过 MCP 使用知识库的外部 Agent 从[调用方入口](docs/agents/README.md)接入。
+本文件适用于维护 `douyin-wiki` 源码仓库的 Codex 和开发者。本项目源码由 Codex 维护；其他 Agent 从[调用方入口](docs/agents/README.md)接入，使用全部 MCP 工具完成抖库任务，对源码仓库只读，不在其中创建客户端配置、技能、脚本、日志或临时文件。
 
 当前维护机器的全局规则以[全局 AGENTS.md](/Users/weisengao/.codex/AGENTS.md)为准，本文件只补充项目约定，不复制全局正文。其他机器使用其已加载的全局约定；上述本机路径不是安装或运行前提。
 
@@ -12,7 +12,7 @@
 | [项目文档索引](docs/README.md) | 当前文档、开发中方案和维护记录 |
 | [项目结构与处理流程](docs/architecture.md) | 分析模式、模块职责、数据边界和开发验证 |
 | [Service 协作 API](docs/service-collaboration-api.md) | mixin 调用、操作锁、发布和租约约束 |
-| [Gateway Agent 接入指南](docs/gateway-agents.md) | MCP 工具流程、确认条件和事件接续 |
+| [Gateway Agent 接入指南](docs/gateway-agents.md) | 全部 MCP 工具、已有授权、任务持续执行和事件接续 |
 | [Web UI 设计系统](docs/web-ui-design-system.md) | 当前界面约定；重设计规格保留为历史记录 |
 
 ## 目录与入口

@@ -33,7 +33,6 @@ from douyin_wiki.models import (
     AnalysisMode,
     AnalysisResult,
     AuthCheckResult,
-    CaptureOptions,
     GatewayContext,
     InspirationInput,
     JobStatus,
@@ -915,41 +914,48 @@ async def test_low_confidence_does_not_pause_model_correction(service) -> None:
 
 
 @pytest.mark.asyncio
-async def test_long_video_requires_confirmation(service) -> None:
-    service.downloader = FakeDownloader(duration=31 * 60)
+@pytest.mark.parametrize("duration", [31 * 60, 121 * 60])
+@pytest.mark.parametrize("mode", [AnalysisMode.PROVIDER, AnalysisMode.GATEWAY, AnalysisMode.LOCAL])
+async def test_selected_long_video_continues_without_confirmation(service, duration, mode) -> None:
+    service.config.analysis_mode = mode
+    service.downloader = FakeDownloader(duration=duration)
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    paused = await Worker(service).run_once()
-    assert paused.status == JobStatus.WAITING_CONFIRMATION
-    service.approve_job(job.id)
-    completed = await Worker(service).run_once()
-    assert completed.status == JobStatus.COMPLETED
 
+    processed = await Worker(service).run_once()
 
-@pytest.mark.asyncio
-async def test_two_hour_limit_can_be_overridden(service) -> None:
-    service.downloader = FakeDownloader(duration=121 * 60)
-    service.capture_douyin(
-        "https://v.douyin.com/uvHsRpXIn8s/",
-        options=CaptureOptions(approve_cloud_analysis=True),
+    expected = (
+        JobStatus.AWAITING_AGENT_ANALYSIS if mode == AnalysisMode.GATEWAY else JobStatus.COMPLETED
     )
-    paused = await Worker(service).run_once()
-    assert paused.status == JobStatus.WAITING_CONFIRMATION
-    assert paused.result["reason"] == "video_too_long"
-    service.approve_job(paused.id)
-    completed = await Worker(service).run_once()
-    assert completed.status == JobStatus.COMPLETED
+    assert processed.id == job.id
+    assert processed.status == expected
+    assert processed.artifacts["metadata"]["duration_seconds"] == duration
+    assert processed.artifacts["transcript_raw"]
+    assert processed.artifacts["ocr"]
+    assert service.downloader.calls == 1
 
 
 @pytest.mark.asyncio
-async def test_long_job_can_continue_from_checkpoint(service) -> None:
+async def test_legacy_waiting_job_can_continue_from_checkpoint(service) -> None:
+    service.config.analysis_mode = AnalysisMode.GATEWAY
     service.downloader = FakeDownloader(duration=121 * 60)
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    paused = await Worker(service).run_once()
-    assert paused.status == JobStatus.WAITING_CONFIRMATION
-    assert "metadata" in paused.artifacts
+    checkpoint = await Worker(service).run_once()
+    assert checkpoint.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    service.database.update_job(
+        job.id,
+        status=JobStatus.WAITING_CONFIRMATION,
+        result={"reason": "video_too_long"},
+        unlock=True,
+    )
+
     retried = service.approve_job(job.id)
+
     assert retried.status == JobStatus.QUEUED
-    assert retried.artifacts["metadata"] == paused.artifacts["metadata"]
+    assert retried.artifacts["metadata"] == checkpoint.artifacts["metadata"]
+    resumed = await Worker(service).run_once()
+    assert resumed.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    assert resumed.artifacts["metadata"] == checkpoint.artifacts["metadata"]
+    assert service.downloader.calls == 1
 
 
 @pytest.mark.asyncio

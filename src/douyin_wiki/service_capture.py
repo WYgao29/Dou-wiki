@@ -270,49 +270,6 @@ class CaptureMixin:
             artifacts["metadata"] = metadata.model_dump(mode="json")
             self.database.update_job(job.id, artifacts={"metadata": artifacts["metadata"]})
 
-        duration_minutes = (metadata.duration_seconds or 0) / 60
-        if (
-            duration_minutes > self.config.media.max_duration_minutes
-            and not request.options.allow_long
-            and not artifacts.get("long_video_approved")
-        ):
-            return self.database.update_job(
-                job.id,
-                status=JobStatus.WAITING_CONFIRMATION,
-                progress=0.3,
-                result={
-                    "reason": "video_too_long",
-                    "duration_minutes": round(duration_minutes, 1),
-                    "message": "视频超过默认时长上限；确认后可继续处理已下载媒体",
-                    "next_tool": "approve_job",
-                },
-                unlock=True,
-            )
-        approved = (
-            request.options.approve_cloud_analysis
-            or artifacts.get("ai_analysis_approved")
-            or artifacts.get("cloud_analysis_approved")
-        )
-        uses_token_analysis = self.config.analysis_mode == AnalysisMode.GATEWAY or (
-            self.config.analysis_mode == AnalysisMode.PROVIDER and self.analysis.configured
-        )
-        if (
-            duration_minutes > self.config.media.cloud_confirmation_minutes
-            and uses_token_analysis
-            and not approved
-        ):
-            return self.database.update_job(
-                job.id,
-                status=JobStatus.WAITING_CONFIRMATION,
-                progress=0.3,
-                artifacts={"metadata": artifacts["metadata"]},
-                result={
-                    "reason": "ai_analysis_confirmation_required",
-                    "duration_minutes": round(duration_minutes, 2),
-                },
-                unlock=True,
-            )
-
         if "transcript_raw" not in artifacts:
             self.database.update_job(job.id, status=JobStatus.TRANSCRIBING, progress=0.34)
             audio_path = assets_dir / "audio.wav"

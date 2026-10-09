@@ -87,8 +87,6 @@
           share_text: D.$("single-share").value,
           inspirations,
           retention: D.$("single-retention").value,
-          allow_long: D.$("single-allow-long").checked,
-          approve_cloud_analysis: D.$("single-approve-ai").checked,
         }),
       });
       if (job.duplicate) {
