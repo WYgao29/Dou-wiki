@@ -149,6 +149,8 @@ Esc 依次关闭当前对话框、菜单、抽屉 / 右侧覆盖层；文章页�
 
 ## 验证
 
+共享等待任务新增 `tests/test_capture_sharing_web.py` 的公开 HTTP 回归，以及 `tests/test_collection_ui.py` 的四个真实浏览器场景。验证 Gateway/授权暂停、当前执行阶段与进度、取消/删除、进行中与待办筛选，列表和详情均可跳转实际执行者；覆盖亮色1440px和暗色390px，记录与截图见[共享采集后续修复](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md)。
+
 合集增加 `uv run --no-sync pytest -q tests/test_collection_ui.py`，运行真实本地 HTTP 和浏览器，使用 105 件合成清单及隔离 SQLite/Vault。覆盖粘贴不创建任务、全部页选择、确认、刷新计数、历史清空和恢复、选择保存失败/重试、键盘 `x`、亮暗主题与 390px 窄屏；截图保存在 pytest 临时目录，本轮审查证据见[合集验收](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)。该测试不下载真实媒体。
 
 以下八个浏览器脚本是当前验证入口；后文带版本、阶段及测试数量的段落保留原历史基准。

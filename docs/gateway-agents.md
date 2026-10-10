@@ -246,6 +246,8 @@ Gateway 应先调用 `get_auth_status` 和 `get_job` 复核最新状态，不要
 
 短链解析后才识别出重复请求时，等待记录仍保留原任务 ID 与 Gateway，状态为 `monitoring`；结果的 `shared_capture_job_id` 指向执行任务，`shared_job_status` 给出执行状态。协议1和2均保留这两个字段。读取上下文和提交校正、分析使用执行任务 ID，等待记录不产生第二次待分析事件。终态与完成通知沿用各自原会话。全部已有资料或全部跳过的批次也会生成正常完成事件。
 
+取消批次同时撤销原批次上下文所属的等待记录，被撤销的记录不再接收完成通知，其他请求仍需要的执行任务可以继续。等待记录跟随执行者失败后，可通过 `retry_job` 独立重试；入队及下载中的回执会清除旧 `shared_capture_job_id/shared_job_status`，保留原任务 ID 与 Gateway。重试后查询当前任务，再根据新的共享关系接续。
+
 `get_collection/list_collections` 查询持久知识关系，`list_collection_imports` 查询操作历史。合集索引引用已有资料目录，清理批次历史不会删除知识关系。详细参数及验证边界见[合集导入](collections-import.md)。
 
 ## 事件接续

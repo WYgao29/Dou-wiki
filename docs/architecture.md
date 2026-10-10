@@ -77,6 +77,8 @@ Provider 的完整分段汇总超出模型预算时，保留各段内容与证�
 
 合集 schema 15 使用 `collections/collection_works` 保存知识关系，`collection_runs/collection_run_items` 保存批次世代、选择及子任务关联；博主运行项补充 `child_job_id`。`Database.capture_parent_ids()` 与 `batch_child_ids()` 查询真实关联，复用 capture 保留原 Gateway 上下文。确认先检查全部选项，再在一个写事务中发布子任务；短链后来解析出的重复请求保留 ID 和 Gateway，进入持久等待状态，批次关联指向执行任务。取消保护依据其他活动父任务及独立等待者，完成刷新覆盖全部相关入口。
 
+取消批次先按原 `creator/favorites/collection_context.parent_job_id` 撤销其共享等待记录，再依据实际父任务关系决定是否停止执行者；共享结果刷新不会恢复已取消的记录。等待者单独重试在同一状态更新事务中移除 artifacts 和 result 的旧执行者关联，普通重试保留检查点。Web 保留等待记录自身状态和请求，用实际执行者展示阶段、进度、授权范围及跳转入口；进行中与需要用户操作筛选依据当前共享执行状态。
+
 合集清点只读取指定合集，不遍历博主的其他作品。稳定账号来自自身主页，Cookie 指纹只检测会话变化，不作为持久账号 ID。成员和顺序仅在完整读取后更新；部分发现另行标记。`collections/<首次名称>_<mix_id>/index.md` 与 `.data/collection.md` 保存可恢复关系，不保存账号、Cookie 或运行历史。用户删除、恢复和知识重建按作品 ID 重新关联，详情见[合集导入](collections-import.md)。
 
 同一作品采集使用作品锁；条目修改使用跨进程操作锁。Worker 发布资料时在数据库写事务内校验租约，再写文档与检索投影。重新分析、恢复媒体等耗时操作在最终发布前重新读取当前条目，保留期间产生的用户修改。相关调用约定见 [Service 协作 API](service-collaboration-api.md)。
