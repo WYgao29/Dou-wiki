@@ -24,9 +24,9 @@ flowchart TD
     done --> reply[Agent 回复原会话]
 ```
 
-视频优先通过专用 Playwright Profile 获取媒体地址，再由下载工具保存；失败时回退到页面下载。音轨只由 Qwen3-ASR 转录，使用 Silero 判断静音、ForcedAligner 计算时间，流式识别窗口最多 600 秒，主对齐窗口最多 180 秒，展示段默认最多 30 秒。源样本与字符归属完整；异常预测的有界重新对齐仍保持原文和严格时间检查，不能返回部分成功结果。视频抽帧与静态图文由 OCR 后端识字；`auto` 优先 RapidOCR，初始化不可用时使用 Vision。旧 ASR 配置在内存中迁移，不自动改写旧稿；详情见根目录 README。
+视频优先通过专用 Playwright Profile 获取媒体地址，再由下载工具保存；失败时回退到页面下载。音轨只由 Qwen3-ASR 转录，使用 Silero 判断静音、ForcedAligner 计算时间，流式识别窗口最多 600 秒，主对齐窗口最多 180 秒，展示段默认最多 30 秒。源样本与字符归属完整；异常预测的有界重新对齐仍保持原文和严格时间检查，不能返回部分成功结果。视频抽帧与静态图文由 OCR 后端识字；`auto` 优先 RapidOCR，初始化不可用时使用 Vision。已知旧 ASR 配置字段在内存中转换为当前识别设置，不迁移旧业务数据；新库保存的材料支持正常恢复。详情见根目录 README。
 
-新视频由同一分析模型直接校正后继续入库，普通 ASR/OCR 疑点只记录，不新增人工复核步骤。用户选定的视频直接处理，不因时长暂停；转写不设置整条音轨的总时长上限，仍按最多 600 秒的窗口逐块处理。旧 `needs_review` 任务可显式重试，旧 `waiting_confirmation` 任务保留 `approve_job` 恢复入口；授权失效和模型错误仍按对应任务状态处理。
+新视频由当前 Gateway Agent 直接校正后继续入库，普通 ASR/OCR 疑点只记录，不新增人工复核步骤。用户选定的视频直接处理，不因时长暂停；转写不设置整条音轨的总时长上限，仍按最多 600 秒的窗口逐块处理。公开的复核 / 确认状态及 `resolve_review` / `approve_job` 工具继续兼容，新库任务按实际状态处理；旧版本任务不迁移或接续。授权失效和 Gateway 提交错误仍按对应任务状态处理。
 
 ## 文件职责
 
@@ -79,8 +79,8 @@ flowchart TD
 
 ```bash
 uv sync --locked --extra dev --extra embeddings
-uv run ruff check src tests
-uv run pytest -q -m 'not live'
+uv run --no-sync ruff check src tests
+uv run --no-sync pytest -q -m 'not live'
 ```
 
 `tests/conftest.py` 提供临时 Vault 与假适配器；`tests/support/web.py` 共用 Web 夹具、离线媒体适配器和带 Origin 的客户端，供正式测试及八个浏览器脚本调用。完整离线集有用例直接注入 `sentence_transformers`，因此验证环境也需 `embeddings` extra；该测试模拟模型初始化失败，不下载真实模型。浏览器回归使用隔离上下文和模拟网络。真实抖音冒烟需显式启用 `live`，前置条件见 `tests/test_live_smoke.py`。测试按接口、领域和恢复行为组织，不能因文件最初来自某轮审查就删除仍有效的回归用例。

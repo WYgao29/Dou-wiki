@@ -44,14 +44,14 @@
 
 ## 安装
 
-正式运行从 wheel 安装到仓库外独立环境，步骤见[本地发行包与运行安装](#本地发行包与运行安装)。下面的 `uv` 命令仅用于独立的源码开发环境，不在现用服务环境中同步依赖；已安装用户使用对应 runtime 的命令入口。
+正式运行从 wheel 安装到仓库外独立环境，步骤见[本地发行包与运行安装](#本地发行包与运行安装)。下面的 `uv` 命令仅用于独立的源码开发环境，不在现用服务环境中同步依赖；已安装用户使用对应 runtime 的命令入口。开发环境按所需 extras 显式同步一次，后续运行使用 `uv run --no-sync`，保留已经准备的依赖。
 
 0.2.0 仅初始化 schema 16 新库，没有聊天表；旧版状态库会被拒绝，不自动迁移旧业务数据。首次使用应准备新的库，既有 Obsidian 笔记不由安装过程覆盖。升级部署先核对目标配置和实际服务入口。
 
 ```bash
 uv sync --locked --extra dev
 uv run --no-sync douyin-wiki init
-uv run douyin-wiki doctor
+uv run --no-sync douyin-wiki doctor
 ```
 
 首次执行 `init` 时会启动引导：
@@ -65,7 +65,7 @@ uv run douyin-wiki doctor
 自动化或无人值守安装可以跳过交互：
 
 ```bash
-uv run douyin-wiki init --vault /absolute/path/to/抖库
+uv run --no-sync douyin-wiki init --vault /absolute/path/to/抖库
 ```
 
 默认建议位置：
@@ -81,10 +81,10 @@ uv run douyin-wiki init --vault /absolute/path/to/抖库
 Apple Silicon 的 Qwen3-ASR、本地中文语义 Embedding 与 RapidOCR 是可选依赖：
 
 ```bash
-uv sync --extra dev --extra embeddings --extra asr --extra ocr --extra mlx
+uv sync --locked --extra dev --extra embeddings --extra asr --extra ocr --extra mlx
 ```
 
-Qwen3-ASR 使用 Apple Silicon 上的 `uv sync --extra qwen3`，依赖已固定为 `mlx-audio==0.5.8`。普通转写和体检只读取本地缓存，不自动下载三份模型。首次准备模型时执行：
+Qwen3-ASR 使用 Apple Silicon 上的 `qwen3` extra，`asr` / `mlx` 是它的安装兼容别名；上面的命令已包含 Qwen3 依赖，已固定为 `mlx-audio==0.5.8`。普通转写和体检只读取本地缓存，不自动下载三份模型。首次准备模型时执行：
 
 ```bash
 uv run --no-sync hf download mlx-community/Qwen3-ASR-1.7B-bf16 --revision e1f6c266914abc5a46e8756e02580f834a6cf8a7 --include '*.safetensors' '*.json' '*.txt'
@@ -100,11 +100,11 @@ uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revis
 
 未安装 Embedding 时使用字符 n-gram；OCR 的 `auto` 优先 RapidOCR，初始化不可用时使用 macOS Vision。当前语音识别只有 Qwen3，不回退旧引擎；`asr` / `mlx` 是 `qwen3` 的安装兼容别名，不再安装 FunASR 或 mlx-whisper。
 
-新配置使用 `asr_provider="qwen3"` 与上述三份固定模型。默认 `ocr_provider="auto"`；旧配置缺 OCR 字段仍使用 Vision。缺省、`auto`、`sensevoice`、`whisper` 及已知旧模型/SHA 在读取时成对迁移到 Qwen/Silero，原文件不被改写。`asr_device` / `whisper_*` 只作为废弃输入识别并忽略；新生成 TOML 不包含它们。未知旧自定义模型或不匹配的旧 SHA 会明确报错，需要显式配置兼容 Qwen 的模型与完整 revision。显式设置任一新模型时，必须一起提供对应 revision，不能继承其他模型的 SHA。旧逐字稿、校正稿、provider 与回退原因继续可读，不自动重转。
+新配置使用 `asr_provider="qwen3"` 与上述三份固定模型。默认 `ocr_provider="auto"`；旧配置缺 OCR 字段仍使用 Vision。缺省、`auto`、`sensevoice`、`whisper` 及已知旧模型/SHA 在读取时成对迁移到 Qwen/Silero，原文件不被改写。`asr_device` / `whisper_*` 只作为废弃输入识别并忽略；新生成 TOML 不包含它们。未知旧自定义模型或不匹配的旧 SHA 会明确报错，需要显式配置兼容 Qwen 的模型与完整 revision。显式设置任一新模型时，必须一起提供对应 revision，不能继承其他模型的 SHA。配置字段的兼容只作用于识别设置，不迁移旧业务数据；新库已保存的逐字稿、校正稿和识别记录继续用于重试和重新分析。
 
 模型加载仅使用本地固定 revision、已知库架构和 safetensors；拒绝模型仓 Python 文件与 `auto_map`，不执行远端代码。缺缓存时体检提供上面的准备命令，转写本身不下载模型。默认语言 `Chinese`，中文和中英混合已实测；其他语言需要识别器与对齐器共同支持，部分语言还需要独立分词包，缺少时明确报错。本期不加入热词、上下文提示或术语仓库。
 
-视频由当前模型一次校对后直接分析入库，不增加独立复核模型，也不要求人工校对。模型结合前后文与对应 OCR 修复同音词、错字和断句；没有依据的数字、金额、人名保留原表述，不扩写或补造事实。Gateway 按本阶段上下文和 schema 提交结果；原稿、校正版和修改记录均保存。ASR 缺分、低分和普通文字疑点不会暂停新任务或单独产生完成警告；图文 OCR 低分同样只记录说明。模型超限等技术错误仍会重试或失败。Qwen 不制造置信分数；历史分数也不代表经过校准的正确率。历史待复核任务不会自动改动，可在 Web 点击“按新模型校对策略重试”，归档旧疑点并重新校对。
+视频由当前模型一次校对后直接分析入库，不增加独立复核模型，也不要求人工校对。模型结合前后文与对应 OCR 修复同音词、错字和断句；没有依据的数字、金额、人名保留原表述，不扩写或补造事实。Gateway 按本阶段上下文和 schema 提交结果；原稿、校正版和修改记录均保存。ASR 缺分、低分和普通文字疑点不会暂停新任务或单独产生完成警告；图文 OCR 低分同样只记录说明。模型超限等技术错误仍会重试或失败。Qwen 不制造置信分数；历史分数也不代表经过校准的正确率。这些规则适用于新库任务；旧版本的待复核任务不接续。
 
 模型权重由用户显式从模型仓准备，项目不分发权重。Qwen ASR/对齐的 MLX 模型卡标注 Apache-2.0；Silero 上游为 MIT，其 MLX 转换卡未声明许可。来源见 [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)、[ForcedAligner MLX 模型卡](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit)、[Silero](https://github.com/snakers4/silero-vad)、[RapidOCR 模型与许可](https://github.com/RapidAI/RapidOCR)。
 
@@ -152,21 +152,21 @@ CLI 保留 `init`、`doctor`、`configure-analysis-mode gateway`、`auth douyin 
 不下载媒体：
 
 ```bash
-uv run douyin-wiki auth status
-uv run douyin-wiki auth status --video-url 'https://www.douyin.com/video/作品ID'
+uv run --no-sync douyin-wiki auth status
+uv run --no-sync douyin-wiki auth status --video-url 'https://www.douyin.com/video/作品ID'
 ```
 
 主路径（视频 CDN、图文、博主）共用抖库专用 Playwright Profile。先完成专用浏览器登录，再在 Web 任务详情或通过 MCP `retry_job` 重试原任务：
 
 ```bash
-uv run douyin-wiki auth douyin
+uv run --no-sync douyin-wiki auth douyin
 ```
 
 `auth video` 仅打开配置中的系统浏览器，给 yt-dlp 最后回退准备 Cookie；日常请优先 `auth douyin`。
 两处命令都不读取、复制或输出 Cookie 值。
 
 ```bash
-uv run douyin-wiki auth video
+uv run --no-sync douyin-wiki auth video
 ```
 
 `auth status` 只返回状态、Cookie 来源和修复动作，从不返回 Cookie 值。视频侧路径会优先检查专用 Profile，
@@ -240,13 +240,13 @@ Web 不能唤醒已结束的 Agent 对话。当前对话内继续处理不需要
 ## 后台服务
 
 ```bash
-uv run douyin-wiki service install
+uv run --no-sync douyin-wiki service install
 ```
 
 这会安装两个本地 LaunchAgent：常驻 worker，以及每周日 03:00 的维护任务。卸载：
 
 ```bash
-uv run douyin-wiki service uninstall
+uv run --no-sync douyin-wiki service uninstall
 ```
 
 维护任务只处理知识过期、孤立页面和媒体保留策略，不会访问或同步博主主页。
@@ -266,18 +266,18 @@ HTML 文件。新文章入库或已有文章更新后，文件监听器会刷新
 前台调试运行：
 
 ```bash
-uv run douyin-wiki web run
+uv run --no-sync douyin-wiki web run
 ```
 
 默认地址是 [http://127.0.0.1:8765](http://127.0.0.1:8765)。安装为登录后自动运行的
 macOS 本地服务：
 
 ```bash
-uv run douyin-wiki web install
-uv run douyin-wiki web status
-uv run douyin-wiki web open
+uv run --no-sync douyin-wiki web install
+uv run --no-sync douyin-wiki web status
+uv run --no-sync douyin-wiki web open
 # 只移除常驻服务，不删除 Vault
-uv run douyin-wiki web uninstall
+uv run --no-sync douyin-wiki web uninstall
 ```
 
 可在配置中调整端口，但主机固定为 `127.0.0.1`：
@@ -332,8 +332,8 @@ Vault 会初始化为独立本地 Git 仓库。程序每次只暂存本次生成
 ## 开发验证
 
 ```bash
-uv run ruff check src tests
-uv run pytest -q -m 'not live'
+uv run --no-sync ruff check src tests
+uv run --no-sync pytest -q -m 'not live'
 ```
 
 默认测试不访问网络、不读取浏览器 cookie、不创建系统提醒。真实抖音验证使用 `live` marker，需显式运行。

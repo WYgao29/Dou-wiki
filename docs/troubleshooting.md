@@ -4,16 +4,18 @@
 
 在 Web「设置 › 授权状态」点击「检查」。视频探测使用库内作品和专用 Playwright 浏览器；没有可用作品、网络异常或拿不到媒体地址时会显示「暂时无法确认」，不能据此断定登录失效。
 
+已安装服务使用独立 runtime 的 `douyin-wiki` 命令；下面的 `uv run --no-sync` 示例仅用于已经准备好依赖的隔离开发环境。
+
 视频主下载路径、图文、博主和收藏使用抖库专用 Profile。日常 Chrome 的登录状态不能代替专用 Profile 的授权。先完成专用浏览器登录，再通过 Web 任务详情或 MCP `retry_job` 重试暂停任务：
 
 ```bash
-uv run douyin-wiki auth douyin
+uv run --no-sync douyin-wiki auth douyin
 ```
 
 `auth video` 打开配置的系统浏览器，供 yt-dlp 的最后回退使用。命令行检查可以指定已确认的视频地址：
 
 ```bash
-uv run douyin-wiki auth status --video-url 'https://www.douyin.com/video/作品ID'
+uv run --no-sync douyin-wiki auth status --video-url 'https://www.douyin.com/video/作品ID'
 ```
 
 Web 授权成功后会恢复对应范围内仍需授权的任务。专用 Profile 被采集占用时，等待采集释放后再授权。Web 进程异常退出留下的会话，会在再次发起授权时回收；正常关闭会结束本进程的授权任务。
@@ -30,8 +32,8 @@ Web 授权成功后会恢复对应范围内仍需授权的任务。专用 Profil
 | `needs_auth` | 按任务的授权范围登录，验证后重试 |
 | `needs_selection` | 查看博主、收藏或合集清单，完成选择并确认导入 |
 | `awaiting_agent_analysis` | 需原会话 Agent 读取阶段材料并提交 Gateway 结果；见 [接入指南](gateway-agents.md) |
-| `waiting_confirmation` | 旧版本保留的待确认任务；已有授权覆盖继续处理时调用 `approve_job` 恢复，新采集不因时长进入该状态 |
-| `needs_review` | 历史复核任务；可显式按当前模型校对策略重试 |
+| `waiting_confirmation` | 兼容状态保留，0.2.0 新采集不因时长进入该状态；旧版待确认任务不导入或接续 |
+| `needs_review` | 兼容状态保留，新采集的普通识别疑点不暂停任务；旧版复核任务不接续，新库任务按错误原因选择 `resolve_review` 或重试 |
 | `failed` | 先读取错误原因，修正配置或外部条件后重试 |
 | `completed_with_warnings` | 查看任务详情提示与已入库资料，批次还需查看子任务 |
 
