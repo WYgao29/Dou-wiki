@@ -103,7 +103,7 @@ async def verify():
             ("creators", f"/imports/creators?job={creator.id}", "#creator-items input"),
             ("favorites", f"/imports/favorites?job={favorites.id}", "#favorites-items input"),
             ("jobs", "/jobs", ".job-row"),
-            ("job", f"/jobs/{job.id}", ".progress-track"),
+            ("job", f"/jobs/{job.id}", "#job-detail-view .progress-track"),
             ("topics", "/topics", ".topic-list-card"),
             ("topic", f"/topics/{topic}", ".topic-artifact-card"),
             ("trash", "/trash", ".trash-item"),

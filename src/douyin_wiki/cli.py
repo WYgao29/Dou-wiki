@@ -161,9 +161,9 @@ def init_command(
         next_steps.append(obsidian["action"])
     next_steps.extend(
         [
-            "启动后台 worker：uv run douyin-wiki service install",
+            "启动后台 worker：douyin-wiki service install",
             "将 douyin-wiki-mcp 添加到 OpenClaw/Hermes，并允许 Gateway 工作流工具",
-            "可选：若不使用 Gateway，再运行 configure-model 切换为 provider 模式",
+            "通过 MCP 导入资料，校正与分析由 Gateway Agent 完成",
         ]
     )
     _print(

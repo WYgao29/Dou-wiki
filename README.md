@@ -347,7 +347,7 @@ DOUKU_RELEASE_DIR=/absolute/path/to/douku-release
 DOUKU_RUNTIME=/absolute/path/to/douku-runtime/.venv
 uv build --out-dir "$DOUKU_RELEASE_DIR"
 uv export --frozen --no-dev --no-emit-project --extra embeddings --extra asr --extra ocr \
-  --format requirements-txt --output-file "$DOUKU_RELEASE_DIR/requirements-runtime.txt"
+  --format requirements.txt --output-file "$DOUKU_RELEASE_DIR/requirements-runtime.txt"
 uv venv --python 3.12 "$DOUKU_RUNTIME"
 uv pip sync --python "$DOUKU_RUNTIME/bin/python" --require-hashes "$DOUKU_RELEASE_DIR/requirements-runtime.txt"
 uv pip install --python "$DOUKU_RUNTIME/bin/python" --no-deps "$DOUKU_RELEASE_DIR/douyin_wiki-0.2.0-py3-none-any.whl"
