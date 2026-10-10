@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import re
 
-from .batch_capture import active_capture_jobs
-from .collection_models import CollectionInventory
+from .batch_capture import TERMINAL, active_capture_jobs
+from .collection_models import CollectionInventory, CollectionProfile, CollectionWork
 from .errors import BrowserAuthRequiredError, JobCancelledError, JobStateError
 from .models import CaptureRequest, JobStatus
 from .time_utils import iso_now
@@ -314,8 +314,8 @@ class CollectionStore:
             if inventory.complete
             else (previous["last_complete_at"] if previous else None)
         )
-        persisted = profile.model_copy(
-            update={"folder_path": folder, "last_complete_at": complete_at}
+        persisted = CollectionProfile.model_validate(
+            {**profile.model_dump(), "folder_path": folder, "last_complete_at": complete_at}
         )
         conn.execute(
             "INSERT INTO collections(mix_id,metadata_json,folder_path,last_complete_at) "
@@ -330,6 +330,18 @@ class CollectionStore:
                 (profile.mix_id,),
             )
         for work in inventory.works:
+            old = conn.execute(
+                "SELECT data_json FROM collection_works WHERE mix_id=? AND work_id=?",
+                (profile.mix_id, work.work_id),
+            ).fetchone()
+            work = work.model_copy(
+                update={
+                    "ever_present_in_complete": bool(
+                        inventory.complete
+                        or (old and json.loads(old[0]).get("ever_present_in_complete"))
+                    )
+                }
+            )
             conn.execute(
                 "INSERT INTO "
                 "collection_works(mix_id,work_id,data_json,position,present_in_last_complete) "
@@ -349,3 +361,84 @@ class CollectionStore:
                 ),
             )
         return persisted
+
+    @staticmethod
+    def bundle_conn(conn, mix_id):
+        row = conn.execute("SELECT * FROM collections WHERE mix_id=?", (mix_id,)).fetchone()
+        if row is None:
+            raise JobStateError("合集不存在")
+        profile = CollectionProfile.model_validate_json(row["metadata_json"])
+        works = [
+            CollectionWork.model_validate(
+                {
+                    **json.loads(r["data_json"]),
+                    "position": r["position"],
+                    "present_in_last_complete": bool(r["present_in_last_complete"]),
+                    "entry_id": r["entry_id"],
+                }
+            )
+            for r in conn.execute(
+                "SELECT * FROM collection_works WHERE mix_id=? "
+                "ORDER BY present_in_last_complete DESC,position,work_id",
+                (mix_id,),
+            )
+        ]
+        return profile, works
+
+    @staticmethod
+    def restore_bundle_conn(conn, profile, works):
+        conn.execute(
+            "INSERT INTO collections VALUES (?,?,?,?)",
+            (
+                profile.mix_id,
+                profile.model_dump_json(),
+                profile.folder_path,
+                profile.last_complete_at.isoformat() if profile.last_complete_at else None,
+            ),
+        )
+        for work in works:
+            conn.execute(
+                "INSERT INTO collection_works VALUES (?,?,?,?,?,?)",
+                (
+                    profile.mix_id,
+                    work.work_id,
+                    work.model_dump_json(),
+                    work.position,
+                    int(work.present_in_last_complete),
+                    work.entry_id,
+                ),
+            )
+
+    def relink_conn(self, conn, mix_id, entry_intact):
+        profile, works = self.bundle_conn(conn, mix_id)
+        for work in works:
+            entry = conn.execute(
+                "SELECT * FROM entries WHERE video_id=? AND status='active'", (work.work_id,)
+            ).fetchone()
+            intact = entry is not None and entry_intact(entry)
+            child = conn.execute(
+                "SELECT j.status,j.artifacts_json FROM collection_run_items i "
+                "JOIN collection_runs c ON c.parent_id=i.parent_id JOIN jobs j ON j.id=i.child_id "
+                "WHERE c.mix_id=? AND i.work_id=? AND c.confirmed=1 "
+                "ORDER BY j.created_at DESC LIMIT 1",
+                (mix_id, work.work_id),
+            ).fetchone()
+            disposition = "imported" if intact else "pending"
+            if not intact and child:
+                status = JobStatus(child["status"])
+                disposition = (
+                    "deleted"
+                    if json.loads(child["artifacts_json"]).get("user_deleted")
+                    else "active"
+                    if status not in TERMINAL
+                    else "cancelled"
+                    if status == JobStatus.CANCELLED
+                    else "failed"
+                )
+            work.entry_id = entry["id"] if intact else None
+            work.disposition = disposition
+            conn.execute(
+                "UPDATE collection_works SET entry_id=?,data_json=? WHERE mix_id=? AND work_id=?",
+                (work.entry_id, work.model_dump_json(), mix_id, work.work_id),
+            )
+        return profile, works

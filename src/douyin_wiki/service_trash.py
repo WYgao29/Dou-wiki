@@ -228,6 +228,10 @@ class TrashMixin:
                 self.refresh_creator_documents(creator_id, action="删除入库资料")
             except (KeyError, Exception) as exc:
                 warnings.append(f"资料已删除，但博主 {creator_id} 更新失败：{exc}")
+        try:
+            self.collections.refresh_for_work(entry.video_id, action="entry-deleted")
+        except Exception as exc:
+            warnings.append(f"资料已删除，但合集链接更新失败：{exc}")
         return warnings
 
     def _finalize_restored_entry(
@@ -263,6 +267,10 @@ class TrashMixin:
                 self.refresh_creator_documents(creator_id, action="恢复入库资料")
             except (KeyError, Exception) as exc:
                 warnings.append(f"资料已恢复，但博主 {creator_id} 更新失败：{exc}")
+        try:
+            self.collections.refresh_for_work(entry.video_id, action="entry-restored")
+        except Exception as exc:
+            warnings.append(f"资料已恢复，但合集链接更新失败：{exc}")
         return warnings
 
     @staticmethod

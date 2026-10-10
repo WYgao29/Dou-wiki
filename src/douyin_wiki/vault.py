@@ -17,6 +17,7 @@ from urllib.parse import quote
 
 import yaml
 
+from .collection_models import CollectionProfile, CollectionWork
 from .localization import (
     label_entry_status,
     label_media_status,
@@ -111,6 +112,7 @@ class VaultWriter:
         self.vault_path = vault_path
         self.last_entry_load_errors: list[dict[str, str]] = []
         self.last_creator_load_errors: list[dict[str, str]] = []
+        self.last_collection_load_errors: list[dict[str, str]] = []
         self.last_topic_load_errors: list[dict[str, str]] = []
         self.last_artifact_load_errors: list[dict[str, str]] = []
 
@@ -228,6 +230,7 @@ class VaultWriter:
             "wiki/syntheses",
             "wiki/questions",
             "creators",
+            "collections",
             "topics",
             ".douyin-wiki/work",
             ".douyin-wiki/locks/works",
@@ -732,10 +735,11 @@ class VaultWriter:
         now = beijing_date()
         lines = ["---", "type: index", f"updated: {now}", "---", "", "# 抖库", ""]
         creator_indexes = sorted((self.vault_path / "creators").glob("*/index.md"))
+        collection_indexes = sorted((self.vault_path / "collections").glob("*/index.md"))
         legacy_entries = [
             entry for entry in entries if Path(entry.source_path).parts[:1] != ("creators",)
         ]
-        if not legacy_entries and not creator_indexes:
+        if not legacy_entries and not creator_indexes and not collection_indexes:
             lines.append("暂无内容。")
         if creator_indexes:
             lines.extend(["## 博主资料", ""])
@@ -753,6 +757,13 @@ class VaultWriter:
                 lines.append(
                     f"- [[{source_no_suffix}|{entry.title}]]{status} — {entry.summary[:120]}"
                 )
+        if collection_indexes:
+            lines.extend(["", "## 合集资料", ""])
+            for index in collection_indexes:
+                relative = index.relative_to(self.vault_path).with_suffix("")
+                frontmatter, _ = self._parse_document(index)
+                title = str(frontmatter.get("name") or index.parent.name)
+                lines.append(f"- [[{relative}|{title}]]")
         path = self.vault_path / "index.md"
         self._atomic_write(path, "\n".join(lines).rstrip() + "\n")
         return path
@@ -925,7 +936,10 @@ class VaultWriter:
         try:
             index_result = subprocess.run(
                 ["git", "rev-parse", "--git-path", "index"],
-                cwd=self.vault_path, capture_output=True, text=True, check=True,
+                cwd=self.vault_path,
+                capture_output=True,
+                text=True,
+                check=True,
             )
             index_path = Path(index_result.stdout.strip())
             if not index_path.is_absolute():
@@ -959,8 +973,12 @@ class VaultWriter:
             if index is not None:
                 environment["GIT_INDEX_FILE"] = str(index)
             result = subprocess.run(
-                ["git", *args], cwd=self.vault_path, env=environment,
-                input=data, capture_output=True, check=True,
+                ["git", *args],
+                cwd=self.vault_path,
+                env=environment,
+                input=data,
+                capture_output=True,
+                check=True,
             )
             return result.stdout
 
@@ -971,8 +989,11 @@ class VaultWriter:
             git("read-tree", "--empty", index=original_index)
         original_tree = git("write-tree", index=original_index).decode().strip()
         head = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"], cwd=self.vault_path,
-            capture_output=True, text=True, check=False,
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=self.vault_path,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         old_head = head.stdout.strip() if head.returncode == 0 else ""
         head_tree = old_head or git("mktree", data=b"").decode().strip()
@@ -990,8 +1011,14 @@ class VaultWriter:
         git("read-tree", head_tree, index=commit_index)
         # The patch's base is the original index. Three-way application removes
         # pre-existing user staging from the commit and rejects overlapping edits.
-        git("apply", "--cached", "--3way", "--whitespace=nowarn",
-            index=commit_index, data=generated_patch)
+        git(
+            "apply",
+            "--cached",
+            "--3way",
+            "--whitespace=nowarn",
+            index=commit_index,
+            data=generated_patch,
+        )
         commit_tree = git("write-tree", index=commit_index).decode().strip()
         if commit_tree == git("rev-parse", f"{head_tree}^{{tree}}").decode().strip():
             return False
@@ -1009,14 +1036,26 @@ class VaultWriter:
             hook_patch = git(*diff_options, new_head, index=commit_index)
             for patch in (hook_patch, staged_patch):
                 if patch:
-                    git("apply", "--cached", "--3way", "--whitespace=nowarn",
-                        index=rebased_index, data=patch)
+                    git(
+                        "apply",
+                        "--cached",
+                        "--3way",
+                        "--whitespace=nowarn",
+                        index=rebased_index,
+                        data=patch,
+                    )
             index_lock.write_bytes(rebased_index.read_bytes())
             os.replace(index_lock, index_path)
         except (OSError, subprocess.CalledProcessError):
             if old_head:
-                git("update-ref", "-m", "rollback failed index publication", "HEAD",
-                    old_head, new_head)
+                git(
+                    "update-ref",
+                    "-m",
+                    "rollback failed index publication",
+                    "HEAD",
+                    old_head,
+                    new_head,
+                )
             else:
                 git("update-ref", "-d", "HEAD", new_head)
             raise
@@ -1191,6 +1230,118 @@ class VaultWriter:
                 raise ValueError("relations 中每项必须是对象")
             self._safe_id(relation.get("target_entry_id"), field="relation.target_entry_id")
         return entry, data
+
+    def write_collection(self, profile, works, entries):
+        folder = self._safe_relative_path(profile.folder_path, field="collection.folder_path")
+        if len(Path(folder).parts) != 2 or Path(folder).parts[0] != "collections":
+            raise ValueError("合集目录必须位于 collections/ 下")
+        root = self.vault_path / folder
+        self._reject_vault_symlinks(root, field="collection.folder_path")
+        by_id = {entry.id: entry for entry in entries}
+        lines = [
+            self._frontmatter(
+                {"type": "collection", "mix_id": profile.mix_id, "name": profile.name}
+            ).rstrip(),
+            "",
+            f"# {profile.name}",
+            "",
+            f"[原合集]({profile.canonical_url})",
+            "",
+            f"作者：{profile.author or '未提供'}",
+            "",
+        ]
+        labels = {
+            "pending": "未导入",
+            "imported": "已入库",
+            "active": "处理中",
+            "failed": "失败",
+            "cancelled": "已取消",
+            "deleted": "资料已删除",
+        }
+        for work in works:
+            title = work.title.replace("[", "\\[").replace("]", "\\]").replace("\n", " ")
+            entry = by_id.get(work.entry_id)
+            target = (
+                quote(os.path.relpath(self.vault_path / entry.source_path, root), safe="/")
+                if entry
+                else work.canonical_url
+            )
+            qualifier = (
+                ""
+                if work.present_in_last_complete
+                else "；不在最近完整清单中"
+                if work.ever_present_in_complete
+                else "；部分读取发现"
+            )
+            number = work.episode_label or str(work.position)
+            lines.append(
+                f"- {number}. [{title}]({target}) · "
+                f"{labels.get(work.disposition, '未导入')}{qualifier}"
+            )
+        index = root / "index.md"
+        sidecar = root / ".data" / "collection.md"
+        payload = {
+            "profile": profile.model_dump(mode="json"),
+            "works": [work.model_dump(mode="json") for work in works],
+        }
+        machine = (
+            self._frontmatter(
+                {"type": "collection-machine-data", "version": 1, "mix_id": profile.mix_id}
+            )
+            + "\n```yaml\n"
+            + yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+            + "```\n"
+        )
+        changed = []
+        for path, content in ((index, "\n".join(lines) + "\n"), (sidecar, machine)):
+            if not path.is_file() or path.read_text(encoding="utf-8") != content:
+                self._atomic_write(path, content)
+                changed.append(path)
+        return changed
+
+    def load_collections(self):
+        results, seen = [], set()
+        self.last_collection_load_errors = []
+        for path in sorted((self.vault_path / "collections").glob("*/.data/collection.md")):
+            try:
+                self._reject_vault_symlinks(path, field="collection.machine_path")
+                frontmatter, body = self._parse_document_strict(path)
+                if (
+                    frontmatter.get("type") != "collection-machine-data"
+                    or type(frontmatter.get("version")) is not int
+                    or frontmatter["version"] != 1
+                ):
+                    raise ValueError("合集机器侧车类型或版本无效")
+                match = re.search(r"```yaml\s*\n(?P<payload>.*?)\n```", body, re.S)
+                payload = yaml.safe_load(match.group("payload")) if match else None
+                if not isinstance(payload, dict) or not isinstance(payload.get("works"), list):
+                    raise ValueError("合集机器侧车缺少 profile 或 works")
+                profile = CollectionProfile.model_validate(payload.get("profile"))
+                folder = self._safe_relative_path(
+                    profile.folder_path, field="collection.folder_path"
+                )
+                if (
+                    len(Path(folder).parts) != 2
+                    or Path(folder).parts[0] != "collections"
+                    or self.vault_path / folder / ".data" / "collection.md" != path
+                ):
+                    raise ValueError("合集目录与侧车路径不一致")
+                if frontmatter.get("mix_id") != profile.mix_id or profile.mix_id in seen:
+                    raise ValueError("合集 ID 重复或与侧车不一致")
+                works, ids = [], set()
+                for value in payload["works"]:
+                    work = CollectionWork.model_validate(value)
+                    if work.work_id in ids:
+                        raise ValueError("合集作品 ID 重复")
+                    if work.entry_id:
+                        self._safe_id(work.entry_id, field="collection.entry_id")
+                    works.append(work)
+                    ids.add(work.work_id)
+                seen.add(profile.mix_id)
+                results.append((profile, works))
+            except Exception as exc:
+                self._append_load_error(self.last_collection_load_errors, path, exc)
+        return results
 
     def load_creators(self) -> list[tuple[CreatorRecord, list[CreatorWorkRecord]]]:
         """Load creator decisions from the tracked hidden creator sidecars."""

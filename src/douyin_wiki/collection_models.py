@@ -58,6 +58,7 @@ class CollectionWork(BaseModel):
     entry_id: str | None = None
     disposition: str = "pending"
     present_in_last_complete: bool = False
+    ever_present_in_complete: bool = False
 
     @field_validator("work_id")
     @classmethod

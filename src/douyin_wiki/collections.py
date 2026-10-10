@@ -8,7 +8,7 @@ from collections import Counter
 from .adapters.share import assert_collection_share
 from .batch_capture import TERMINAL, active_capture_jobs
 from .collection_store import CollectionStore, eligible
-from .errors import JobCancelledError, JobStateError
+from .errors import JobCancelledError, JobLeaseLostError, JobStateError
 from .models import CaptureOptions, CaptureRequest, JobStatus
 
 
@@ -55,6 +55,7 @@ class CollectionService:
             on_checkpoint=checkpoint,
         )
         await checkpoint(snapshot)
+        await asyncio.to_thread(self.publish_snapshot, job.id, generation, snapshot)
         data = self.get(job.id)
         empty = snapshot.complete and not snapshot.works
         return self.database.update_job(
@@ -71,7 +72,69 @@ class CollectionService:
         )
 
     def _entry_intact(self, row):
-        return self.core._entry_documents_intact(self.database._entry_from_row(row))
+        return self.core.entry_documents_intact(self.database._entry_from_row(row))
+
+    def publish_snapshot(self, job_id, generation, inventory):
+        with (
+            self.core.vault.entry_operations_locked(),
+            self.core.vault.locked(),
+            self.core.vault.reversible_writes(),
+        ):
+            with self.database.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self.database.assert_job_claim(conn, job_id)
+                run = self.store._run(conn, job_id)
+                self.store._assert_mutable(run)
+                if run["generation"] != generation:
+                    raise JobLeaseLostError("合集清点世代已变化")
+                self.store.publish_inventory_conn(conn, inventory)
+                profile, works = self.store.relink_conn(
+                    conn, inventory.profile.mix_id, self._entry_intact
+                )
+                changed = self.core.vault.write_collection(
+                    profile, works, self.database.list_entries()
+                )
+                changed.append(self.core.vault.rebuild_index(self.database.list_entries()))
+                self.database.assert_job_claim(conn, job_id)
+            self.core.commit_vault(changed, f"collection: {profile.mix_id} inventory")
+
+    def get_collection(self, mix_id):
+        with self.database.connect() as conn:
+            profile, works = self.store.bundle_conn(conn, mix_id)
+        return {
+            "profile": profile.model_dump(mode="json"),
+            "works": [work.model_dump(mode="json") for work in works],
+        }
+
+    def list_collections(self):
+        with self.database.connect() as conn:
+            ids = [r[0] for r in conn.execute("SELECT mix_id FROM collections ORDER BY mix_id")]
+        return [self.get_collection(mid) for mid in ids]
+
+    def refresh_documents(self, mix_id, *, action):
+        with (
+            self.core.vault.entry_operations_locked(),
+            self.core.vault.locked(),
+            self.core.vault.reversible_writes(),
+        ):
+            with self.database.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                profile, works = self.store.relink_conn(conn, mix_id, self._entry_intact)
+                changed = self.core.vault.write_collection(
+                    profile, works, self.database.list_entries()
+                )
+            self.core.commit_vault(changed, f"collection: {mix_id} {action}")
+
+    def refresh_for_work(self, work_id, *, action):
+        with self.database.connect() as conn:
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT mix_id FROM collection_works WHERE work_id=?", (work_id,)
+                )
+            ]
+        for mid in ids:
+            self.refresh_documents(mid, action=action)
 
     def _items(self, job_id, run):
         rows = self.store.rows(job_id)
@@ -227,6 +290,7 @@ class CollectionService:
             self.store.confirm(
                 job_id, accept_partial=accept_partial, entry_intact=self._entry_intact
             )
+            self.refresh_documents(self.store.load(job_id)["mix_id"], action="confirmed")
             return self.refresh(job_id)
 
     def refresh(self, job_id):
@@ -283,7 +347,16 @@ class CollectionService:
             raise
 
     def refresh_for_child(self, child_id):
+        child = self.database.get_job(child_id)
+        work_id = str((child.artifacts.get("resolved") or {}).get("video_id") or "")
+        if work_id:
+            self.refresh_for_work(work_id, action="capture-updated")
         for parent_id in self.store.parent_ids(child_id):
+            # Pre-resolution jobs have no resolved work ID yet.
+            if not work_id:
+                self.refresh_documents(
+                    self.store.load(parent_id)["mix_id"], action="capture-updated"
+                )
             self.refresh(parent_id)
 
     def refresh_all(self):

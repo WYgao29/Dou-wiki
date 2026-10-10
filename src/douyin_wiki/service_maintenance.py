@@ -98,6 +98,9 @@ class MaintenanceMixin:
         }
 
     def _entry_documents_intact(self, entry: EntryRecord) -> bool:
+        return self.entry_documents_intact(entry)
+
+    def entry_documents_intact(self, entry: EntryRecord) -> bool:
         data = self.database.get_entry_data(entry.id)
         creator_folder = str(data.get("creator", {}).get("folder_path") or "")
         machine_path = (
@@ -146,6 +149,7 @@ class MaintenanceMixin:
     def _rebuild_database_from_vault_locked(self, *, apply: bool) -> dict[str, Any]:
         loaded = self.vault.load_entries()
         loaded_creators = self.vault.load_creators()
+        loaded_collections = self.vault.load_collections()
         loaded_topics = self.vault.load_topics()
         entry_ids = [entry.id for entry, _ in loaded]
         entry_id_set = set(entry_ids)
@@ -292,6 +296,20 @@ class MaintenanceMixin:
                         f"作品关联资料不存在：{work.entry_id}",
                     )
 
+        entries_by_id = {entry.id: entry for entry, _ in loaded}
+        for profile, works in loaded_collections:
+            sidecar_path = self.config.vault_path / profile.folder_path / ".data" / "collection.md"
+            for work in works:
+                if work.entry_id and (
+                    work.entry_id not in entries_by_id
+                    or entries_by_id[work.entry_id].video_id != work.work_id
+                ):
+                    append_error(
+                        self.vault.last_collection_load_errors,
+                        sidecar_path,
+                        f"合集作品关联资料不存在或作品 ID 不一致：{work.entry_id}",
+                    )
+
         for topic, artifacts in loaded_topics:
             sidecar_path = topic_sidecar_path(topic)
             for source in topic.sources:
@@ -325,6 +343,9 @@ class MaintenanceMixin:
             "entry_ids": entry_ids,
             "creator_count": len(loaded_creators),
             "creator_ids": [creator.id for creator, _ in loaded_creators],
+            "collection_count": len(loaded_collections),
+            "collection_ids": [profile.mix_id for profile, _ in loaded_collections],
+            "collection_errors": list(self.vault.last_collection_load_errors),
             "topic_count": len(loaded_topics),
             "topic_ids": [topic.id for topic, _ in loaded_topics],
             "entry_errors": list(self.vault.last_entry_load_errors),
@@ -336,6 +357,7 @@ class MaintenanceMixin:
         if (
             self.vault.last_entry_load_errors
             or self.vault.last_creator_load_errors
+            or self.vault.last_collection_load_errors
             or self.vault.last_topic_load_errors
             or self.vault.last_artifact_load_errors
         ):
@@ -343,15 +365,18 @@ class MaintenanceMixin:
                 return report
             raise JobStateError(
                 "Vault 中存在无法解析的资料；请根据 dry-run 的 entry_errors、"
-                "creator_errors、topic_errors、artifact_errors 修复后再重建"
+                "creator_errors、collection_errors、topic_errors、artifact_errors 修复后再重建"
             )
         if not apply:
             return report
         if self.database.has_unfinished_creator_jobs():
             raise JobStateError("存在未完成的博主清点或批量任务，完成后再重建 SQLite")
+        if self.database.has_unfinished_collection_jobs():
+            raise JobStateError("存在未完成的合集清点或批量任务，完成后再重建 SQLite")
         self.database.replace_knowledge_cache(
             entries=prepared,
             creators=loaded_creators,
+            collections=loaded_collections,
             topics=loaded_topics,
             embedding_signature=embedding_signature,
         )

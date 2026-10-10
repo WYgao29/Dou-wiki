@@ -495,6 +495,18 @@ class Database:
             ids.update(parent.result.get("child_job_ids", []))
         return sorted(ids)
 
+    def has_unfinished_collection_jobs(self) -> bool:
+        terminal = {
+            JobStatus.COMPLETED,
+            JobStatus.COMPLETED_WITH_WARNINGS,
+            JobStatus.CANCELLED,
+            JobStatus.FAILED,
+        }
+        return any(
+            job.status not in terminal and not job.artifacts.get("user_deleted")
+            for job in self.list_jobs(kinds={"collection_import"}, limit=None)
+        )
+
     def mark_capture_creator_links(self, child_id: str, entry_id: str) -> list[str]:
         """Publish every creator relation even when another batch owns the capture."""
         with self.connect() as conn:
@@ -2822,6 +2834,7 @@ class Database:
         creators: list[tuple[CreatorRecord, list[CreatorWorkRecord]]],
         topics: list[tuple[ResearchTopic, list[TopicArtifact]]],
         embedding_signature: str,
+        collections=None,
     ) -> None:
         """Replace every rebuildable projection in one SQLite transaction."""
         with self.connect() as conn:
@@ -2844,6 +2857,10 @@ class Database:
                 self._persist_entry_bundle_conn(conn, entry, data, chunks, relations, reminders)
             for creator, works in creators:
                 self._restore_creator_bundle_conn(conn, creator, works)
+            from .collection_store import CollectionStore
+
+            for profile, works in collections or []:
+                CollectionStore.restore_bundle_conn(conn, profile, works)
             for topic, artifacts in topics:
                 self._restore_topic_bundle_conn(conn, topic, artifacts)
 
@@ -2859,14 +2876,15 @@ class Database:
                     continue
                 conn.execute(
                     """INSERT INTO creator_run_items
-                       (job_id, creator_id, work_id, ordinal, is_new)
-                       VALUES (?, ?, ?, ?, ?)""",
+                       (job_id, creator_id, work_id, ordinal, is_new, child_job_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
                     (
                         item["job_id"],
                         item["creator_id"],
                         item["work_id"],
                         item["ordinal"],
                         item["is_new"],
+                        item["child_job_id"],
                     ),
                 )
             for item in last_job_links:
@@ -2905,6 +2923,7 @@ class Database:
         conn.execute("DELETE FROM entries")
         if include_creators:
             conn.execute("DELETE FROM creators")
+            conn.execute("DELETE FROM collections")
         conn.execute("DELETE FROM index_metadata")
 
     def get_index_metadata(self, key: str) -> str | None:
