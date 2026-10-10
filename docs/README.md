@@ -30,6 +30,8 @@
 
 正式读取器的18件多页清单与网页 ID、集数、顺序一致；独立 Vault 的一条真实视频已完成 Gateway 校正、分析与入库，复用及故意失败也已验证。使用规范见[合集导入](collections-import.md)，真实样本范围见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)，修正行为与证据见[首次审查修复](superpowers/reviews/2026-10-10-collection-import-review-fixes.md)和[共享采集后续修复](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md)。
 
+本机 Web 和 Worker 随后已重启，合集网页及接口检查通过，按现有配置新建的 MCP 连接提供52个工具，包含8个合集工具。当前聊天仍缓存旧工具清单，需要客户端重新连接；检查范围与材料见[本机服务重启记录](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md#本机服务重启与入口检查2026-10-10)。
+
 ## 开发中的功能
 
 [独立 AI 术语仓库与热词接入方案](superpowers/specs/2026-10-08-ai-terms-design.md)已根据当前 Qwen3 主线编写，处于方案审阅阶段。建议先建立独立词库、Agent 维护规则与确定性数据导出，再接入抖库的主识别和局部识别；当前尚未建库或修改运行代码。

@@ -63,3 +63,13 @@ wheel SHA-256：`71831c8bad71cc4c5812a33b4c5de43736bc42baa501e10231cd34f6e4e3195
 本次范围为本地主线合并和开发分支清理，没有推送远端、重启服务或向生产 Vault 导入作品。已安装服务的配置仍引用主仓库 `.venv/bin/python`；服务实际运行版本和部署验收需另行检查，不能将此次合并解释为全部视频已入库。
 
 合并验证、截图副本、归档及最终 Git 状态保存于 `/Users/weisengao/Documents/ChatGPT/douyin-wiki-validation/2026-10-10-collection-main-merge-mctwfcp0`。文档索引与合集使用说明同步更新为已集成状态，早期验收基准及失败记录保留。
+
+## 本机服务重启与入口检查（2026-10-10）
+
+用户随后要求“重启 Web 和 Worker，确认合集网页入口、MCP 工具正常”。运行源码为主线 `8d598ca26b0bc65486586ce2c53f119cac28d2e6`，本阶段未修改产品代码或同步依赖。重启前 Web 仍是旧进程，合集入口返回404；队列与执行任务为零。使用 `launchctl kickstart -k` 重启已安装的两个服务，Web PID 从720变为43554，Worker 从42785变为43556。两个新进程保持 running，系统健康接口显示新的 Worker 标识与持续更新的心跳。
+
+`/imports`、`/imports/collections`、合集 JS、`/api/collections`、`/api/collection-imports` 及系统健康接口均返回200。网页版本为0.2.47，实际返回的合集 JS 与主线源码逐字节相同。内嵌浏览器实际显示合集链接表单，“开始清点合集”可用，控制台没有错误。只检查入口和读取接口，没有提交清点或确认导入；任务汇总数与重启前相同。
+
+按 Codex 已注册的解释器、参数及环境在仓库外建立新的 MCP STDIO 连接，握手、ping、52个工具清单和合集参数检查通过，包含全部8个合集工具；`list_collections` 和 `list_collection_imports` 实际调用成功。当前聊天的连接仍缓存旧44个工具，不含新增合集工具；客户端需要重新连接 MCP 才能显示新增工具。本阶段未终止其他聊天的 MCP 进程。首次验证脚本的 SDK 字段名错误已按已安装库修正，失败与后续成功记录均保留。
+
+配置与两个 LaunchAgent 文件的 SHA-256 不变；重启后新增 Web、Worker 日志没有异常。证据保存于 `/Users/weisengao/Documents/ChatGPT/douyin-wiki-validation/2026-10-10-service-restart-3fe3b124`：`REPORT.md`、`restart.json`、`verification.json`、`http-check.json`、`browser-check.json`、`mcp-tools.json`、`mcp-check.json`、`check_mcp.py`、MCP 实际返回和新增服务日志。本次没有执行真实账号清点或新增媒体入库。
