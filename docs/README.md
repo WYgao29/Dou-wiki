@@ -27,6 +27,8 @@
 
 ## 开发中的功能
 
+[抖音合集导入开发方案](superpowers/specs/2026-10-10-douyin-collection-import-design.md)基于当前主线编写，处于设计审阅阶段。建议先验证网页原生请求与主动分页，再接入合集清点、独立关系、现有采集任务及 Web/CLI/MCP；《项目经理故事汇》的 18 条网页链接已核查，程序接口分页与实际入库尚未验收。
+
 [独立 AI 术语仓库与热词接入方案](superpowers/specs/2026-10-08-ai-terms-design.md)已根据当前 Qwen3 主线编写，处于方案审阅阶段。建议先建立独立词库、Agent 维护规则与确定性数据导出，再接入抖库的主识别和局部识别；当前尚未建库或修改运行代码。
 
 [Gateway token 优化规格](superpowers/specs/2026-10-03-gateway-token-optimization-design.md)与[实施计划](superpowers/plans/2026-10-03-gateway-token-optimization.md)已确认并在 `codex/gateway-token-optimization` 实现；现有四工具可显式选择协议 2，覆盖 OCR 投影、增量校正、证据引用与简短回执，默认保留旧协议。调用规范见 [Gateway 指南](gateway-agents.md#紧凑协议gateway_protocol2)；主线集成与真实客户端切换尚未执行。
