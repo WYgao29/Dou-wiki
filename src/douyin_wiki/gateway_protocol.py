@@ -543,6 +543,8 @@ def compact_job_payload(job: JobRecord) -> dict[str, Any]:
         "auth_scope",
         "reason",
         "duration_minutes",
+        "shared_capture_job_id",
+        "shared_job_status",
     }
     result = {key: value for key, value in job.result.items() if key in allowed}
     metadata = job.artifacts.get("metadata", {}) or {}

@@ -266,3 +266,24 @@ async def test_intact_entry_reuse_precedes_active_task_option_conflict(service):
     assert service.downloader.calls == 1
     assert service.get_job(waiting.id).status == JobStatus.QUEUED
     assert [item.text for item in service.database.get_entry(entry.id).inspirations] == ["补充灵感"]
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_mcp_shared_capture_query_exposes_executor_in_both_protocols(
+    service, monkeypatch, protocol
+):
+    from douyin_wiki import mcp_server
+
+    service.config.analysis_mode = AnalysisMode.GATEWAY
+    _, owner = await confirmed_collection(service)
+    await Worker(service).run_once()
+    context = GatewayContext(gateway="caller", conversation_id="shared-query")
+    duplicate = service.capture_douyin(SHORT, gateway_context=context)
+    await Worker(service).run_once()
+    monkeypatch.setattr(mcp_server, "_SERVICE", service)
+    payload = mcp_server.get_job(duplicate.id, gateway_protocol=protocol)
+    assert payload["status"] == JobStatus.MONITORING.value
+    assert payload["result"]["shared_capture_job_id"] == owner
+    assert payload["result"]["shared_job_status"] == JobStatus.AWAITING_AGENT_ANALYSIS.value
+    if protocol == 2:
+        assert payload["gateway_context"] == context.model_dump(mode="json")
