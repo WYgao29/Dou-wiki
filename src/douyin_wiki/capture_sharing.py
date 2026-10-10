@@ -57,7 +57,7 @@ class CaptureSharing:
             owner = owner or (matching[0] if matching else current)
             if owner.id == job_id:
                 return None
-            if owner.request.options != current.request.options:
+            if owner.request.options.processing_key() != current.request.options.processing_key():
                 raise JobStateError(f"作品 {work_id} 已有不同处理选项的活动任务 {owner.id}")
             artifacts = {**current.artifacts, "shared_capture_job_id": owner.id}
             result = {

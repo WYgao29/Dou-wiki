@@ -125,6 +125,10 @@ class CaptureOptions(BaseModel):
     allow_long: bool = False
     approve_cloud_analysis: bool = False
 
+    def processing_key(self) -> tuple[RetentionPolicy]:
+        """Compare processing behavior while retaining legacy request fields."""
+        return (self.retention,)
+
 
 class GatewayContext(BaseModel):
     gateway: str = Field(min_length=1, max_length=64)

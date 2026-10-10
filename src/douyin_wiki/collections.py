@@ -181,7 +181,10 @@ class CollectionService:
             else:
                 candidate = active.get(row["work_id"]) or active.get(work["canonical_url"])
                 if candidate:
-                    conflict = candidate.request.options != run["request"].options
+                    conflict = (
+                        candidate.request.options.processing_key()
+                        != run["request"].options.processing_key()
+                    )
                     child = candidate
                     disposition = "conflict" if conflict else "active"
                 elif row["decision"] == "selected":
@@ -205,7 +208,11 @@ class CollectionService:
                     ),
                     "job_status": child.status.value if child else None,
                     "job_updated_at": child.updated_at.isoformat() if child else None,
-                    "error_message": child.error_message if child else None,
+                    "error_message": (
+                        f"作品 {row['work_id']} 已有不同处理选项的活动任务"
+                        if conflict
+                        else child.error_message if child else None
+                    ),
                     "options_conflict": conflict,
                     "can_retry": bool(
                         child
@@ -249,7 +256,12 @@ class CollectionService:
             new_tasks=sum(i["new_task"] or (i["selected"] and not i["job_id"]) for i in items),
             reused_tasks=sum(
                 (bool(i["child_id"]) and not i["new_task"])
-                or (not i["child_id"] and i["selected"] and bool(i["job_id"]))
+                or (
+                    not i["child_id"]
+                    and i["selected"]
+                    and bool(i["job_id"])
+                    and not i["options_conflict"]
+                )
                 for i in items
             ),
             retryable_failed=sum(i["can_retry"] for i in items),

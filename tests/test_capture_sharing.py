@@ -12,6 +12,7 @@ from douyin_wiki.models import (
     GatewayContext,
     InspirationInput,
     JobStatus,
+    RetentionPolicy,
     TranscriptCorrection,
 )
 from douyin_wiki.service import DouyinWikiService
@@ -132,13 +133,15 @@ async def test_late_capture_with_conflicting_options_does_not_download_again(ser
     service.config.analysis_mode = AnalysisMode.GATEWAY
     _, owner = await confirmed_collection(service)
     await Worker(service).run_once()
-    duplicate = service.capture_douyin(SHORT, options=CaptureOptions(allow_long=True))
+    duplicate = service.capture_douyin(
+        SHORT, options=CaptureOptions(retention=RetentionPolicy.KEEP)
+    )
     result = await Worker(service).run_once()
     assert result.id == duplicate.id and result.status == JobStatus.FAILED
     assert "处理选项" in result.error_message
     assert service.downloader.calls == 1
     assert service.get_job(owner).status == JobStatus.AWAITING_AGENT_ANALYSIS
-    assert not service.get_job(owner).request.options.allow_long
+    assert service.get_job(owner).request.options.retention == RetentionPolicy.TEMPORARY
 
 
 async def test_cancel_batch_keeps_capture_needed_by_independent_follower(service):
@@ -379,7 +382,7 @@ async def test_intact_entry_reuse_precedes_active_task_option_conflict(service):
     from tests.test_collection_vault import import_entry
 
     entry = await import_entry(service)
-    waiting = service.capture_douyin(URL, options=CaptureOptions(allow_long=True))
+    waiting = service.capture_douyin(URL, options=CaptureOptions(retention=RetentionPolicy.KEEP))
     duplicate = service.capture_douyin(URL, inspirations=[InspirationInput(text="补充灵感")])
     result = await service.process_claimed_job(duplicate)
     assert result.status == JobStatus.COMPLETED and result.result["entry_id"] == entry.id

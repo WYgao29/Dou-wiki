@@ -2107,18 +2107,14 @@ class Database:
             ).fetchall()
             if any(row["decision"] == CreatorWorkDecision.PENDING.value for row in rows):
                 raise JobStateError("仍有未决定作品；请先选择或跳过全部作品")
-            child_ids = []
             active = active_capture_jobs(conn)
+            plans = []
             for row in rows:
                 if row["decision"] != CreatorWorkDecision.SELECTED.value:
                     continue
                 work = self._creator_work_from_row(row)
                 if work.entry_id:
-                    conn.execute(
-                        "UPDATE creator_works SET decision=?, availability='available' "
-                        "WHERE creator_id=? AND work_id=?",
-                        (CreatorWorkDecision.IMPORTED.value, creator_id, work.work_id),
-                    )
+                    plans.append((work, None))
                     continue
                 child_row = conn.execute(
                     "SELECT * FROM jobs WHERE id=?", (work.last_job_id,)
@@ -2132,16 +2128,29 @@ class Database:
                            ORDER BY created_at DESC LIMIT 1""",
                         (job_id, work.work_id),
                     ).fetchone()
-                if child_row is not None and self._job_from_row(child_row).status not in terminal:
-                    child_id = str(child_row["id"])
-                    if self._job_from_row(child_row).request.options != parent.request.options:
-                        raise JobStateError(f"作品 {work.work_id} 已有不同处理选项的活动任务")
-                elif shared := active.get(work.work_id) or active.get(work.canonical_url):
-                    if shared.request.options != parent.request.options:
-                        raise JobStateError(f"作品 {work.work_id} 已有不同处理选项的活动任务")
-                    child_id = shared.id
-                else:
-                    child_id = self._insert_job_conn(
+                child = self._job_from_row(child_row) if child_row is not None else None
+                if child is None or child.status in terminal:
+                    child = active.get(work.work_id) or active.get(work.canonical_url)
+                if (
+                    child
+                    and child.request.options.processing_key()
+                    != parent.request.options.processing_key()
+                ):
+                    raise JobStateError(f"作品 {work.work_id} 已有不同处理选项的活动任务")
+                plans.append((work, child))
+            child_ids = []
+            for work, child in plans:
+                if work.entry_id:
+                    conn.execute(
+                        "UPDATE creator_works SET decision=?, availability='available' "
+                        "WHERE creator_id=? AND work_id=?",
+                        (CreatorWorkDecision.IMPORTED.value, creator_id, work.work_id),
+                    )
+                    continue
+                child_id = (
+                    child.id
+                    if child
+                    else self._insert_job_conn(
                         conn,
                         CaptureRequest(
                             share_text=work.canonical_url,
@@ -2159,6 +2168,7 @@ class Database:
                             }
                         },
                     )
+                )
                 conn.execute(
                     "UPDATE creator_works SET last_job_id=? WHERE creator_id=? AND work_id=?",
                     (child_id, creator_id, work.work_id),

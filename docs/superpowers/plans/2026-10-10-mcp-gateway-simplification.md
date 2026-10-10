@@ -10,7 +10,7 @@
 
 **Spec:** [已确认的精简方案](../../design/2026-10-10-mcp-gateway-simplification-plan.md)；[第 1 步复核记录](../reviews/2026-10-10-mcp-gateway-simplification-design-review.md)。用户已确认第 1 步及版本建议，不重做设计确认。
 
-**Status:** 用户已确认实施计划；第 3 步固定基准和隔离环境完成，任务 1 已通过验证，任务 2 尚未开始，等待第 4 步确认。运行代码尚未修改。版本安排：精简版 `0.2.0`，旧版 `0.1.5`；Web 静态资源版本由 `0.2.47` 改为 `0.2.48`。
+**Status:** 第 3、4 步已完成，任务 1、2 已通过验证；共享选项和批次预检已在隔离分支修改，等待用户确认第 5 步。任务 2 新增 35 个行为用例，140 项定向测试及 1450 项非 live 回归通过，Ruff 通过，52 个 MCP 工具名称和输入参数与旧基准一致。版本安排：精简版 `0.2.0`，旧版 `0.1.5`；Web 静态资源版本由 `0.2.47` 改为 `0.2.48`。
 
 ## Global Constraints
 
@@ -47,8 +47,8 @@
 | --- | --- | --- |
 | 1. 方案与现状复核 | 已完成，见复核记录 | 已获用户确认 |
 | 2. 详细实施计划 | 已完成，已获用户确认 | 已进入步骤 3 |
-| 3. 固定基准、准备环境 | 任务 1 已完成 | 等待用户确认步骤 4 |
-| 4. 共享选项修复 | 任务 2 | 确认后进入步骤 5 |
+| 3. 固定基准、准备环境 | 任务 1 已完成、已获确认 | 已进入步骤 4 |
+| 4. 共享选项修复 | 任务 2 已完成 | 等待用户确认步骤 5 |
 | 5. 执行与数据精简 | 任务 3、4，按顺序完成 | 两项完成后确认，进入步骤 6 |
 | 6. 入口、界面与文档 | 任务 5、6、7，按顺序完成 | 三项完成后确认，进入步骤 7 |
 | 7. 代码审查与修复 | 任务 8 | 确认后进入步骤 8 |
@@ -101,11 +101,11 @@ TASK_LEGACY='/Users/weisengao/Documents/ChatGPT/archives/douyin-wiki-legacy'
 
 ## Task 2：统一有效选项和批次派发（步骤 4）
 
-**Files:** Modify：`src/douyin_wiki/models.py`、`batch_capture.py`、`capture_sharing.py`、`database.py`、`collection_store.py`、`collections.py`、`favorites_store.py`、`favorites.py`；Test：新建 `tests/test_capture_option_compatibility.py`，调整 `tests/test_capture_sharing.py`、`test_collection_flow.py`、`test_creator.py`、`test_favorites.py` 中以旧授权字段制造冲突的断言。
+**Files:** Modify：`src/douyin_wiki/models.py`、`capture_sharing.py`、`database.py`、`collection_store.py`、`collections.py`、`favorites_store.py`、`favorites.py`、`localization.py`；Reuse：`batch_capture.py` 的完整活动任务映射，以及 `tests/test_creator.py`、`test_favorites.py` 中的既有 helper；Test：新建 `tests/test_capture_option_compatibility.py`，调整 `tests/test_capture_sharing.py`、`test_collection_flow.py` 中以旧授权字段制造冲突的断言。
 
 **Interfaces:** Consumes：现有 `CaptureOptions`、`active_capture_jobs(conn)`、四种创建 / 确认接口。Produces：`CaptureOptions.processing_key(self) -> tuple[RetentionPolicy]`，仅含 `retention`；公开请求与任务返回保持原格式，不覆盖整个模型的相等运算。
 
-- [ ] **Step 1：写旧授权参数不阻止共享的行为测试。** 在新测试文件复用 `tests.test_capture_sharing.confirmed_collection` 和 `SHORT`，参数化两旧字段的四种组合。Worker 先处理执行者，后处理短链等待者；必须满足以下断言，且等待者自己的 Gateway 会话保留：
+- [x] **Step 1：写旧授权参数不阻止共享的行为测试。** 在新测试文件复用 `tests.test_capture_sharing.confirmed_collection` 和 `SHORT`，参数化两旧字段的四种组合。Worker 先处理执行者，后处理短链等待者；必须满足以下断言，且等待者自己的 Gateway 会话保留：
 
 ```python
 assert follower.id == requested.id
@@ -116,11 +116,11 @@ assert service.get_job(requested.id).request.gateway_context == caller_context
 assert service.get_job(owner_id).status == JobStatus.AWAITING_AGENT_ANALYSIS
 ```
 
-- [ ] **Step 2：运行失败测试。** Run：`uv run --no-sync pytest -q tests/test_capture_option_compatibility.py -k legacy_authorization`。Expected：旧字段含 `True` 的用例因整对象比较不能进入共享状态；失败原因必须是行为断言，不是导入或夹具错误。
-- [ ] **Step 3：补全批次测试并验证失败。** 新建测试函数 `test_batch_reuses_capture_when_only_legacy_authorization_differs` 与 `test_later_retention_conflict_does_not_dispatch_partial_batch`，对 `creator / favorites / collection` 参数化。复用各文件已有清点 helper；活动执行者旧字段不同仍被复用，活动执行者 `retention=KEEP` 与默认 `TEMPORARY` 冲突。让后一个所选作品冲突，断言 `set(j.id for j in service.database.list_jobs())` 与确认前一致、父任务仍待选择、没有新 child 关联或 confirmed 标记。测试合集 / 收藏预览与确认的冲突提示一致。Run：`uv run --no-sync pytest -q tests/test_capture_option_compatibility.py`，确认旧字段共享或收藏有效选项冲突用例因当前行为失败；已有正确的原子性用例允许先通过。
-- [ ] **Step 4：实现统一比较与全部候选预检。** `processing_key()` 返回单元素 tuple；短链共享、博主派发、合集预览和确认、收藏预览和确认全部调用同一规则。收藏保留活动 `JobRecord` 而不是提前只保留 ID；博主与收藏先形成候选计划，再在原写事务内插入和关联。保留合集已有双循环、租约校验、共享重指、幂等确认和完整资料优先复用。
-- [ ] **Step 5：验证正反例与既有共享行为。** Run：`uv run --no-sync pytest -q tests/test_capture_option_compatibility.py tests/test_capture_sharing.py tests/test_collection_flow.py tests/test_collection_lifecycle.py tests/test_creator.py tests/test_favorites.py tests/test_capture_sharing_web.py`；再运行 Ruff。Expected：全部通过；不同 retention 明确冲突，取消保护、等待者重试、普通检查点和事件会话不变。
-- [ ] **Step 6：检查差异并提交。** 只提交此任务文件，消息 `fix: compare effective capture options across import paths`；记录测试结果。本大步骤结束，等待用户确认步骤 5。
+- [x] **Step 2：运行失败测试。** Run：`uv run --no-sync pytest -q tests/test_capture_option_compatibility.py -k legacy_authorization`。Expected：旧字段含 `True` 的用例因整对象比较不能进入共享状态；失败原因必须是行为断言，不是导入或夹具错误。
+- [x] **Step 3：补全批次测试并验证失败。** 新建测试函数 `test_batch_reuses_capture_when_only_legacy_authorization_differs` 与 `test_later_retention_conflict_does_not_dispatch_partial_batch`，对 `creator / favorites / collection` 参数化。复用各文件已有清点 helper；活动执行者旧字段不同仍被复用，活动执行者 `retention=KEEP` 与默认 `TEMPORARY` 冲突。让后一个所选作品冲突，断言 `set(j.id for j in service.database.list_jobs())` 与确认前一致、父任务仍待选择、没有新 child 关联或 confirmed 标记。测试合集 / 收藏预览与确认的冲突提示一致。Run：`uv run --no-sync pytest -q tests/test_capture_option_compatibility.py`，确认旧字段共享或收藏有效选项冲突用例因当前行为失败；已有正确的原子性用例允许先通过。
+- [x] **Step 4：实现统一比较与全部候选预检。** `processing_key()` 返回单元素 tuple；短链共享、博主派发、合集预览和确认、收藏预览和确认全部调用同一规则。收藏保留活动 `JobRecord` 而不是提前只保留 ID；博主与收藏先形成候选计划，再在原写事务内插入和关联。保留合集已有双循环、租约校验、共享重指、幂等确认和完整资料优先复用。
+- [x] **Step 5：验证正反例与既有共享行为。** Run：`uv run --no-sync pytest -q tests/test_capture_option_compatibility.py tests/test_capture_sharing.py tests/test_collection_flow.py tests/test_collection_lifecycle.py tests/test_creator.py tests/test_favorites.py tests/test_capture_sharing_web.py`；再运行 Ruff。Expected：全部通过；不同 retention 明确冲突，取消保护、等待者重试、普通检查点和事件会话不变。实际验证加入收藏预览 / 接口与本地化测试，共 140 项通过；随后完整非 live 回归 1450 passed, 2 deselected，Ruff 通过，STDIO MCP 的 52 项输入契约与旧基准完全一致。
+- [x] **Step 6：检查差异并提交。** 只提交此任务文件，消息 `fix: compare effective capture options across import paths`；记录测试结果。本大步骤结束，等待用户确认步骤 5。
 
 ## Task 3：停用生成和聊天，缩减新库及专题笔记（步骤 5 的第一项）
 

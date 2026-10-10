@@ -61,7 +61,8 @@ class FavoritesStore:
     @staticmethod
     def _run(conn: sqlite3.Connection, job_id: str) -> dict:
         row = conn.execute(
-            """SELECT f.*, j.status FROM favorites_runs f JOIN jobs j ON j.id=f.parent_id
+            """SELECT f.*, j.status, j.request_json FROM favorites_runs f
+               JOIN jobs j ON j.id=f.parent_id
                WHERE f.parent_id=? AND j.kind='favorites_import'""",
             (job_id,),
         ).fetchone()
@@ -73,6 +74,7 @@ class FavoritesStore:
             "confirmed": bool(row["confirmed"]),
             "accept_partial": bool(row["accept_partial"]),
             "status": row["status"],
+            "request": CaptureRequest.model_validate_json(row["request_json"]),
         }
 
     def load(self, job_id: str) -> dict:
@@ -319,13 +321,13 @@ class FavoritesStore:
                 raise JobStateError("清点结束后才能提交收藏作品")
             if not run["snapshot"].get("complete") and not accept_partial:
                 raise JobStateError("清单未完整读取；仅导入已发现作品需显式 accept_partial=true")
-            parent = conn.execute("SELECT request_json FROM jobs WHERE id=?", (job_id,)).fetchone()
-            request = CaptureRequest.model_validate_json(parent["request_json"])
-            active = {key: job.id for key, job in active_capture_jobs(conn).items()}
+            request = run["request"]
+            active = active_capture_jobs(conn)
             rows = conn.execute(
                 "SELECT * FROM favorites_items WHERE parent_id=? AND selected=1 ORDER BY position",
                 (job_id,),
             ).fetchall()
+            plans = []
             for row in rows:
                 work = json.loads(row["data_json"])
                 if not eligible(work, run["options"]):
@@ -334,12 +336,23 @@ class FavoritesStore:
                     "SELECT * FROM entries WHERE video_id=?", (row["work_id"],)
                 ).fetchone()
                 if existing and entry_intact(existing):
+                    plans.append((row, work, existing["id"], None))
+                    continue
+                child = active.get(row["work_id"]) or active.get(work["canonical_url"])
+                if (
+                    child
+                    and child.request.options.processing_key() != request.options.processing_key()
+                ):
+                    raise JobStateError(f"作品 {row['work_id']} 已有不同处理选项的活动任务")
+                plans.append((row, work, None, child))
+            for row, work, entry_id, child in plans:
+                if entry_id:
                     conn.execute(
                         "UPDATE favorites_items SET entry_id=? WHERE parent_id=? AND work_id=?",
-                        (existing["id"], job_id, row["work_id"]),
+                        (entry_id, job_id, row["work_id"]),
                     )
                     continue
-                child_id = active.get(row["work_id"]) or active.get(work["canonical_url"])
+                child_id = child.id if child else None
                 if not child_id:
                     child_id, now = uuid.uuid4().hex, iso_now()
                     child_request = CaptureRequest(
@@ -365,7 +378,6 @@ class FavoritesStore:
                             now,
                         ),
                     )
-                    active[row["work_id"]] = child_id
                 conn.execute(
                     "UPDATE favorites_items SET child_id=? WHERE parent_id=? AND work_id=?",
                     (child_id, job_id, row["work_id"]),

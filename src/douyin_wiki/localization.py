@@ -177,6 +177,7 @@ FAVORITES_DISPOSITION_LABELS = {
     "active": "处理中",
     "completed": "已完成",
     "failed": "失败",
+    "conflict": "处理选项冲突",
 }
 
 FIELD_LABELS = {
@@ -210,6 +211,7 @@ COUNT_LABELS = {
     "unavailable": "不可用",
     "excluded": "已排除",
     "active": "处理中",
+    "conflict": "处理选项冲突",
 }
 
 

@@ -122,6 +122,7 @@ class FavoritesService:
                 entry_id = entry["id"]
             state = "pending"
             can_import = eligible(work, run["options"])
+            conflict = False
             if work["source_kind"] == "article":
                 state = "unsupported"
             elif not work.get("available", True):
@@ -141,14 +142,23 @@ class FavoritesService:
             elif not run["confirmed"]:
                 child = active.get(row["work_id"]) or active.get(work["canonical_url"])
                 if child:
-                    state = "active"
+                    conflict = (
+                        child.request.options.processing_key()
+                        != run["request"].options.processing_key()
+                    )
+                    state = "conflict" if conflict else "active"
             item = {
                 **work,
                 "selected": bool(row["selected"]) and can_import,
                 "disposition": state,
                 "job_id": child.id if child else None,
                 "entry_id": entry_id,
-                "error_message": child.error_message if child else None,
+                "error_message": (
+                    f"作品 {row['work_id']} 已有不同处理选项的活动任务"
+                    if conflict
+                    else child.error_message if child else None
+                ),
+                "options_conflict": conflict,
                 "job_status": child.status.value if child else None,
                 "job_updated_at": child.updated_at.isoformat() if child else None,
                 "can_retry": bool(
@@ -178,6 +188,7 @@ class FavoritesService:
                 "excluded",
                 "unsupported",
                 "unavailable",
+                "conflict",
             )
         }
         result.update(
@@ -270,7 +281,7 @@ class FavoritesService:
             "summary": summary,
             "confirmation_preview": {
                 "selected": len(chosen),
-                "new_tasks": len(chosen) - reused,
+                "new_tasks": len(chosen) - reused - sum(i["options_conflict"] for i in chosen),
                 "reused_tasks": reused,
                 "already_imported": summary["in_library"],
                 "source_kinds": dict(Counter(i["source_kind"] for i in chosen)),

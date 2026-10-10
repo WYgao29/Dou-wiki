@@ -5,7 +5,7 @@ import pytest
 from douyin_wiki.adapters.share import DouyinShareResolver
 from douyin_wiki.collection_models import CollectionInventory, CollectionProfile, CollectionWork
 from douyin_wiki.errors import JobLeaseLostError, JobStateError
-from douyin_wiki.models import CaptureOptions, CaptureRequest, JobStatus
+from douyin_wiki.models import CaptureOptions, CaptureRequest, JobStatus, RetentionPolicy
 
 MIX = "7651028428363139126"
 A = "7672717300746907078"
@@ -85,7 +85,8 @@ async def test_collection_partial_inventory_requires_acceptance(service):
 async def test_collection_option_conflict_rolls_back_whole_confirmation(service):
     existing = service.database.create_job(
         CaptureRequest(
-            share_text=f"https://www.douyin.com/video/{B}", options=CaptureOptions(allow_long=True)
+            share_text=f"https://www.douyin.com/video/{B}",
+            options=CaptureOptions(retention=RetentionPolicy.KEEP),
         )
     )
     parent = await ready(service)

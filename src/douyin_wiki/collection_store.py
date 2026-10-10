@@ -237,7 +237,11 @@ class CollectionStore:
                     plans.append((row, work, existing["id"], None))
                 elif row["decision"] == "selected" and eligible(work):
                     child = active.get(row["work_id"]) or active.get(work["canonical_url"])
-                    if child and child.request.options != run["request"].options:
+                    if (
+                        child
+                        and child.request.options.processing_key()
+                        != run["request"].options.processing_key()
+                    ):
                         raise JobStateError(f"作品 {row['work_id']} 已有不同处理选项的活动任务")
                     plans.append((row, work, None, child))
             child_ids = []
