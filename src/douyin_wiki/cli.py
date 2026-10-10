@@ -1043,6 +1043,84 @@ def favorites_retry(job_id: str, config_path: Path | None = None) -> None:
     _print({"job_id": job.id, "status": job.status})
 
 
+collection_app = typer.Typer(help="合集清点、逐条选择和批量入库")
+app.add_typer(collection_app, name="collection")
+
+
+@collection_app.command("add")
+def collection_add(
+    source_text: str,
+    allow_long: bool = False,
+    retention: str = "临时保留",
+    gateway: str | None = None,
+    conversation_id: str | None = None,
+    config_path: Path | None = None,
+) -> None:
+    context = GatewayContext(gateway=gateway, conversation_id=conversation_id) if gateway else None
+    job = _service(config_path).capture_douyin_collection(
+        source_text,
+        CaptureOptions(allow_long=allow_long, retention=_retention_option(retention)),
+        context,
+    )
+    _print({"job_id": job.id, "status": job.status})
+
+
+@collection_app.command("inventory")
+def collection_inventory(
+    job_id: str, page: int | None = None, limit: int | None = None, config_path: Path | None = None
+) -> None:
+    _print(_service(config_path).get_collection_inventory(job_id, page=page, limit=limit))
+
+
+@collection_app.command("select")
+def collection_select(
+    job_id: str,
+    skip: bool = False,
+    ordinal: Annotated[list[int] | None, typer.Option("--ordinal")] = None,
+    work_id: Annotated[list[str] | None, typer.Option("--work-id")] = None,
+    all_works: Annotated[bool, typer.Option("--all")] = False,
+    config_path: Path | None = None,
+) -> None:
+    _print(
+        _service(config_path).set_collection_work_selection(
+            job_id,
+            "skipped" if skip else "selected",
+            ordinals=ordinal,
+            work_ids=work_id,
+            all_works=all_works,
+        )
+    )
+
+
+@collection_app.command("confirm")
+def collection_confirm(
+    job_id: str, accept_partial: bool = False, config_path: Path | None = None
+) -> None:
+    job = _service(config_path).confirm_collection_import(job_id, accept_partial=accept_partial)
+    _print({"job_id": job.id, "status": job.status})
+
+
+@collection_app.command("retry")
+def collection_retry(job_id: str, config_path: Path | None = None) -> None:
+    job = _service(config_path).retry_collection_import(job_id)
+    _print({"job_id": job.id, "status": job.status})
+
+
+@collection_app.command("list")
+def collection_list(config_path: Path | None = None) -> None:
+    _print(_service(config_path).list_collections())
+
+
+@collection_app.command("show")
+def collection_show(mix_id: str, config_path: Path | None = None) -> None:
+    _print(_service(config_path).get_collection(mix_id))
+
+
+@collection_app.command("history")
+def collection_history(limit: int = 50, config_path: Path | None = None) -> None:
+    _print(_service(config_path).list_collection_imports(limit=limit))
+
+
 def main() -> None:
     try:
         app()

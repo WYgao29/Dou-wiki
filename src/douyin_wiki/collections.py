@@ -197,6 +197,12 @@ class CollectionService:
                     "entry_id": entry_id,
                     "job_id": child.id if child else None,
                     "child_id": row["child_id"],
+                    "new_task": bool(
+                        row["child_id"]
+                        and child
+                        and (child.artifacts.get("collection_context") or {}).get("parent_job_id")
+                        == job_id
+                    ),
                     "job_status": child.status.value if child else None,
                     "job_updated_at": child.updated_at.isoformat() if child else None,
                     "error_message": child.error_message if child else None,
@@ -235,10 +241,17 @@ class CollectionService:
         summary.update(
             discovered=len(items),
             eligible=sum(i["can_import"] for i in items),
-            selected=sum(i["selected"] for i in items),
+            undecided=sum(
+                i["can_import"] and not i["entry_id"] and i["decision"] == "pending" for i in items
+            ),
+            selected=sum(bool(i["child_id"]) or i["selected"] for i in items),
             in_library=sum(bool(i["entry_id"]) for i in items),
-            new_tasks=sum(i["selected"] and not i["job_id"] for i in items),
-            reused_tasks=sum(i["selected"] and bool(i["job_id"]) for i in items),
+            new_tasks=sum(i["new_task"] or (i["selected"] and not i["job_id"]) for i in items),
+            reused_tasks=sum(
+                (bool(i["child_id"]) and not i["new_task"])
+                or (not i["child_id"] and i["selected"] and bool(i["job_id"]))
+                for i in items
+            ),
             retryable_failed=sum(i["can_retry"] for i in items),
         )
         summary["child_status_counts"] = dict(
@@ -264,6 +277,16 @@ class CollectionService:
         return {
             "job_id": job_id,
             "job_status": job.status.value,
+            "status": job.status.value,
+            "progress": job.progress,
+            "can_retry": not job.artifacts.get("user_deleted")
+            and job.status != JobStatus.CANCELLED
+            and (
+                any(item["can_retry"] for item in items)
+                if run["confirmed"]
+                else job.status in {JobStatus.FAILED, JobStatus.NEEDS_AUTH}
+            ),
+            "analysis_mode": self.core.config.analysis_mode.value,
             "profile": run["snapshot"].get("profile"),
             "complete": bool(run["snapshot"].get("complete")),
             "warnings": run["snapshot"].get("warnings", []),

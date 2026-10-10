@@ -2,7 +2,7 @@
   "use strict";
   const VIEW_IDS = [
     "library-view", "article-view", "topics-view", "topic-view", "trash-view", "tags-view",
-    "imports-view", "imports-single-view", "imports-creators-view", "imports-favorites-view",
+    "imports-view", "imports-single-view", "imports-creators-view", "imports-favorites-view", "imports-collections-view",
     "jobs-view", "job-detail-view", "auth-view", "system-view",
     "analysis-view", "model-view", "settings-view", "not-found-view",
   ];

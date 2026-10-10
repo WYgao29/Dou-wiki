@@ -146,3 +146,25 @@ async def test_collection_waits_for_original_gateway_without_rerouting_events(se
     assert len(events) == 1
     assert events[0].gateway_context == original
     assert "collection_context" not in events[0].result
+
+
+async def test_collection_new_and_reused_counts_survive_capture_completion(service):
+    from tests.conftest import FakeResolver
+
+    first = await ready(service, ids=(A,))
+    service.collections.select(first, "selected", all_works=True)
+    child = service.collections.confirm(first).result["child_job_ids"][0]
+    second = await ready(service, ids=(A,))
+    service.collections.select(second, "selected", all_works=True)
+    service.collections.confirm(second)
+    assert service.collections.get(first)["summary"]["new_tasks"] == 1
+    assert service.collections.get(second)["summary"]["reused_tasks"] == 1
+    service.resolver = FakeResolver()
+    result = await service.process_claimed_job(service.database.get_job(child))
+    assert result.status == JobStatus.COMPLETED
+    for parent, kind in [(first, "new_tasks"), (second, "reused_tasks")]:
+        data = service.collections.get(parent)
+        assert data["summary"][kind] == 1
+        assert data["summary"]["selected"] == 1
+        assert data["summary"]["in_library"] == 1
+        assert service.get_job(parent).status == JobStatus.COMPLETED

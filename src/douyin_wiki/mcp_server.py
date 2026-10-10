@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import warnings
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -62,6 +62,9 @@ douyin-wiki auth video 或 douyin-wiki auth douyin，并在登录后重试；
 博主批量采集调用 capture_douyin_creator。任务显示为“待选择作品”后，调用
 get_creator_inventory 一次读取并展示全部作品，再用 set_creator_work_selection 保存选择；全部作品均已
 选择或跳过后调用 confirm_creator_import；已有选择条件时直接执行，不重复确认。
+合集使用 capture_douyin_collection 开始清点，get_collection_inventory 默认返回全部作品。
+按已有选择条件使用 set_collection_work_selection 保存所选或跳过；all_works 作用于全部页。
+清单内可导入作品均有明确选择后，调用 confirm_collection_import；部分清单需 accept_partial。
 带 favorites_context.batch_silent=true、creator_context.batch_silent=true 或
 collection_context.batch_silent=true 的子任务仍需
 完成校正和分析，但不要逐条向用户发送完成消息；以父任务汇总结果为准。用户任务包含同步时调用
@@ -645,6 +648,81 @@ def retry_favorites_import(job_id: str) -> dict:
     """重试失败的清点或子任务，保留已完成结果；不绕过选择确认。"""
     job = _service().favorites.retry_failed(job_id)
     return _payload({"job_id": job.id, "status": job.status})
+
+
+@mcp.tool()
+def capture_douyin_collection(
+    source_text: str,
+    options: dict[str, Any] | None = None,
+    gateway_context: dict[str, Any] | None = None,
+) -> dict:
+    """读取合集分享链接，仅清点作品；保存选择后再确认导入。"""
+    job = _service().capture_douyin_collection(
+        source_text,
+        CaptureOptions.model_validate(options or {}),
+        GatewayContext.model_validate(gateway_context) if gateway_context else None,
+    )
+    return _payload({"job_id": job.id, "status": job.status})
+
+
+@mcp.tool()
+def get_collection_inventory(
+    job_id: str, page: int | None = None, limit: int | None = None
+) -> dict:
+    """读取本批合集作品及实际处理状态；不传 page/limit 返回全部清单。"""
+    return _payload(_service().get_collection_inventory(job_id, page=page, limit=limit))
+
+
+@mcp.tool()
+def set_collection_work_selection(
+    job_id: str,
+    decision: Literal["selected", "skipped"],
+    ordinals: list[int] | None = None,
+    work_ids: list[str] | None = None,
+    all_works: bool = False,
+) -> dict:
+    """保存合集作品选择；ordinals、work_ids、all_works 三选一，全选作用于所有页。"""
+    return _payload(
+        _service().set_collection_work_selection(
+            job_id,
+            decision,
+            ordinals=ordinals,
+            work_ids=work_ids,
+            all_works=all_works,
+        )
+    )
+
+
+@mcp.tool()
+def confirm_collection_import(job_id: str, accept_partial: bool = False) -> dict:
+    """按已保存选择创建或复用单条任务；部分清单需明确接受，重复确认不会重复入队。"""
+    job = _service().confirm_collection_import(job_id, accept_partial=accept_partial)
+    return _payload({"job_id": job.id, "status": job.status})
+
+
+@mcp.tool()
+def retry_collection_import(job_id: str) -> dict:
+    """重试失败清点或失败子任务，保留已入库结果和原 Gateway 归属。"""
+    job = _service().retry_collection_import(job_id)
+    return _payload({"job_id": job.id, "status": job.status})
+
+
+@mcp.tool()
+def get_collection(mix_id: str) -> dict:
+    """读取持久合集元信息、最近完整成员与知识资料关联，不访问抖音网页。"""
+    return _payload(_service().get_collection(mix_id))
+
+
+@mcp.tool()
+def list_collections() -> list[dict]:
+    """列出已读取的合集知识目录。"""
+    return _payload(_service().list_collections())
+
+
+@mcp.tool()
+def list_collection_imports(limit: int = 50) -> list[dict]:
+    """读取合集导入历史和实际批次汇总。"""
+    return _payload(_service().list_collection_imports(limit=limit))
 
 
 def main() -> None:

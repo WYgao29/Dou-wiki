@@ -261,6 +261,34 @@ class DouyinWikiService(
         )
         return self.database.create_job(request)
 
+    def capture_douyin_collection(self, source_text, options=None, gateway_context=None):
+        return self.collections.start(source_text, options, gateway_context)
+
+    def get_collection_inventory(self, job_id, *, page=None, limit=None):
+        return self.collections.get(job_id, page=page, limit=limit)
+
+    def set_collection_work_selection(
+        self, job_id, decision, *, ordinals=None, work_ids=None, all_works=False
+    ):
+        return self.collections.select(
+            job_id, decision, ordinals=ordinals, work_ids=work_ids, all_works=all_works
+        )
+
+    def confirm_collection_import(self, job_id, *, accept_partial=False):
+        return self.collections.confirm(job_id, accept_partial=accept_partial)
+
+    def retry_collection_import(self, job_id):
+        return self.collections.retry_failed(job_id)
+
+    def get_collection(self, mix_id):
+        return self.collections.get_collection(mix_id)
+
+    def list_collections(self):
+        return self.collections.list_collections()
+
+    def list_collection_imports(self, *, limit=50):
+        return self.collections.history(limit=limit)
+
     def get_job(self, job_id: str) -> JobRecord:
         job = self.database.get_job(job_id)
         self._apply_live_creator_selection(job)

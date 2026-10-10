@@ -2300,6 +2300,7 @@ function commandCatalog() {
   return [
     ["single", "导入单条", "plus", "⌘ I", () => window.Douku.navigate("/imports/single")],
     ["creators", "导入博主", "user-round", "", () => window.Douku.navigate("/imports/creators")],
+    ["collections", "导入抖音合集", "list", "", () => window.Douku.navigate("/imports/collections")],
     ["favorites", "导入抖音收藏", "bookmark", "", () => window.Douku.navigate("/imports/favorites")],
     ["jobs", "打开任务中心", "list-checks", "g j", () => window.Douku.navigate("/jobs")],
     ["tags", "打开标签", "hash", "g g", () => window.Douku.navigate("/tags")],
@@ -3112,7 +3113,7 @@ async function loadRecentImports() {
   const root = $("#recent-imports-list");
   try {
     const data = await api("/api/jobs");
-    const jobs = (data.items || []).filter((job) => ["capture", "creator_import", "favorites_import"].includes(job.kind)).slice(0, 5);
+    const jobs = (data.items || []).filter((job) => ["capture", "creator_import", "favorites_import", "collection_import"].includes(job.kind)).slice(0, 5);
     root.replaceChildren(...jobs.map((job) => {
       const link = window.Douku.node("a", null, "recent-import-row"); link.href = `/jobs/${encodeURIComponent(job.id)}`; link.dataset.route = link.href.replace(location.origin, "");
       link.append(window.Douku.node("strong", job.display_title || job.kind_label), window.Douku.node("span", job.state_label), window.Douku.node("time", String(job.updated_display || "").replace(/（北京时间）/g, ""))); return link;
@@ -3149,6 +3150,10 @@ function bindEvents() {
       if (pasteContinue) pasteContinue.disabled = true;
       return;
     }
+    if (lower.includes("douyin.com/collection/")) {
+      pasteKind = "collection"; kind.textContent = "识别为：抖音合集";
+      if (pasteContinue) pasteContinue.disabled = false; return;
+    }
     if (lower.includes("douyin.com/user/") || lower.includes("iesdouyin.com/share/user/")) {
       pasteKind = "creator";
       kind.textContent = "识别为：博主主页";
@@ -3168,9 +3173,9 @@ function bindEvents() {
       try {
         const data = await api("/api/imports/classify", {method: "POST", body: JSON.stringify({text: value})});
         if (token !== pasteToken) return;
-        if (data.kind === "creator" || data.kind === "work") {
+        if (["creator", "work", "collection"].includes(data.kind)) {
           pasteKind = data.kind;
-          kind.textContent = data.kind === "creator" ? "识别为：博主主页" : "识别为：单条作品";
+          kind.textContent = data.kind === "collection" ? "识别为：抖音合集" : data.kind === "creator" ? "识别为：博主主页" : "识别为：单条作品";
           if (pasteContinue) pasteContinue.disabled = false;
         } else {
           kind.textContent = "无法识别";
@@ -3199,6 +3204,9 @@ function bindEvents() {
     event.preventDefault();
     const value = $("#import-paste").value.trim();
     if (!value || !pasteKind) return;
+    if (pasteKind === "collection") {
+      window.Douku.navigate("/imports/collections"); $("#collection-source").value = value; return;
+    }
     const creator = pasteKind === "creator";
     window.Douku.navigate(creator ? "/imports/creators" : "/imports/single");
     $(creator ? "#creator-source" : "#single-share").value = value;

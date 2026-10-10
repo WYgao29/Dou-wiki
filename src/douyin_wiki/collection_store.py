@@ -7,7 +7,7 @@ import re
 
 from .batch_capture import TERMINAL, active_capture_jobs
 from .collection_models import CollectionInventory, CollectionProfile, CollectionWork
-from .errors import BrowserAuthRequiredError, JobCancelledError, JobStateError
+from .errors import BrowserAuthRequiredError, EntryNotFoundError, JobCancelledError, JobStateError
 from .models import CaptureRequest, JobStatus
 from .time_utils import iso_now
 
@@ -66,6 +66,8 @@ class CollectionStore:
             (job_id,),
         ).fetchone()
         if row is None:
+            if conn.execute("SELECT 1 FROM jobs WHERE id=?", (job_id,)).fetchone() is None:
+                raise JobStateError("job not found")
             raise JobStateError("该任务不是合集导入任务")
         return {
             **dict(row),
@@ -366,7 +368,7 @@ class CollectionStore:
     def bundle_conn(conn, mix_id):
         row = conn.execute("SELECT * FROM collections WHERE mix_id=?", (mix_id,)).fetchone()
         if row is None:
-            raise JobStateError("合集不存在")
+            raise EntryNotFoundError("合集不存在")
         profile = CollectionProfile.model_validate_json(row["metadata_json"])
         works = [
             CollectionWork.model_validate(

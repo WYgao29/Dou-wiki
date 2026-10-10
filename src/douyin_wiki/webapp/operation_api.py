@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..adapters.share import DouyinShareResolver, assert_creator_share
 from ..errors import DouyinWikiError, EntryNotFoundError, JobStateError
@@ -52,6 +52,26 @@ class CreatorInventoryBody(BaseModel):
     retention: RetentionPolicy = RetentionPolicy.TEMPORARY
     allow_long: bool = False
     approve_cloud_analysis: bool = False
+
+
+class CollectionInventoryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_text: str = Field(min_length=1, max_length=20_000)
+    options: CaptureOptions = Field(default_factory=CaptureOptions)
+
+
+class CollectionSelectionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["selected", "skipped"]
+    work_ids: list[str] | None = Field(default=None, min_length=1)
+    ordinals: list[int] | None = Field(default=None, min_length=1)
+    all_works: bool = False
+
+    @model_validator(mode="after")
+    def validate_selector(self):
+        if sum((self.work_ids is not None, self.ordinals is not None, self.all_works)) != 1:
+            raise ValueError("work_ids、ordinals、all_works 必须选择其中一个")
+        return self
 
 
 class CreatorSelectionBody(BaseModel):
@@ -140,6 +160,10 @@ def register_operation_routes(
     @app.get("/imports/favorites", response_class=HTMLResponse)
     async def imports_favorites_page(request: Request):
         return spa(request, "导入抖音收藏")
+
+    @app.get("/imports/collections", response_class=HTMLResponse)
+    async def imports_collections_page(request: Request):
+        return spa(request, "导入抖音合集")
 
     @app.get("/auth")
     async def auth_alias():
@@ -338,6 +362,62 @@ def register_operation_routes(
     @app.get("/api/system/model-health")
     async def model_health():
         return await operations.model_health()
+
+    async def collection_call(method, *args, **kwargs):
+        try:
+            return await asyncio.to_thread(method, *args, **kwargs)
+        except (DouyinWikiError, ValueError) as exc:
+            raise _http_error(exc) from exc
+
+    @app.post("/api/collections/inventory", status_code=202)
+    async def collection_inventory(body: CollectionInventoryBody):
+        job = await collection_call(
+            core.capture_douyin_collection, body.source_text, options=body.options
+        )
+        await notifier.publish("jobs")
+        return {"job_id": job.id, "status": job.status.value}
+
+    @app.get("/api/collections")
+    async def list_collections():
+        return add_display_labels(await collection_call(core.list_collections))
+
+    @app.get("/api/collections/{mix_id}")
+    async def get_collection(mix_id: str):
+        return add_display_labels(await collection_call(core.get_collection, mix_id))
+
+    @app.get("/api/collection-imports")
+    async def collection_history(limit: int = Query(50, ge=1, le=200)):
+        return add_display_labels(await collection_call(core.list_collection_imports, limit=limit))
+
+    @app.get("/api/collection-imports/{job_id}")
+    async def collection_detail(
+        job_id: str, page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=1000)
+    ):
+        return add_display_labels(
+            await collection_call(core.get_collection_inventory, job_id, page=page, limit=limit)
+        )
+
+    @app.post("/api/collection-imports/{job_id}/selection")
+    async def collection_selection(job_id: str, body: CollectionSelectionBody):
+        data = await collection_call(
+            core.set_collection_work_selection, job_id, **body.model_dump()
+        )
+        await notifier.publish("jobs")
+        return add_display_labels(data)
+
+    @app.post("/api/collection-imports/{job_id}/confirm", status_code=202)
+    async def collection_confirm(job_id: str, body: CreatorConfirmBody):
+        job = await collection_call(
+            core.confirm_collection_import, job_id, accept_partial=body.accept_partial
+        )
+        await notifier.publish("jobs")
+        return {"job_id": job.id, "status": job.status.value}
+
+    @app.post("/api/collection-imports/{job_id}/retry", status_code=202)
+    async def collection_retry(job_id: str):
+        job = await collection_call(core.retry_collection_import, job_id)
+        await notifier.publish("jobs")
+        return {"job_id": job.id, "status": job.status.value}
 
     @app.post("/api/creators/inventory", status_code=202)
     async def creator_inventory(body: CreatorInventoryBody):
