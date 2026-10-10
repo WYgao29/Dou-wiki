@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,15 +12,14 @@ from douyin_wiki.webapp.app import create_app
 from tests.test_collection_flow import MIX, A, FakeCollectionAdapter, ready, snapshot
 
 
-def test_cli_collection_creates_only_parent(service, monkeypatch):
+def test_cli_collection_is_disabled_without_creating_parent(service, monkeypatch):
     monkeypatch.setattr(cli, "_service", lambda _: service)
     result = CliRunner().invoke(
         cli.app, ["collection", "add", f"https://www.douyin.com/collection/{MIX}"]
     )
-    assert result.exit_code == 0, result.output
-    parent = service.database.get_job(json.loads(result.stdout)["job_id"])
-    assert parent.kind == "collection_import"
-    assert len(service.database.list_jobs()) == 1
+    assert result.exit_code == 2, result.output
+    assert "capture_douyin_collection" in result.output
+    assert service.database.list_jobs() == []
     assert service.downloader.calls == 0
 
 

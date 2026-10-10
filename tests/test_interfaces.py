@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from typer.testing import CliRunner
 
 import douyin_wiki
 from douyin_wiki import cli, mcp_server
@@ -18,6 +19,111 @@ from douyin_wiki.mcp_server import mcp
 from douyin_wiki.models import AnalysisMode, GatewayContext, JobStatus
 from douyin_wiki.setup import LaunchAgentInstaller, WebLaunchAgentInstaller
 from douyin_wiki.worker import Worker
+
+DISABLED_BUSINESS_COMMANDS = [
+    (("capture",), ("分享文本", "--purpose", "原灵感", "--allow-long"), "capture_douyin"),
+    (("search",), ("信息源",), "search_knowledge"),
+    (("creator", "add"), ("博主主页",), "capture_douyin_creator"),
+    (("creator", "inventory"), ("job-1",), "get_creator_inventory"),
+    (("creator", "select"), ("job-1", "--include", "1-2"), "set_creator_work_selection"),
+    (("creator", "confirm"), ("job-1",), "confirm_creator_import"),
+    (("creator", "import"), ("creator-1", "--work-id", "work-1"), "import_creator_works"),
+    (("creator", "show"), ("creator-1",), "get_creator"),
+    (("creator", "list"), (), "list_creators"),
+    (("creator", "works"), ("creator-1",), "list_creator_works"),
+    (("creator", "sync"), ("creator-1",), "sync_creator"),
+    (("favorites", "scan"), ("--folder-id", "folder-1"), "scan_favorites"),
+    (("favorites", "list"), (), "list_favorites_imports"),
+    (("favorites", "show"), ("job-1",), "get_favorites_import"),
+    (("favorites", "select"), ("job-1", "--work-id", "work-1"), "set_favorites_selection"),
+    (("favorites", "confirm"), ("job-1",), "confirm_favorites_import"),
+    (("favorites", "retry"), ("job-1",), "retry_favorites_import"),
+    (("collection", "add"), ("合集链接",), "capture_douyin_collection"),
+    (("collection", "inventory"), ("job-1",), "get_collection_inventory"),
+    (("collection", "select"), ("job-1", "--ordinal", "1"), "set_collection_work_selection"),
+    (("collection", "confirm"), ("job-1",), "confirm_collection_import"),
+    (("collection", "retry"), ("job-1",), "retry_collection_import"),
+    (("collection", "list"), (), "list_collections"),
+    (("collection", "show"), ("mix-1",), "get_collection"),
+    (("collection", "history"), (), "list_collection_imports"),
+    (("jobs", "get"), ("job-1",), "get_job"),
+    (("jobs", "list"), (), "list_jobs"),
+    (("jobs", "events"), (), "list_job_events"),
+    (("jobs", "ack-event"), ("1",), "acknowledge_job_event"),
+    (("jobs", "approve"), ("job-1",), "approve_job"),
+    (("jobs", "retry"), ("job-1",), "retry_job"),
+    (("review", "resolve"), ("job-1", "--accept-uncertain"), "resolve_review"),
+    (("gateway", "context"), ("job-1", "--gateway-protocol", "2"), "get_analysis_context"),
+    (
+        ("gateway", "submit-correction"),
+        ("job-1", "missing.json", "--producer", "agent"),
+        "submit_transcript_correction",
+    ),
+    (
+        ("gateway", "submit-analysis"),
+        ("job-1", "missing.json", "--producer", "agent"),
+        "submit_gateway_analysis",
+    ),
+    (("entry", "show"), ("dy-1",), "get_entry"),
+    (
+        ("entry", "submit-analysis"),
+        ("dy-1", "missing.json", "--producer", "agent"),
+        "submit_analysis",
+    ),
+    (("entry", "reanalyze"), ("dy-1", "--force"), "reanalyze_entry"),
+    (("entry", "reanalyze-all"), ("--force",), "reanalyze_all"),
+    (("topic", "create"), ("研究", "--entry-id", "dy-1"), "create_topic"),
+    (("topic", "list"), (), "list_topics"),
+    (("topic", "show"), ("topic-1",), "get_topic"),
+    (("topic", "sources"), ("topic-1", "--enable", "dy-1"), "set_topic_sources"),
+    (("topic", "search"), ("topic-1", "关键词"), "search_topic"),
+    (("inspiration", "add"), ("dy-1", "保存灵感"), "add_inspiration"),
+    (("purpose", "add"), ("dy-1", "保存灵感"), "add_purpose"),
+    (("reminder", "confirm"), ("dy-1", "reminder-1"), "confirm_reminder"),
+    (("topic", "generate"), ("topic-1", "--kind", "overview"), None),
+    (
+        ("configure-model",),
+        ("--model", "old-model", "--base-url", "http://localhost:8000/v1"),
+        None,
+    ),
+    (("migrate-vocabulary",), (), None),
+    (("migrate-remove-validation",), (), None),
+    (("migrate-covers",), (), None),
+]
+
+
+@pytest.mark.parametrize(("command", "old_arguments", "mcp_tool"), DISABLED_BUSINESS_COMMANDS)
+@pytest.mark.parametrize("with_old_arguments", [False, True])
+def test_disabled_business_commands_do_not_initialize_service(
+    tmp_path, monkeypatch, command, old_arguments, mcp_tool, with_old_arguments
+):
+    def forbidden(*args, **kwargs):
+        pytest.fail("停用命令不应初始化服务、读取配置、写文件或请求交互")
+
+    for name in (
+        "_service",
+        "load_config",
+        "write_config",
+        "update_config_values",
+        "LaunchAgentInstaller",
+    ):
+        monkeypatch.setattr(cli, name, forbidden)
+    monkeypatch.setattr(cli.typer, "prompt", forbidden)
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "missing.toml"
+    arguments = [
+        *command,
+        *(old_arguments if with_old_arguments else ()),
+        "--config-path",
+        str(config_path),
+    ]
+    result = CliRunner().invoke(cli.app, arguments)
+    assert result.exit_code == 2, result.output
+    assert "已停用" in result.output
+    if mcp_tool:
+        assert mcp_tool in result.output
+    assert not config_path.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_package_version_matches_metadata() -> None:
@@ -79,12 +185,6 @@ def test_mcp_exposes_public_tools() -> None:
         "doctor",
     } <= names
     assert "submit_fact_checks" not in names
-
-
-
-
-
-
 
 
 def test_mcp_preserves_structured_douyin_wiki_error(monkeypatch) -> None:

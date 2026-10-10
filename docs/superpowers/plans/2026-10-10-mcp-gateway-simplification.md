@@ -159,10 +159,10 @@ assert service.get_job(owner_id).status == JobStatus.AWAITING_AGENT_ANALYSIS
 
 **Interfaces:** Consumes：任务 4 的 gateway 配置与任务 3 的停用语义。Produces：既有业务命令名与别名，退出码 `2`； `_disabled_command(feature: str, mcp_tool: str | None = None) -> NoReturn`，只输出提示后退出，不初始化 Service。
 
-- [ ] **Step 1：写命令无副作用测试并验证失败。** `test_disabled_business_commands_do_not_initialize_service` 参数化下表命令，使用合法旧参数和不存在的 config 路径，令 `_service`、`load_config`、`write_config`、交互 prompt、安装器操作抛异常；断言退出码 `2`、提示含“已停用”及对应 MCP 名称、没有生成配置 / Vault。`test_configure_model_is_disabled_without_prompt` 同时覆盖无参数和带旧 `--model / --base-url / --config-path`。Run：`uv run --no-sync pytest -q tests/test_interfaces.py -k 'disabled_business_commands or configure_model_is_disabled'`。Expected：当前业务命令执行或请求参数而失败；任务 4 已改好的 configure-model 允许先通过。
-- [ ] **Step 2：实现提示与保留命令注册。** 旧命令保持名称、别名和合法旧参数接收，去掉 prompt 和必需的交互步骤；没有参数时也直接输出停用信息。可选旧位置参数只为接收旧调用，不验证业务内容。采用 `该命令已停用，请通过 Agent 使用 MCP 工具 {tool}。`；无替代的功能说明已停用。保留运行命令原实现及 monitor-events 所依赖的事件 helper。
-- [ ] **Step 3：验证运行入口。** Run：`uv run --no-sync pytest -q tests/test_interfaces.py tests/test_setup.py tests/test_favorites_interfaces.py tests/test_collection_interfaces.py`，再运行 Ruff。Expected：业务调用无副作用；`--help`、auth、doctor、Worker、Web、服务安装器、maintenance 和 database rebuild 的原调用方式有效。
-- [ ] **Step 4：提交。** 消息 `refactor: disable duplicate business CLI commands`；继续任务 6。
+- [x] **Step 1：写命令无副作用测试并验证失败。** `test_disabled_business_commands_do_not_initialize_service` 参数化下表命令，使用合法旧参数和不存在的 config 路径，令 `_service`、`load_config`、`write_config`、交互 prompt、安装器操作抛异常；断言退出码 `2`、提示含“已停用”及对应 MCP 名称、没有生成配置 / Vault。`test_configure_model_is_disabled_without_prompt` 同时覆盖无参数和带旧 `--model / --base-url / --config-path`。Run：`uv run --no-sync pytest -q tests/test_interfaces.py -k 'disabled_business_commands or configure_model_is_disabled'`。Expected：当前业务命令执行或请求参数而失败；任务 4 已改好的 configure-model 允许先通过。
+- [x] **Step 2：实现提示与保留命令注册。** 旧命令保持名称、别名和合法旧参数接收，去掉 prompt 和必需的交互步骤；没有参数时也直接输出停用信息。可选旧位置参数只为接收旧调用，不验证业务内容。采用 `该命令已停用，请通过 Agent 使用 MCP 工具 {tool}。`；无替代的功能说明已停用。保留运行命令原实现及 monitor-events 所依赖的事件 helper。
+- [x] **Step 3：验证运行入口。** Run：`uv run --no-sync pytest -q tests/test_interfaces.py tests/test_setup.py tests/test_favorites_interfaces.py tests/test_collection_interfaces.py`，再运行 Ruff。Expected：业务调用无副作用；`--help`、auth、doctor、Worker、Web、服务安装器、maintenance 和 database rebuild 的原调用方式有效。
+- [x] **Step 4：提交。** 消息 `refactor: disable duplicate business CLI commands`；继续任务 6。
 
 | CLI 命令 / 分组内命令 | 提示中的 MCP 对应工具 |
 | --- | --- |
@@ -176,6 +176,8 @@ assert service.get_job(owner_id).status == JobStatus.AWAITING_AGENT_ANALYSIS
 | `topic create / list / show / sources / search` | `create_topic / list_topics / get_topic / set_topic_sources / search_topic` |
 | `inspiration add`、隐藏 `purpose add`、`reminder confirm` | `add_inspiration`、`add_purpose`、`confirm_reminder` |
 | `topic generate`、`configure-model`、`migrate-vocabulary / migrate-remove-validation / migrate-covers` | 无替代；明确说明功能已停用 |
+
+实际验证：停用命令先 `102 failed, 2 passed`，再 `104 passed`；四个接口 / 安装文件 `161 passed in 6.53s`，Ruff 通过。52 种命令及旧别名覆盖有参数和无参数；20 个运行 / 初始化函数的语法结构与 BASE 完全一致。
 
 ## Task 6：Web 停止新请求，保留任务管理与右栏（步骤 6 的第二项）
 

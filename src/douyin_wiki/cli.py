@@ -4,7 +4,7 @@ import asyncio
 import json
 import webbrowser
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -15,22 +15,12 @@ from .config import (
     load_config,
 )
 from .errors import DouyinWikiError
-from .gateway_protocol import compact_job_payload, validate_gateway_protocol
 from .localization import (
     localize_for_user,
-    parse_creator_decision,
-    parse_job_status,
-    parse_retention,
 )
 from .models import (
     AnalysisMode,
-    CaptureOptions,
-    CreatorWorkDecision,
-    GatewayContext,
-    InspirationInput,
-    ReviewIssue,
     SourceKind,
-    TranscriptCorrection,
 )
 from .service import DouyinWikiService
 from .setup import (
@@ -96,53 +86,12 @@ def _print(value) -> None:
     typer.echo(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
-def _job_status_option(value: str):
-    try:
-        return parse_job_status(value)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-
-
-def _creator_decision_option(value: str):
-    try:
-        return parse_creator_decision(value)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-
-
-def _retention_option(value: str):
-    try:
-        return parse_retention(value)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
-
-
-def _parse_number_ranges(value: str | None) -> list[int]:
-    if not value:
-        return []
-    result: set[int] = set()
-    for raw in value.replace("，", ",").split(","):
-        item = raw.strip()
-        if not item:
-            continue
-        if "-" in item:
-            start_text, end_text = item.split("-", 1)
-            try:
-                start, end = int(start_text), int(end_text)
-            except ValueError as exc:
-                raise typer.BadParameter(f"无效编号范围：{item}") from exc
-            if start < 1 or end < start:
-                raise typer.BadParameter(f"无效编号范围：{item}")
-            result.update(range(start, end + 1))
-        else:
-            try:
-                number = int(item)
-            except ValueError as exc:
-                raise typer.BadParameter(f"无效编号：{item}") from exc
-            if number < 1:
-                raise typer.BadParameter(f"无效编号：{item}")
-            result.add(number)
-    return sorted(result)
+def _disabled_command(feature: str, mcp_tool: str | None = None) -> NoReturn:
+    if mcp_tool:
+        typer.echo(f"{feature} 已停用，请通过 Agent 使用 MCP 工具 {mcp_tool}。")
+    else:
+        typer.echo(f"{feature} 已停用。")
+    raise typer.Exit(code=2)
 
 
 def _prompt_vault_target() -> tuple[Path, VaultSetupMode]:
@@ -235,8 +184,7 @@ def configure_model(
     base_url: Annotated[str | None, typer.Option(help="OpenAI-compatible base URL")] = None,
     config_path: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
-    typer.echo("共用模型配置已停用；校正和分析由 Gateway Agent 完成。")
-    raise typer.Exit(code=2)
+    _disabled_command("configure-model")
 
 
 @app.command("configure-analysis-mode")
@@ -274,7 +222,7 @@ def configure_analysis_mode(
 
 @app.command("capture")
 def capture_command(
-    share_text: Annotated[str, typer.Argument(help="整段抖音分享文本")],
+    share_text: Annotated[str | None, typer.Argument(help="整段抖音分享文本")] = None,
     inspiration: Annotated[
         list[str] | None,
         typer.Option(
@@ -301,38 +249,12 @@ def capture_command(
     reply_target: Annotated[str | None, typer.Option()] = None,
     config_path: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
-    inspirations = [InspirationInput(text=value) for value in (inspiration or [])]
-    anchored = any(value is not None for value in (quote, start_ms, end_ms))
-    if anchored and len(inspirations) != 1:
-        raise typer.BadParameter("quote/start-ms/end-ms 必须与且仅与一条 --inspiration 一起使用")
-    if inspirations and anchored:
-        inspirations[0] = inspirations[0].model_copy(
-            update={"quote": quote, "start_ms": start_ms, "end_ms": end_ms}
-        )
-    job = _service(config_path).capture_douyin(
-        share_text,
-        inspirations,
-        CaptureOptions(
-            retention=_retention_option(retention),
-            allow_long=allow_long,
-            approve_cloud_analysis=approve_ai_analysis or approve_cloud_analysis,
-        ),
-        GatewayContext(
-            gateway=gateway,
-            channel=channel,
-            conversation_id=conversation_id,
-            message_id=message_id,
-            reply_target=reply_target,
-        )
-        if gateway
-        else None,
-    )
-    _print(job)
+    _disabled_command("capture", "capture_douyin")
 
 
 @creator_app.command("add")
 def creator_add(
-    source_text: Annotated[str, typer.Argument(help="博主主页或其任意作品分享文本")],
+    source_text: Annotated[str | None, typer.Argument(help="博主主页或其任意作品分享文本")] = None,
     inspiration: Annotated[list[str] | None, typer.Option("--inspiration", "-i")] = None,
     retention: Annotated[
         str, typer.Option(help="媒体保留方式：临时保留、永久保留或处理后清理")
@@ -342,20 +264,12 @@ def creator_add(
     conversation_id: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    context = GatewayContext(gateway=gateway, conversation_id=conversation_id) if gateway else None
-    _print(
-        _service(config_path).capture_douyin_creator(
-            source_text,
-            [InspirationInput(text=value) for value in (inspiration or [])],
-            CaptureOptions(retention=_retention_option(retention), allow_long=allow_long),
-            context,
-        )
-    )
+    _disabled_command("creator add", "capture_douyin_creator")
 
 
 @creator_app.command("inventory")
 def creator_inventory(
-    job_id: str,
+    job_id: Annotated[str | None, typer.Argument()] = None,
     page: int | None = None,
     limit: int | None = None,
     decision: Annotated[
@@ -365,93 +279,70 @@ def creator_inventory(
     query: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    _print(
-        _service(config_path).get_creator_inventory(
-            job_id,
-            page=page,
-            limit=limit,
-            decision=_creator_decision_option(decision) if decision else None,
-            source_kind=source_kind,
-            query=query,
-        )
-    )
+    _disabled_command("creator inventory", "get_creator_inventory")
 
 
 @creator_app.command("select")
 def creator_select(
-    job_id: str,
+    job_id: Annotated[str | None, typer.Argument()] = None,
     include: Annotated[str | None, typer.Option(help="例如 1-10,15")] = None,
     exclude: Annotated[str | None, typer.Option(help="例如 11-14")] = None,
     config_path: Path | None = None,
 ) -> None:
-    if not include and not exclude:
-        raise typer.BadParameter("至少提供 --include 或 --exclude")
-    service = _service(config_path)
-    results = []
-    if include:
-        results.append(
-            service.set_creator_work_selection(
-                job_id,
-                CreatorWorkDecision.SELECTED,
-                ordinals=_parse_number_ranges(include),
-            )
-        )
-    if exclude:
-        results.append(
-            service.set_creator_work_selection(
-                job_id,
-                CreatorWorkDecision.SKIPPED,
-                ordinals=_parse_number_ranges(exclude),
-            )
-        )
-    _print(results[-1] if len(results) == 1 else {"updates": results})
+    _disabled_command("creator select", "set_creator_work_selection")
 
 
 @creator_app.command("confirm")
 def creator_confirm(
-    job_id: str,
+    job_id: Annotated[str | None, typer.Argument()] = None,
     accept_partial: bool = False,
     config_path: Path | None = None,
 ) -> None:
-    _print(_service(config_path).confirm_creator_import(job_id, accept_partial=accept_partial))
+    _disabled_command("creator confirm", "confirm_creator_import")
 
 
 @creator_app.command("import")
 def creator_import(
-    creator_id: str,
-    work_id: Annotated[list[str], typer.Option("--work-id")],
+    creator_id: Annotated[str | None, typer.Argument()] = None,
+    work_id: Annotated[list[str] | None, typer.Option("--work-id")] = None,
     gateway: str | None = None,
     conversation_id: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    context = GatewayContext(gateway=gateway, conversation_id=conversation_id) if gateway else None
-    _print(_service(config_path).import_creator_works(creator_id, work_id, gateway_context=context))
+    _disabled_command("creator import", "import_creator_works")
 
 
 @creator_app.command("show")
-def creator_show(creator_id: str, config_path: Path | None = None) -> None:
-    _print(_service(config_path).get_creator(creator_id))
+def creator_show(
+    creator_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("creator show", "get_creator")
 
 
 @creator_app.command("list")
-def creator_list(config_path: Path | None = None) -> None:
-    _print(_service(config_path).list_creators())
+def creator_list(
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("creator list", "list_creators")
 
 
 @creator_app.command("works")
-def creator_works(creator_id: str, config_path: Path | None = None) -> None:
-    _print(_service(config_path).list_creator_works(creator_id))
+def creator_works(
+    creator_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("creator works", "list_creator_works")
 
 
 @creator_app.command("sync")
 def creator_sync(
-    creator_id: str,
+    creator_id: Annotated[str | None, typer.Argument()] = None,
     gateway: str | None = None,
     conversation_id: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    context = GatewayContext(gateway=gateway, conversation_id=conversation_id) if gateway else None
-    _print(_service(config_path).sync_creator(creator_id, gateway_context=context))
+    _disabled_command("creator sync", "sync_creator")
 
 
 @auth_app.command("douyin")
@@ -485,8 +376,11 @@ def auth_status(
 
 
 @jobs_app.command("get")
-def jobs_get(job_id: str, config_path: Path | None = None) -> None:
-    _print(_service(config_path).get_job(job_id))
+def jobs_get(
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("jobs get", "get_job")
 
 
 @jobs_app.command("list")
@@ -497,7 +391,7 @@ def jobs_list(
     limit: int = 50,
     config_path: Path | None = None,
 ) -> None:
-    _print(_service(config_path).list_jobs(_job_status_option(status) if status else None, limit))
+    _disabled_command("jobs list", "list_jobs")
 
 
 @jobs_app.command("events")
@@ -507,64 +401,50 @@ def jobs_events(
     limit: int = 50,
     config_path: Path | None = None,
 ) -> None:
-    _print(
-        _service(config_path).list_job_events(
-            after_event_id=after_event_id,
-            unacknowledged_only=not all_events,
-            limit=limit,
-        )
-    )
+    _disabled_command("jobs events", "list_job_events")
 
 
 @jobs_app.command("ack-event")
-def jobs_ack_event(event_id: int, config_path: Path | None = None) -> None:
-    _print(_service(config_path).acknowledge_job_event(event_id))
+def jobs_ack_event(
+    event_id: Annotated[int | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("jobs ack-event", "acknowledge_job_event")
 
 
 @jobs_app.command("approve")
-def jobs_approve(job_id: str, config_path: Path | None = None) -> None:
-    _print(_service(config_path).approve_job(job_id))
+def jobs_approve(
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("jobs approve", "approve_job")
 
 
 @jobs_app.command("retry")
-def jobs_retry(job_id: str, config_path: Path | None = None) -> None:
-    _print(_service(config_path).retry_job(job_id))
+def jobs_retry(
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("jobs retry", "retry_job")
 
 
 @review_app.command("resolve")
 def review_resolve(
-    job_id: str,
+    job_id: Annotated[str | None, typer.Argument()] = None,
     resolution: Annotated[list[str] | None, typer.Option(help="issue_id=修正文字")] = None,
     accept_uncertain: bool = False,
     config_path: Path | None = None,
 ) -> None:
-    parsed = {}
-    for value in resolution or []:
-        if "=" not in value:
-            raise typer.BadParameter("resolution 必须使用 issue_id=修正文字")
-        issue_id, text = value.split("=", 1)
-        parsed[issue_id] = text
-    _print(_service(config_path).resolve_review(job_id, parsed, accept_uncertain=accept_uncertain))
+    _disabled_command("review resolve", "resolve_review")
 
 
 @gateway_app.command("context")
 def gateway_context(
-    job_id: str,
+    job_id: Annotated[str | None, typer.Argument()] = None,
     config_path: Path | None = None,
     gateway_protocol: int = 1,
 ) -> None:
-    protocol = _gateway_protocol_option(gateway_protocol)
-    if protocol == 1:
-        _print(_service(config_path).get_analysis_context(job_id))
-    else:
-        _print(_service(config_path).get_analysis_context(job_id, gateway_protocol=protocol))
-
-
-def _gateway_protocol_option(value: int) -> int:
-    try:
-        return validate_gateway_protocol(value)
-    except ValueError as error:
-        raise typer.BadParameter(str(error), param_hint="--gateway-protocol") from error
+    _disabled_command("gateway context", "get_analysis_context")
 
 
 @gateway_app.command("monitor-events", hidden=True)
@@ -585,141 +465,92 @@ def gateway_monitor_events(config_path: Path | None = None) -> None:
 
 @gateway_app.command("submit-correction")
 def gateway_submit_correction(
-    job_id: str,
-    json_file: Path,
-    producer: Annotated[str, typer.Option(help="Gateway/Agent 名称")],
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    json_file: Annotated[Path | None, typer.Argument()] = None,
+    producer: Annotated[str | None, typer.Option(help="Gateway/Agent 名称")] = None,
     model: Annotated[str, typer.Option(help="生成校正的模型")] = "agent",
     config_path: Path | None = None,
     gateway_protocol: int = 1,
     context_revision: str | None = None,
 ) -> None:
-    protocol = _gateway_protocol_option(gateway_protocol)
-    payload = json.loads(json_file.read_text(encoding="utf-8"))
-    corrections_data = payload.get("corrections", []) if isinstance(payload, dict) else payload
-    issues_data = payload.get("review_issues", []) if isinstance(payload, dict) else []
-    extra = (
-        {"gateway_protocol": protocol, "context_revision": context_revision}
-        if protocol == 2
-        else {}
-    )
-    job = _service(config_path).submit_transcript_correction(
-        job_id,
-        [TranscriptCorrection.model_validate(item) for item in corrections_data],
-        producer=producer,
-        model=model,
-        review_issues=[ReviewIssue.model_validate(item) for item in issues_data],
-        **extra,
-    )
-    _print(compact_job_payload(job) if protocol == 2 else job)
+    _disabled_command("gateway submit-correction", "submit_transcript_correction")
 
 
 @gateway_app.command("submit-analysis")
 def gateway_submit_analysis(
-    job_id: str,
-    json_file: Path,
-    producer: Annotated[str, typer.Option(help="Gateway/Agent 名称")],
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    json_file: Annotated[Path | None, typer.Argument()] = None,
+    producer: Annotated[str | None, typer.Option(help="Gateway/Agent 名称")] = None,
     model: Annotated[str, typer.Option(help="生成分析的模型")] = "agent",
     config_path: Path | None = None,
     gateway_protocol: int = 1,
     context_revision: str | None = None,
 ) -> None:
-    protocol = _gateway_protocol_option(gateway_protocol)
-    payload = json.loads(json_file.read_text(encoding="utf-8"))
-    extra = (
-        {"gateway_protocol": protocol, "context_revision": context_revision}
-        if protocol == 2
-        else {}
-    )
-    job = _service(config_path).submit_gateway_analysis(
-        job_id,
-        payload,
-        producer=producer,
-        model=model,
-        **extra,
-    )
-    _print(compact_job_payload(job) if protocol == 2 else job)
+    _disabled_command("gateway submit-analysis", "submit_gateway_analysis")
 
 
 @app.command("search")
 def search_command(
-    query: str, include_stale: bool = False, limit: int = 10, config_path: Path | None = None
-) -> None:
-    _print(_service(config_path).search_knowledge(query, include_stale=include_stale, limit=limit))
-
-
-@topic_app.command("create")
-def topic_create(
-    title: str,
-    entry_id: Annotated[list[str], typer.Option("--entry-id", help="专题来源文章 ID，可重复")],
-    goal: Annotated[str, typer.Option(help="研究目标")] = "",
-    instructions: Annotated[str, typer.Option(help="专题自定义指令")] = "",
-    config_path: Path | None = None,
-) -> None:
-    _print(
-        _service(config_path).create_topic(
-            title,
-            entry_id,
-            goal=goal,
-            instructions=instructions,
-        )
-    )
-
-
-@topic_app.command("list")
-def topic_list(config_path: Path | None = None) -> None:
-    _print(_service(config_path).list_topics())
-
-
-@topic_app.command("show")
-def topic_show(topic_id: str, config_path: Path | None = None) -> None:
-    _print(_service(config_path).get_topic(topic_id))
-
-
-@topic_app.command("sources")
-def topic_sources(
-    topic_id: str,
-    enable: Annotated[list[str] | None, typer.Option("--enable", help="启用文章 ID")] = None,
-    disable: Annotated[list[str] | None, typer.Option("--disable", help="停用文章 ID")] = None,
-    config_path: Path | None = None,
-) -> None:
-    service = _service(config_path)
-    value = service.get_topic(topic_id)
-    enabled_ids = set(enable or [])
-    disabled_ids = set(disable or [])
-    sources = [
-        {
-            "entry_id": source["entry_id"],
-            "enabled": (
-                True
-                if source["entry_id"] in enabled_ids
-                else False
-                if source["entry_id"] in disabled_ids
-                else source["enabled"]
-            ),
-        }
-        for source in value["topic"]["sources"]
-    ]
-    _print(service.set_topic_sources(topic_id, sources))
-
-
-@topic_app.command("search")
-def topic_search(
-    topic_id: str,
-    query: str,
+    query: Annotated[str | None, typer.Argument()] = None,
     include_stale: bool = False,
     limit: int = 10,
     config_path: Path | None = None,
 ) -> None:
-    _print(
-        _service(config_path).search_topic(
-            topic_id, query, include_stale=include_stale, limit=limit
-        )
-    )
+    _disabled_command("search", "search_knowledge")
+
+
+@topic_app.command("create")
+def topic_create(
+    title: Annotated[str | None, typer.Argument()] = None,
+    entry_id: Annotated[
+        list[str] | None, typer.Option("--entry-id", help="专题来源文章 ID，可重复")
+    ] = None,
+    goal: Annotated[str, typer.Option(help="研究目标")] = "",
+    instructions: Annotated[str, typer.Option(help="专题自定义指令")] = "",
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("topic create", "create_topic")
+
+
+@topic_app.command("list")
+def topic_list(
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("topic list", "list_topics")
+
+
+@topic_app.command("show")
+def topic_show(
+    topic_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("topic show", "get_topic")
+
+
+@topic_app.command("sources")
+def topic_sources(
+    topic_id: Annotated[str | None, typer.Argument()] = None,
+    enable: Annotated[list[str] | None, typer.Option("--enable", help="启用文章 ID")] = None,
+    disable: Annotated[list[str] | None, typer.Option("--disable", help="停用文章 ID")] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("topic sources", "set_topic_sources")
+
+
+@topic_app.command("search")
+def topic_search(
+    topic_id: Annotated[str | None, typer.Argument()] = None,
+    query: Annotated[str | None, typer.Argument()] = None,
+    include_stale: bool = False,
+    limit: int = 10,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("topic search", "search_topic")
 
 
 @topic_app.command("generate")
 def topic_generate(
-    topic_id: str,
+    topic_id: Annotated[str | None, typer.Argument()] = None,
     kind: Annotated[
         str,
         typer.Option(
@@ -728,39 +559,38 @@ def topic_generate(
     ] = "overview",
     config_path: Path | None = None,
 ) -> None:
-    allowed = {"overview", "comparison", "evidence_map", "consensus", "decision_brief", "faq"}
-    if kind not in allowed:
-        raise typer.BadParameter("不支持的成果类型")
-    _print(asyncio.run(_service(config_path).generate_topic_artifact(topic_id, kind)))
+    _disabled_command("topic generate")
 
 
 @entry_app.command("show")
-def entry_show(entry_id: str, documents: bool = False, config_path: Path | None = None) -> None:
-    _print(_service(config_path).get_entry(entry_id, include_documents=documents))
+def entry_show(
+    entry_id: Annotated[str | None, typer.Argument()] = None,
+    documents: bool = False,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("entry show", "get_entry")
 
 
 @entry_app.command("submit-analysis")
 def entry_submit_analysis(
-    entry_id: str,
-    json_file: Path,
-    producer: Annotated[str, typer.Option(help="提交分析的 Agent")],
+    entry_id: Annotated[str | None, typer.Argument()] = None,
+    json_file: Annotated[Path | None, typer.Argument()] = None,
+    producer: Annotated[str | None, typer.Option(help="提交分析的 Agent")] = None,
     model: Annotated[str, typer.Option(help="生成分析的模型")] = "agent",
     config_path: Path | None = None,
 ) -> None:
-    payload = json.loads(json_file.read_text(encoding="utf-8"))
-    _print(_service(config_path).submit_analysis(entry_id, payload, producer=producer, model=model))
+    _disabled_command("entry submit-analysis", "submit_analysis")
 
 
 @entry_app.command("reanalyze")
 def entry_reanalyze(
-    entry_id: str,
+    entry_id: Annotated[str | None, typer.Argument()] = None,
     force: bool = False,
     gateway: str | None = None,
     conversation_id: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    context = GatewayContext(gateway=gateway, conversation_id=conversation_id) if gateway else None
-    _print(_service(config_path).reanalyze_entry(entry_id, force=force, gateway_context=context))
+    _disabled_command("entry reanalyze", "reanalyze_entry")
 
 
 @entry_app.command("reanalyze-all")
@@ -770,59 +600,51 @@ def entry_reanalyze_all(
     conversation_id: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    context = GatewayContext(gateway=gateway, conversation_id=conversation_id) if gateway else None
-    _print(_service(config_path).reanalyze_all(force=force, gateway_context=context))
+    _disabled_command("entry reanalyze-all", "reanalyze_all")
 
 
 @inspiration_app.command("add")
 def inspiration_add(
-    entry_id: str,
-    text: str,
+    entry_id: Annotated[str | None, typer.Argument()] = None,
+    text: Annotated[str | None, typer.Argument()] = None,
     quote: str | None = None,
     start_ms: int | None = None,
     end_ms: int | None = None,
     config_path: Path | None = None,
 ) -> None:
-    _print(
-        _service(config_path).add_inspiration(
-            entry_id,
-            InspirationInput(text=text, quote=quote, start_ms=start_ms, end_ms=end_ms),
-        )
-    )
+    _disabled_command("inspiration add", "add_inspiration / add_purpose")
 
 
 @app.command("migrate-vocabulary", hidden=True)
-def migrate_vocabulary(config_path: Path | None = None) -> None:
-    _print(_service(config_path).migrate_inspiration_vocabulary())
+def migrate_vocabulary(
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("migrate-vocabulary")
 
 
 @app.command("migrate-remove-validation", hidden=True)
-def migrate_remove_validation(config_path: Path | None = None) -> None:
-    _print(_service(config_path).remove_external_validation())
+def migrate_remove_validation(
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("migrate-remove-validation")
 
 
 @app.command("migrate-covers", hidden=True)
-def migrate_covers(config_path: Path | None = None) -> None:
-    _print(_service(config_path).backfill_video_covers())
+def migrate_covers(
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("migrate-covers")
 
 
 @reminder_app.command("confirm")
 def reminder_confirm(
-    entry_id: str,
-    reminder_id: str,
+    entry_id: Annotated[str | None, typer.Argument()] = None,
+    reminder_id: Annotated[str | None, typer.Argument()] = None,
     due_at: str | None = None,
     title: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    _print(
-        _service(config_path).confirm_reminder(
-            entry_id,
-            reminder_id,
-            due_at=due_at,
-            title=title,
-            confirmed=True,
-        )
-    )
+    _disabled_command("reminder confirm", "confirm_reminder")
 
 
 @maintenance_app.command("run")
@@ -926,64 +748,55 @@ def favorites_scan(
     conversation_id: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    context = GatewayContext(gateway=gateway, conversation_id=conversation_id) if gateway else None
-    job = _service(config_path).favorites.start(
-        folder_ids=folder_id,
-        include_images=include_images,
-        directory_only=directory_only,
-        gateway_context=context,
-    )
-    _print({"job_id": job.id, "status": job.status})
+    _disabled_command("favorites scan", "scan_favorites")
 
 
 @favorites_app.command("list")
-def favorites_list(limit: int = 50, config_path: Path | None = None) -> None:
-    _print(_service(config_path).favorites.history(limit=limit))
+def favorites_list(
+    limit: int = 50,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("favorites list", "list_favorites_imports")
 
 
 @favorites_app.command("show")
 def favorites_show(
-    job_id: str,
+    job_id: Annotated[str | None, typer.Argument()] = None,
     page: int = 1,
     limit: int = 50,
     folder_id: str | None = None,
     query: str = "",
     config_path: Path | None = None,
 ) -> None:
-    _print(
-        _service(config_path).favorites.get(
-            job_id, page=page, limit=limit, folder_id=folder_id, query=query
-        )
-    )
+    _disabled_command("favorites show", "get_favorites_import")
 
 
 @favorites_app.command("select")
 def favorites_select(
-    job_id: str,
+    job_id: Annotated[str | None, typer.Argument()] = None,
     exclude: bool = False,
     work_id: Annotated[list[str] | None, typer.Option("--work-id")] = None,
     folder_id: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    _print(
-        _service(config_path).favorites.select(
-            job_id, selected=not exclude, work_ids=work_id, folder_id=folder_id
-        )
-    )
+    _disabled_command("favorites select", "set_favorites_selection")
 
 
 @favorites_app.command("confirm")
 def favorites_confirm(
-    job_id: str, accept_partial: bool = False, config_path: Path | None = None
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    accept_partial: bool = False,
+    config_path: Path | None = None,
 ) -> None:
-    job = _service(config_path).favorites.confirm(job_id, accept_partial=accept_partial)
-    _print({"job_id": job.id, "status": job.status})
+    _disabled_command("favorites confirm", "confirm_favorites_import")
 
 
 @favorites_app.command("retry")
-def favorites_retry(job_id: str, config_path: Path | None = None) -> None:
-    job = _service(config_path).favorites.retry_failed(job_id)
-    _print({"job_id": job.id, "status": job.status})
+def favorites_retry(
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("favorites retry", "retry_favorites_import")
 
 
 collection_app = typer.Typer(help="合集清点、逐条选择和批量入库")
@@ -992,76 +805,76 @@ app.add_typer(collection_app, name="collection")
 
 @collection_app.command("add")
 def collection_add(
-    source_text: str,
+    source_text: Annotated[str | None, typer.Argument()] = None,
     allow_long: bool = False,
     retention: str = "临时保留",
     gateway: str | None = None,
     conversation_id: str | None = None,
     config_path: Path | None = None,
 ) -> None:
-    context = GatewayContext(gateway=gateway, conversation_id=conversation_id) if gateway else None
-    job = _service(config_path).capture_douyin_collection(
-        source_text,
-        CaptureOptions(allow_long=allow_long, retention=_retention_option(retention)),
-        context,
-    )
-    _print({"job_id": job.id, "status": job.status})
+    _disabled_command("collection add", "capture_douyin_collection")
 
 
 @collection_app.command("inventory")
 def collection_inventory(
-    job_id: str, page: int | None = None, limit: int | None = None, config_path: Path | None = None
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    page: int | None = None,
+    limit: int | None = None,
+    config_path: Path | None = None,
 ) -> None:
-    _print(_service(config_path).get_collection_inventory(job_id, page=page, limit=limit))
+    _disabled_command("collection inventory", "get_collection_inventory")
 
 
 @collection_app.command("select")
 def collection_select(
-    job_id: str,
+    job_id: Annotated[str | None, typer.Argument()] = None,
     skip: bool = False,
     ordinal: Annotated[list[int] | None, typer.Option("--ordinal")] = None,
     work_id: Annotated[list[str] | None, typer.Option("--work-id")] = None,
     all_works: Annotated[bool, typer.Option("--all")] = False,
     config_path: Path | None = None,
 ) -> None:
-    _print(
-        _service(config_path).set_collection_work_selection(
-            job_id,
-            "skipped" if skip else "selected",
-            ordinals=ordinal,
-            work_ids=work_id,
-            all_works=all_works,
-        )
-    )
+    _disabled_command("collection select", "set_collection_work_selection")
 
 
 @collection_app.command("confirm")
 def collection_confirm(
-    job_id: str, accept_partial: bool = False, config_path: Path | None = None
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    accept_partial: bool = False,
+    config_path: Path | None = None,
 ) -> None:
-    job = _service(config_path).confirm_collection_import(job_id, accept_partial=accept_partial)
-    _print({"job_id": job.id, "status": job.status})
+    _disabled_command("collection confirm", "confirm_collection_import")
 
 
 @collection_app.command("retry")
-def collection_retry(job_id: str, config_path: Path | None = None) -> None:
-    job = _service(config_path).retry_collection_import(job_id)
-    _print({"job_id": job.id, "status": job.status})
+def collection_retry(
+    job_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("collection retry", "retry_collection_import")
 
 
 @collection_app.command("list")
-def collection_list(config_path: Path | None = None) -> None:
-    _print(_service(config_path).list_collections())
+def collection_list(
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("collection list", "list_collections")
 
 
 @collection_app.command("show")
-def collection_show(mix_id: str, config_path: Path | None = None) -> None:
-    _print(_service(config_path).get_collection(mix_id))
+def collection_show(
+    mix_id: Annotated[str | None, typer.Argument()] = None,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("collection show", "get_collection")
 
 
 @collection_app.command("history")
-def collection_history(limit: int = 50, config_path: Path | None = None) -> None:
-    _print(_service(config_path).list_collection_imports(limit=limit))
+def collection_history(
+    limit: int = 50,
+    config_path: Path | None = None,
+) -> None:
+    _disabled_command("collection history", "list_collection_imports")
 
 
 def main() -> None:

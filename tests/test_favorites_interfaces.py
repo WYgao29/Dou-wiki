@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -99,7 +98,10 @@ class FakeFavoritesService:
 
 def _client(config, service, favorites: FakeFavoritesService):
     service.favorites = favorites
-    return TestClient(create_app(config, service=service, start_watcher=False), headers={"Origin": "http://testserver"})
+    return TestClient(
+        create_app(config, service=service, start_watcher=False),
+        headers={"Origin": "http://testserver"},
+    )
 
 
 def test_web_scan_only_creates_inventory_job(config, service) -> None:
@@ -188,7 +190,7 @@ def test_web_requires_explicit_confirmation_and_maps_conflicts(config, service) 
     assert conflict.status_code == 409
 
 
-def test_cli_favorites_commands_emit_json(monkeypatch) -> None:
+def test_cli_favorites_commands_are_disabled_without_starting_or_selecting(monkeypatch) -> None:
     favorites = FakeFavoritesService()
     monkeypatch.setattr(cli, "_service", lambda _: SimpleNamespace(favorites=favorites))
     runner = CliRunner()
@@ -212,11 +214,12 @@ def test_cli_favorites_commands_emit_json(monkeypatch) -> None:
         ["favorites", "select", "favorites-1", "--exclude", "--work-id", "7000000000000000001"],
     )
 
-    assert scan.exit_code == 0
-    assert json.loads(scan.stdout)["status"] == "待处理"
-    assert favorites.started[0]["gateway_context"].gateway == "openclaw"
-    assert selection.exit_code == 0
-    assert favorites.selections[-1]["selected"] is False
+    assert scan.exit_code == 2
+    assert "scan_favorites" in scan.output
+    assert selection.exit_code == 2
+    assert "set_favorites_selection" in selection.output
+    assert favorites.started == []
+    assert favorites.selections == []
 
 
 def test_mcp_favorites_inventory_is_separate_from_confirmation(monkeypatch) -> None:
