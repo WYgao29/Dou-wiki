@@ -62,9 +62,12 @@ def _work(record, mix_id, position, episodes):
     if not work_id:
         return None, "有作品缺少可信的稳定 ID"
     info = record.get("mix_info")
-    if isinstance(info, dict) and ("mix_id" in info or "mix_id_str" in info):
-        if _id(info, "mix_id") != mix_id:
-            return None, f"作品 {work_id} 的合集归属不一致"
+    if (
+        isinstance(info, dict)
+        and ("mix_id" in info or "mix_id_str" in info)
+        and _id(info, "mix_id") != mix_id
+    ):
+        return None, f"作品 {work_id} 的合集归属不一致"
     video = record.get("video")
     images = record.get("images")
     image_info = record.get("image_post_info")

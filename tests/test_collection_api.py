@@ -37,7 +37,10 @@ def page(rows, **changes):
 
 
 def test_collection_json_preserves_large_integer_id():
-    raw = b'{"status_code":0,"has_more":0,"cursor":1,"aweme_list":[{"aweme_id":7644758067783852901,"video":{"duration":1000}}]}'
+    raw = (
+        b'{"status_code":0,"has_more":0,"cursor":1,"aweme_list":'
+        b'[{"aweme_id":7644758067783852901,"video":{"duration":1000}}]}'
+    )
     result = parse(raw)
     assert result.works[0].work_id == "7644758067783852901"
     assert result.works[0].duration_seconds == 1
