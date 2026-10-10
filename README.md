@@ -7,15 +7,15 @@
 为兼容已经安装的环境，命令名、Python 包名、MCP 配置标识和本地状态目录继续使用
 `douyin-wiki`；它们是稳定的技术标识，项目展示名称统一为“抖库”。
 
-## Web 主入口
+## 业务入口与任务管理
 
-日常操作默认走本机 Web（仅绑定 127.0.0.1）：授权中心、导入单条/博主/收藏/合集、任务中心、模型校对记录、失败重试和系统维护。CLI 用于首次安装、Web 无法启动时的故障恢复和高级调试；MCP 用于外部 Agent。
+0.2.0 的日常业务通过 MCP（Agent 调用本地工具的接口）执行。Agent 接收单条作品、博主、收藏或合集请求，创建持久任务并继续完成校正、分析和结果回复。`job_id` 是中间回执，收到它后继续跟进。
 
-收藏导入按「授权 → 更新收藏 → 选择 → 确认」线性完成，支持增量/完整更新。收藏的真实账号端到端验收边界见 [收藏批量导入说明](docs/favorites-import.md)；项目结构、排障与开发规范见 [文档索引](docs/README.md)。
+本机 Web 仅绑定 `127.0.0.1`，用于授权、阅读与筛选、管理已有批次和任务、灵感、专题笔记、重新分析及系统维护。Web 不再创建作品或批次请求，也不提供 AI 聊天、模型设置或专题自动生成。CLI 保留安装、授权、运行和维护，业务命令返回明确的停用提示。
 
-合集导入支持合集长链与分享短链，先清点、保存逐条或全部页选择，确认后使用现有采集流程。已有资料和活动任务按作品复用，Vault 保留合集顺序与资料链接。操作、部分清单和真实验收范围见[合集导入说明](docs/collections-import.md)。
+收藏与合集由 Agent 开始清点，已有批次仍可在 Web 中选择、确认、取消和重试。使用方式与真实验证范围见[收藏导入](docs/favorites-import.md)、[合集导入](docs/collections-import.md)和[文档索引](docs/README.md)。
 
-## v2 能力
+## 0.2.0 能力
 
 - 从整段抖音分享文案提取短链，自动识别视频或静态图文作品。
 - 从博主主页或任意单条作品反查博主，先清点全部公开作品，再由用户选择后批量采集。
@@ -25,9 +25,8 @@
 - 视频优先用专用 Playwright Profile 拦截 CDN 地址再下载；失败时才回退 `yt-dlp`（优先读专用 Profile Cookie，系统 Chrome 仅作最后手段）。
 - 图文与博主采集同样使用独立 Playwright 浏览器会话，不接触日常 Chrome Profile。
 - 通过 `ffmpeg`、Qwen3-ASR、Silero VAD 与 Qwen3 ForcedAligner 完成本地转录；OCR 使用 RapidOCR PP-OCRv6 small 或 macOS Vision。
-- 默认由 OpenClaw/Hermes 当前会话模型校正与分析文字；原视频不上传给模型。
+- 只由当前 Gateway Agent 的会话模型校正与分析文字；原视频不上传给模型。
 - 本地 Worker 在转录后暂停，通过持久任务事件把校正、人工确认和完成结果交回原会话。
-- 可选切换为后台 OpenAI-compatible provider，或无 token 的本地降级模式。
 - 模型直接校正逐字稿并保留疑点说明，用户选定的视频直接处理，不因时长再次确认。
 - 生成不可变 `raw/` 记录、`wiki/sources/` 一屏精华页、隐藏机器侧车以及概念/实体 wikilink。
 - 自动分类教程、解释、观点、推荐、事件、案例、清单等内容并选择对应知识卡片。
@@ -41,13 +40,17 @@
   侧栏只提供标签管理入口，文章、信息面板和筛选保留标签；旧文章不自动回写。
 - 按用户任务和已有授权创建 macOS 提醒事项。
 - 每周标记过期内容、检查孤立页面，并把到期媒体移入系统废纸篓。
-- Web v0.2.0 以资料库为首页并展示运行概览；支持授权中心、导入中心、全局任务中心、人工复核和维护预览。
+- Web 0.2.48 以资料库为首页，支持授权、已有导入记录、任务管理、信息 / 灵感 / 专题来源面板和维护预览。
 
 ## 安装
 
+正式运行从 wheel 安装到仓库外独立环境，步骤见[本地发行包与运行安装](#本地发行包与运行安装)。下面的 `uv` 命令仅用于独立的源码开发环境，不在现用服务环境中同步依赖；已安装用户使用对应 runtime 的命令入口。
+
+0.2.0 仅初始化 schema 16 新库，没有聊天表；旧版状态库会被拒绝，不自动迁移旧业务数据。首次使用应准备新的库，既有 Obsidian 笔记不由安装过程覆盖。升级部署先核对目标配置和实际服务入口。
+
 ```bash
-uv sync --extra dev
-uv run douyin-wiki init
+uv sync --locked --extra dev
+uv run --no-sync douyin-wiki init
 uv run douyin-wiki doctor
 ```
 
@@ -93,7 +96,7 @@ uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revis
 
 不按整条音轨的总时长拒绝处理，音频按最多 600 秒的窗口逐块读取和识别。
 
-本机已安装服务使用源码仓库的 `.venv`。开发验证使用独立环境；升级现用服务依赖前先停止服务，升级后再启动，不能把开发环境同步到正在运行的服务环境。
+0.2.0 的 Worker、维护、Web 和 MCP 应共同使用仓库外独立 runtime 中的 wheel 安装。部署前读取实际配置核对入口；旧服务若仍引用源码仓库 `.venv`，先保留该环境，完成新安装验收后再切换。开发依赖同步只在隔离工作区执行。
 
 未安装 Embedding 时使用字符 n-gram；OCR 的 `auto` 优先 RapidOCR，初始化不可用时使用 macOS Vision。当前语音识别只有 Qwen3，不回退旧引擎；`asr` / `mlx` 是 `qwen3` 的安装兼容别名，不再安装 FunASR 或 mlx-whisper。
 
@@ -101,85 +104,46 @@ uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revis
 
 模型加载仅使用本地固定 revision、已知库架构和 safetensors；拒绝模型仓 Python 文件与 `auto_map`，不执行远端代码。缺缓存时体检提供上面的准备命令，转写本身不下载模型。默认语言 `Chinese`，中文和中英混合已实测；其他语言需要识别器与对齐器共同支持，部分语言还需要独立分词包，缺少时明确报错。本期不加入热词、上下文提示或术语仓库。
 
-视频由当前模型一次校对后直接分析入库，不增加独立复核模型，也不要求人工校对。模型结合前后文与对应 OCR 修复同音词、错字和断句；没有依据的数字、金额、人名保留原表述，不扩写或补造事实。长稿按预算分片，每片附有界前后文；原稿、校正版和修改记录均保存。ASR 缺分、低分和普通文字疑点不会暂停新任务或单独产生完成警告；图文 OCR 低分同样只记录说明。模型超限等技术错误仍会重试或失败。Qwen 不制造置信分数；历史分数也不代表经过校准的正确率。历史待复核任务不会自动改动，可在 Web 点击“按新模型校对策略重试”，归档旧疑点并重新校对。
+视频由当前模型一次校对后直接分析入库，不增加独立复核模型，也不要求人工校对。模型结合前后文与对应 OCR 修复同音词、错字和断句；没有依据的数字、金额、人名保留原表述，不扩写或补造事实。Gateway 按本阶段上下文和 schema 提交结果；原稿、校正版和修改记录均保存。ASR 缺分、低分和普通文字疑点不会暂停新任务或单独产生完成警告；图文 OCR 低分同样只记录说明。模型超限等技术错误仍会重试或失败。Qwen 不制造置信分数；历史分数也不代表经过校准的正确率。历史待复核任务不会自动改动，可在 Web 点击“按新模型校对策略重试”，归档旧疑点并重新校对。
 
 模型权重由用户显式从模型仓准备，项目不分发权重。Qwen ASR/对齐的 MLX 模型卡标注 Apache-2.0；Silero 上游为 MIT，其 MLX 转换卡未声明许可。来源见 [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)、[ForcedAligner MLX 模型卡](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit)、[Silero](https://github.com/snakers4/silero-vad)、[RapidOCR 模型与许可](https://github.com/RapidAI/RapidOCR)。
 
 ## 分析模式
 
-默认配置是 `gateway`：本项目不单独保存模型 API key，AI token 由 OpenClaw/Hermes 中当前
-选用的模型消耗。
+精简版只支持 Gateway：
 
 ```toml
 analysis_mode = "gateway"
 ```
 
-三个模式分别是：
+Worker 完成下载、Qwen3 转写与 OCR 后保存材料并等待 Agent。视频先经 `get_analysis_context` / `submit_transcript_correction` 校正，再重新读取上下文并用 `submit_gateway_analysis` 提交分析；图文直接进入分析。重新分析复用已保存的正文、逐字稿与 OCR，不再选择其他模型后端。
 
-- `gateway`（默认）：本地 Worker 做下载、ASR、OCR 和入库；Gateway Agent 做校正与分析。
-- `provider`：后台 Worker 直接调用单独配置的 OpenAI-compatible 模型。
-- `local`：不调用模型，使用本地启发式降级分析。
+`provider` / `local` 配置会明确报错。程序不再使用 `[llm]`、对话模型 API、模型 Keychain 密钥或环境变量密钥；`configure-model` 和模型 HTTP 功能已停用。`configure-analysis-mode gateway` 仍可写入唯一支持的模式，Web 的「导入分析」仅展示状态。
 
-`provider` 是严格模式：模型、API key 或端点不可用时任务会明确失败并可重试，不会静默写入
-本地启发式结果。OCR 运行异常会写入任务警告，不会被误报为“画面没有文字”。
+Gateway 工具的默认协议仍为 `1`。新调用优先显式选 `gateway_protocol=2`，使用简短状态、阶段材料、增量校正和证据引用；两次提交必须携带刚读取的本阶段 `context_revision`。兼容协议 `1` 仍保留，不能把协议 `2` 的补丁按协议 `1` 重放。完整顺序见[Gateway 指南](docs/gateway-agents.md#紧凑协议gateway_protocol2)。
 
-切换模式：
+## CLI 运行与授权
 
-```bash
-uv run douyin-wiki configure-analysis-mode gateway
-```
+CLI 保留 `init`、`doctor`、`configure-analysis-mode gateway`、`auth douyin / video / status`、`worker run`、`service install / uninstall`、`web run / open / install / uninstall / status`、`maintenance run`、`database rebuild`，以及隐藏的 `gateway monitor-events` 兼容入口。
 
-只有选择 `provider` 时才需要配置后台模型：
+以下业务命令和旧别名仍能识别合法旧参数，但立即以退出码 `2` 返回停用说明，不读取业务配置或执行任务：
 
-推荐用初始化命令写入模型配置，并把密钥保存到 macOS Keychain：
+| 已停用命令 | MCP 替代入口 |
+| --- | --- |
+| `capture`、`search` | `capture_douyin`、`search_knowledge` |
+| `creator add / inventory / select / confirm / import / show / list / works / sync` | `capture_douyin_creator / get_creator_inventory / set_creator_work_selection / confirm_creator_import / import_creator_works / get_creator / list_creators / list_creator_works / sync_creator` |
+| `favorites scan / list / show / select / confirm / retry` | `scan_favorites / list_favorites_imports / get_favorites_import / set_favorites_selection / confirm_favorites_import / retry_favorites_import` |
+| `collection add / inventory / select / confirm / retry / list / show / history` | `capture_douyin_collection / get_collection_inventory / set_collection_work_selection / confirm_collection_import / retry_collection_import / list_collections / get_collection / list_collection_imports` |
+| `jobs get / list / events / ack-event / approve / retry` | `get_job / list_jobs / list_job_events / acknowledge_job_event / approve_job / retry_job` |
+| `review resolve`、`gateway context / submit-correction / submit-analysis` | `resolve_review`、`get_analysis_context / submit_transcript_correction / submit_gateway_analysis` |
+| `entry show / submit-analysis / reanalyze / reanalyze-all` | `get_entry / submit_analysis / reanalyze_entry / reanalyze_all` |
+| `topic create / list / show / sources / search` | `create_topic / list_topics / get_topic / set_topic_sources / search_topic` |
+| `inspiration add`、隐藏的 `purpose add`、`reminder confirm` | `add_inspiration`、`add_purpose`、`confirm_reminder` |
+| `topic generate`、`configure-model`、`migrate-vocabulary / migrate-remove-validation / migrate-covers` | 已停用，无自动生成、模型配置或旧库迁移替代命令 |
 
-```bash
-uv run douyin-wiki configure-model \
-  --model YOUR_MODEL \
-  --base-url https://api.openai.com/v1
-```
+### 登录授权
 
-`configure-model` 会同时切换到 `provider` 模式。云端接口会交互式读取密钥；指向
-`localhost`、`127.0.0.1` 或 `::1` 的 LM Studio/Ollama 兼容接口不要求密钥。密钥不会写入
-配置、Vault、SQLite 或 Git；已安装后台服务时会自动重启 worker。也可以手工编辑配置：
-
-```toml
-[llm]
-enabled = true
-base_url = "https://api.openai.com/v1"
-model = "YOUR_MODEL"
-api_key_env = "DOUYIN_WIKI_LLM_API_KEY"
-# 可选：本地 oMLX 等支持 structured outputs 的接口可改为 json_schema；
-# 保存配置时会保留你设置的 response_format，不会强制写回 json_object。
-# response_format = "json_schema"
-# enable_thinking = false
-# thinking_budget = 0
-# max_output_tokens = 4096
-# context_window_tokens = 65536  # 与模型服务实际配置的上下文窗口一致
-```
-
-长视频的字幕和邻近 OCR 会按输入 token 预算分批；模型输出达到上限时会缩小批次，
-已完成批次在任务中断后可从检查点恢复。任务详情会显示分批进度和最近一次模型响应。
-
-环境变量会优先于 Keychain，适合 CI 或临时会话：
-
-```bash
-export DOUYIN_WIKI_LLM_API_KEY="..."
-```
-
-`gateway` 和 `local` 模式不要求该模型配置。
-
-## CLI 工作流
-
-提交任务：
-
-```bash
-uv run douyin-wiki capture \
-  '6.43 复制打开抖音 https://v.douyin.com/uvHsRpXIn8s/' \
-  --inspiration '研究离职后如何筛选财经信息源'
-```
-
-视频和图文使用同一个 `capture` 命令。视频 Cookie 失效、图文页面要求登录或出现验证码时，
+视频和图文均由 Agent 调用 `capture_douyin`。视频 Cookie 失效、图文页面要求登录或出现验证码时，
 任务统一进入“需要登录授权”。本机 Worker 会先保存并解锁任务，再显示 macOS 系统弹框；选择
 “打开浏览器授权”后，抖库会打开对应浏览器、验证授权状态，并在验证成功后自动重试同一授权通道中仍处于
 “需要登录授权”的任务。选择“稍后处理”、等待超时或浏览器启动失败不会丢失任务，下面的手工命令始终可用。
@@ -192,11 +156,10 @@ uv run douyin-wiki auth status
 uv run douyin-wiki auth status --video-url 'https://www.douyin.com/video/作品ID'
 ```
 
-主路径（视频 CDN、图文、博主）共用抖库专用 Playwright Profile。先完成专用浏览器登录，再重试原任务：
+主路径（视频 CDN、图文、博主）共用抖库专用 Playwright Profile。先完成专用浏览器登录，再在 Web 任务详情或通过 MCP `retry_job` 重试原任务：
 
 ```bash
 uv run douyin-wiki auth douyin
-uv run douyin-wiki jobs retry JOB_ID
 ```
 
 `auth video` 仅打开配置中的系统浏览器，给 yt-dlp 最后回退准备 Cookie；日常请优先 `auth douyin`。
@@ -226,154 +189,36 @@ poll_seconds = 5
 自动流程不会读取、复制或显示 Cookie 值、密码和 Local Storage。视频 CDN / 图文 / 博主授权共用抖库专用 Playwright Profile；
 系统浏览器 Cookie 仅作 yt-dlp 回退。同一授权通道同时只显示一个引导窗口。
 
-### 博主批量采集
 
-主页链接和该博主任意视频/图文分享文本都可作为入口。清点阶段只读取作品信息和临时封面，
-不会下载作品、执行 ASR/OCR 或调用 AI：
+### Worker 与知识重建
 
 ```bash
-uv run douyin-wiki creator add \
-  '8.92 复制打开抖音 https://v.douyin.com/rrcucI9W-e8/' \
-  --inspiration '关注企业 AI 部署方案'
-uv run douyin-wiki worker run --once
-uv run douyin-wiki creator inventory JOB_ID
+douyin-wiki worker run
+douyin-wiki maintenance run
+douyin-wiki maintenance run --apply
+douyin-wiki database rebuild
+douyin-wiki database rebuild --apply
 ```
 
-`inventory` 默认一次返回全部作品，确保用户在一次回复中看完整清单。只有清单特别大且调用方
-主动要求时，才使用 `--page` 和 `--limit` 兼容分页读取。
+维护和知识重建先预览，按用户目标执行确认。知识重建只恢复当前 Vault 的知识投影与持久关系，不恢复全部任务或导入历史，也不升级旧版状态库。
 
-清单编号在本次任务中固定。新发现作品先显示为“待入库”；保存决定后变为“已选入库”或“未入库”，
-全部完成决定后才能确认：
+Worker 使用可续期租约，进程异常后恢复有检查点的新库任务。发布时在 SQLite 写事务内校验租约，写入检索投影并可逆地更新 Vault 文档；提交前失败恢复数据库及文档，成功后才提交 Vault Git。
 
-```bash
-uv run douyin-wiki creator select JOB_ID --include 1-10,15
-uv run douyin-wiki creator select JOB_ID --exclude 11-14
-uv run douyin-wiki creator confirm JOB_ID
-```
-
-确认后才会为选中的作品建立普通采集子任务。之前跳过的作品可显式重新导入：
-
-```bash
-uv run douyin-wiki creator import CREATOR_ID --work-id WORK_ID
-```
-
-同步没有计划任务，只有以下命令会重新访问博主主页；没有新作品时直接完成：
-
-```bash
-uv run douyin-wiki creator list
-uv run douyin-wiki creator show CREATOR_ID
-uv run douyin-wiki creator works CREATOR_ID
-uv run douyin-wiki creator sync CREATOR_ID
-```
-
-处理和查看：
-
-```bash
-uv run douyin-wiki worker run --once
-uv run douyin-wiki jobs get JOB_ID
-uv run douyin-wiki jobs events
-uv run douyin-wiki jobs approve JOB_ID
-uv run douyin-wiki jobs retry JOB_ID
-uv run douyin-wiki review resolve JOB_ID --resolution 'asr-3=修正后的文字'
-uv run douyin-wiki search '财经媒体筛选'
-```
-
-任务状态：
-
-```text
-待处理 → 正在解析 → 正在下载 → 正在转录 → 待 AI 处理（校正）
-                                             ↘ 需要人工复核
-                                待 AI 处理（分析）→ 正在分析 → 已完成
-                 ↘ 需要登录授权                         ↘ 已完成（有提示）/ 失败
-```
-
-图文任务状态：
-
-```text
-待处理 → 正在解析 → 正在下载 → 正在提取内容 → 待 AI 处理（分析）→ 已完成
-                                      ↘ 需要人工复核
-                         ↘ 需要登录授权                         ↘ 失败
-```
-
-博主清点与批量任务状态：
-
-```text
-待处理 → 正在解析 → 正在清点作品 → 待选择作品 → 正在创建采集任务 → 正在处理所选作品 → 已完成
-```
-
-Gateway 模式的手工调试命令：
-
-```bash
-uv run douyin-wiki gateway context JOB_ID
-uv run douyin-wiki gateway submit-correction JOB_ID correction.json \
-  --producer hermes --model MODEL_NAME
-uv run douyin-wiki gateway submit-analysis JOB_ID analysis.json \
-  --producer hermes --model MODEL_NAME
-```
-
-显式选择紧凑传输时，三条命令加 `--gateway-protocol 2`，两条提交命令再加
-`--context-revision`（来自刚读取的本阶段上下文）。校正 JSON 仍支持列表或含 `corrections` 的字典，
-协议 2 只提交修改段，`[]` 表示已检查；分析文件仍是纯分析字典，可使用 `source_refs`。
-默认协议 1 的文件和调用保持兼容。MCP 四个 Gateway 工具使用同样的可选参数，完整流程见
-[紧凑协议](docs/gateway-agents.md#紧凑协议gateway_protocol2)。
-
-已入库条目也可以接受结构化重分析，且不会改写用户灵感：
-
-```bash
-uv run douyin-wiki entry submit-analysis ENTRY_ID analysis.json \
-  --producer codex \
-  --model MODEL_NAME
-```
-
-复用已有校正逐字稿和 OCR 生成 v2 文档，不会重新下载或转录：
-
-```bash
-uv run douyin-wiki entry reanalyze ENTRY_ID
-uv run douyin-wiki entry reanalyze-all
-# 已是 v2 时默认跳过；需要强制重跑时加 --force
-```
-
-Gateway 模式下命令会进入“待 AI 处理”的分析阶段；Provider 模式由 Worker
-调用已配置模型。旧 `AnalysisResult` 输入会自动升级，迁移期间仍可读取 v1 数据。
-
-SQLite 是可重建投影。预览或执行 Markdown → SQLite 重建：
-
-```bash
-uv run douyin-wiki database rebuild
-uv run douyin-wiki database rebuild --apply
-```
-
-入库在单个 SQLite 写事务中校验 Worker 租约并写入条目、检索块、关系和提醒，再原子替换
-Vault 文档，提交前读取并校验返回值，最后提交事务。提交前抛出异常时回滚 SQLite 并恢复
-已修改的文档；提交后的读取异常不回滚已发布文档，Git 提交在资料发布成功后执行。
-Worker 使用可续期租约；进程异常退出后，过期租约对应的处理中任务会自动
-回到队列，旧版遗留的无租约博主派发任务恢复为待选择，可复用已创建的子任务。
+`gateway monitor-events` 没有未确认事件时保持静默，有事件时输出最早 100 条；它仅作单页兼容探测。完整扫描使用 MCP `list_job_events` 分页，业务查询和提交不再使用 CLI。
 
 ## 专题研究
 
-专题用于在用户选定的文章范围内进行研究与决策，不会在缺少证据时回退到全库。可以通过 Web
-首页多选文章创建，也可以使用 CLI：
+Agent 使用 `search_knowledge` / `get_entry` 查找和读取资料，用 `create_topic` 及 `set_topic_sources` 保存选定来源；Web 资料库也可多选创建专题、启停来源和阅读笔记。
 
-```bash
-uv run douyin-wiki topic create 'AI 产业研究' \
-  --entry-id dy-作品ID1 \
-  --entry-id dy-作品ID2 \
-  --goal '比较不同来源的共识、分歧和决策依据'
-uv run douyin-wiki topic list
-uv run douyin-wiki topic show TOPIC_ID
-uv run douyin-wiki topic search TOPIC_ID '产业链判断'
-uv run douyin-wiki topic generate TOPIC_ID --kind decision_brief
-```
+专题内问答使用 `search_topic` 和 `get_topic`，仅引用当前启用来源。无相关证据时明确说明，不回退到全库。用户要求保存或已有授权覆盖保存时，用 `save_topic_note(..., confirmed=true)` 逐字保存专题笔记。
 
-专题成果支持总览、对比表、证据地图、共识与分歧、决策简报和 FAQ。成果保存在
-`topics/<topic_id>/artifacts/`；来源发生变化后旧成果会标记为“需要更新”，但不会自动重新生成或
-消耗 token。用户要求保存或已有授权覆盖保存时，专题笔记逐字保存，不重复确认。
+专题仅保存笔记，没有总览、对比表、证据地图、决策简报等自动生成入口。`generate_topic_artifact` 已从 MCP 移除，`topic generate` 和 `POST /api/topics/{topic_id}/artifacts` 已停用。来源改变后可提示笔记需要更新，但不会自动重写。
 
 ## MCP
 
-外部 Agent 从 [MCP 自助接入入口](docs/agents/README.md)读取通用步骤和参数，自行转换为当前客户端的原生配置。默认复用已有配置、Vault 和已登录浏览器 Profile，开放 `tools/list` 返回的全部工具，按用户任务和已有授权执行。项目源码由 Codex 维护；外部 Agent 对仓库只读，实际配置、技能、工作目录、凭据、日志及记录均放在仓库外。
+外部 Agent 从 [MCP 自助接入入口](docs/agents/README.md)读取通用步骤和参数，自行转换为当前客户端的原生配置。复用与 0.2.0 新库匹配的已确认配置、Vault 和已登录浏览器 Profile，开放 `tools/list` 返回的全部工具，按用户任务和已有授权执行。项目源码由 Codex 维护；外部 Agent 对仓库只读，实际配置、技能、工作目录、凭据、日志及记录均放在仓库外。
 
-已有 STDIO 入口 `douyin-wiki-mcp` 保持，也可使用已安装解释器执行 `<PYTHON_EXECUTABLE> -B -m douyin_wiki.mcp_server`。完整启动环境、现有目标配置和文件边界见[接入契约](docs/agents/integration-contract.md)；不需要为某个客户端修改代码或新增适配模块。
+已有 STDIO 入口 `douyin-wiki-mcp` 保持，也可使用独立 runtime 的已安装解释器执行 `<PYTHON_EXECUTABLE> -B -m douyin_wiki.mcp_server`。完整启动环境、现有目标配置和文件边界见[接入契约](docs/agents/integration-contract.md)；不需要为某个客户端修改代码或新增适配模块。
 
 采集是异步任务，因此 MCP 调用迅速返回 `job_id`，Agent 随后继续等待、检查状态并完成校正、分析和结果回复。
 `job_id` 是中间回执，不代表整个任务结束，不要求用户再发一次检查指令。状态查询先核对 `get_job` 的 schema，
@@ -381,9 +226,16 @@ uv run douyin-wiki topic generate TOPIC_ID --kind decision_brief
 任务完成（含提示）、失败或取消并交付结果后停止跟进，取消后不自动重试。当前任务内持续执行不依赖后台心跳；
 只有对话结束后仍需接续时，才复用客户端的自动续跑或会话心跳，无需额外常驻监控器；自建事件桥是另一种可选方式。Gateway 应传入原会话的
 `gateway_context`，使用 `list_job_events` 接收持久事件，并在成功处理或投递后调用
-`acknowledge_job_event`。没有路由上下文的 CLI 任务不会产生投递事件；同一任务的新状态会淘汰
+`acknowledge_job_event`。没有路由上下文的任务不会产生投递事件；同一任务的新状态会淘汰
 尚未处理的旧状态，防止 Gateway 恢复后执行过时动作。完整接入配置和 Agent 工具顺序见
 [Gateway Agent 接入指南](docs/gateway-agents.md)。
+
+
+服务返回 51 个工具；名称与输入参数沿用旧契约，仅移除 `generate_topic_artifact`。升级后应退出旧 STDIO 进程并重建客户端连接，重新读取 `tools/list` 和 instructions；修改 TOML 或再次 initialize 不能切换已有进程的缓存配置。
+
+共享等待记录的 `result.shared_capture_job_id` 指向执行任务，`result.shared_job_status` 表示其状态。用执行任务 ID 读取材料、提交校正和分析；保留等待记录原 ID 与原会话通知，批次未结束时继续跟进。
+
+Web 不能唤醒已结束的 Agent 对话。当前对话内继续处理不需要额外心跳；只有确需结束后接续时才核对并复用客户端能力，不额外安装 Hermes 配置或常驻监控器。
 
 ## 后台服务
 
@@ -424,7 +276,7 @@ macOS 本地服务：
 uv run douyin-wiki web install
 uv run douyin-wiki web status
 uv run douyin-wiki web open
-# 只移除常驻服务，不删除 Vault 或本地聊天记录
+# 只移除常驻服务，不删除 Vault
 uv run douyin-wiki web uninstall
 ```
 
@@ -437,19 +289,24 @@ host = "127.0.0.1"
 port = 8765
 ```
 
-浏览 Markdown、封面和文章不消耗 token。右侧 AI 对话复用 `[llm]` 中的 OpenAI-compatible
-模型与 Keychain 密钥；只有发送问题才调用模型。对话只发送有长度上限的文字上下文和检索证据，
-不发送视频、图片、Cookie、隐藏侧车或密钥。聊天历史只保存在 `.douyin-wiki/state.sqlite3`，
-可在页面中手动删除。网页写入能力包括提交单独的抖音链接或整段分享文案到后台采集队列、
-用户确认后逐字追加灵感，以及将整条资料及其媒体移入抖库废纸篓；废纸篓支持恢复和再次确认
-后彻底删除。博主与收藏可在导入中心清点、选择并确认导入；系统维护与数据库重建在系统设置中先预览、再确认执行。CLI/MCP 的确认参数可依据用户任务和已有授权填写，不要求每次重新确认。
+浏览 Markdown、封面和文章不消耗 AI token。右栏保留信息、文章灵感和专题来源；用户灵感逐字保存。Web 支持已有任务重试 / 取消、批次选择 / 确认、资料删除 / 恢复、重新分析和维护预览。
 
-模型尚未配置时，可在网页左侧打开「设置 › 共用模型」，或直接访问
-[http://127.0.0.1:8765/settings/model](http://127.0.0.1:8765/settings/model)。页面支持填写
-OpenAI-compatible 接口地址、模型名称和 API Key：接口与模型写入本地配置，API Key 只写入
-macOS Keychain且永不回显；本机 LM Studio/Ollama 可不填密钥。更换云端接口时必须输入新服务
-对应的密钥，系统不会把旧服务密钥发送给新接口。保存本身不调用模型；“测试连接”会发出一条极短请求并显示 token
-用量。保存共用模型不会切换现有 `gateway`、`provider` 或 `local` 分析模式；保存后请求常驻 Worker 在当前任务结束后重载配置，手工启动的 Worker 需重新启动。分析模式在「设置 › 导入分析」单独选择。
+`/imports` 展示 Agent 提示和已有博主、收藏、合集记录。`/imports/single` 显示停用说明；另外三个导入页不含新建表单，历史和 `?job=<新库任务ID>` 继续可用。`/settings/model` 显示停用说明，`/settings/analysis` 只显示 Gateway 状态。聊天 Tab、消息操作、模型设置、自动生成按钮、Cmd+I 新导入及分享文本粘贴导航已删除。
+
+以下新建请求直接返回 `410`，不创建任务：
+
+| 方法 | 路径 |
+| --- | --- |
+| POST | `/api/captures` |
+| POST | `/api/creators/inventory` |
+| POST | `/api/favorites/imports` |
+| POST | `/api/collections/inventory` |
+| POST | `/api/creators/{creator_id}/sync` |
+| POST | `/api/creators/{creator_id}/import-skipped` |
+
+以下模型功能同样返回 `410`，不查询实体、访问密钥或连接模型：`POST /api/topics/{topic_id}/artifacts`；`GET / POST /api/chat/sessions`；`GET / DELETE /api/chat/sessions/{session_id}`；`POST /api/chat/sessions/{session_id}/messages`；`GET / POST /api/settings/model`；`POST /api/settings/model/test`；`GET /api/system/model-health`。原 Origin 安全检查仍适用。
+
+`GET /api/favorites/imports`、已有批次管理和不创建任务的 `POST /api/imports/classify` 保留。全部静态资源 URL 保留，停用页模块只提供说明页职责。
 
 ## Vault 数据边界
 
@@ -467,7 +324,8 @@ macOS Keychain且永不回显；本机 LM Studio/Ollama 可不填密钥。更换
   `sources/`、`raw/`、概念/实体目录和隐藏 `.data/`；不会与旧资料目录混放。
 - 已经存在于 `wiki/sources/` 的作品保持原位，博主 `index.md` 只链接它，不搬迁或复制。
 - `index.md` 和 `log.md`：内容地图与只追加日志。
-- `.douyin-wiki/`：任务、事件、聊天、索引、向量和临时工作目录，不进入 Git；知识索引可从 Markdown 重建，任务及聊天历史不能据此恢复。
+- `topics/`：选定来源、来源状态和逐字专题笔记，不自动生成成果。
+- `.douyin-wiki/`：任务、事件、索引、向量和临时工作目录，不进入 Git；schema 16 新库无聊天表，知识重建不能恢复全部操作历史。
 
 Vault 会初始化为独立本地 Git 仓库。程序每次只暂存本次生成的 Markdown，不自动推送远端。
 
@@ -480,24 +338,28 @@ uv run pytest -q -m 'not live'
 
 默认测试不访问网络、不读取浏览器 cookie、不创建系统提醒。真实抖音验证使用 `live` marker，需显式运行。
 
-## 本地发行包
+## 本地发行包与运行安装
 
-构建 wheel 和源码包：
-
-```bash
-uv build
-```
-
-构建结果写入 `dist/`。可以在新的 Python 3.12 虚拟环境中直接安装 wheel：
+在隔离的源码开发环境构建发行包并导出锁定的 runtime 依赖，输出目录位于仓库外。替换下面的绝对路径：
 
 ```bash
-python3.12 -m venv /tmp/douku-release-check
-/tmp/douku-release-check/bin/pip install dist/douyin_wiki-0.1.5-py3-none-any.whl
-/tmp/douku-release-check/bin/douyin-wiki --help
+DOUKU_RELEASE_DIR=/absolute/path/to/douku-release
+DOUKU_RUNTIME=/absolute/path/to/douku-runtime/.venv
+uv build --out-dir "$DOUKU_RELEASE_DIR"
+uv export --frozen --no-dev --no-emit-project --extra embeddings --extra asr --extra ocr \
+  --format requirements-txt --output-file "$DOUKU_RELEASE_DIR/requirements-runtime.txt"
+uv venv --python 3.12 "$DOUKU_RUNTIME"
+uv pip sync --python "$DOUKU_RUNTIME/bin/python" --require-hashes "$DOUKU_RELEASE_DIR/requirements-runtime.txt"
+uv pip install --python "$DOUKU_RUNTIME/bin/python" --no-deps "$DOUKU_RELEASE_DIR/douyin_wiki-0.2.0-py3-none-any.whl"
 ```
 
-发行包不会包含 Vault、SQLite、Cookie、媒体、模型密钥或本机配置。完整媒体处理仍要求 macOS
-以及系统中的 `yt-dlp`、`ffmpeg`、Qwen3、RapidOCR/Swift Vision 和浏览器授权。
+`asr` 仍是 Qwen3 的安装兼容别名，锁定依赖不含旧语音引擎。wheel 从该独立环境的 `site-packages` 加载，不使用源码 editable 安装。开发环境的 `.venv` 与旧已安装环境保留。
+
+先在仓库外工作目录核对版本、来源、CLI、空库 Web / Worker 和实际 MCP 连接；配置必须指向已准备的 0.2.0 新库与正确 Profile。通过安装验收后，按已确认的部署范围把 Worker、定期维护、Web 和 MCP 四个入口统一改到 `$DOUKU_RUNTIME/bin/python`，再重启并重连客户端。只修改文档或构建包不表示已部署。
+
+MCP 使用 `-B -m douyin_wiki.mcp_server`、仓库外 cwd、`DOUYIN_WIKI_CONFIG` 和 `DOUYIN_WIKI_BROWSER_PROFILE`，完整模板见[接入契约](docs/agents/integration-contract.md#stdio-启动契约)。服务配置变化需创建新进程；不要在正在使用的旧环境中同步开发依赖。
+
+发行包不会包含 Vault、SQLite、Cookie、媒体、模型密钥或本机配置。完整媒体处理仍要求 macOS、系统 `yt-dlp` / `ffmpeg`、Qwen3、RapidOCR 或 Swift Vision，以及对应的浏览器授权；模型权重由用户单独准备。
 
 ## 当前边界
 

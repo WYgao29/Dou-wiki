@@ -2,46 +2,31 @@
 
 ## 入口与分析模式
 
-Web、CLI 和 MCP 共用 `DouyinWikiService`。Web 是日常操作入口，CLI 用于安装与排障，MCP 供外部 Agent 调用。入口不决定分析模式：
+0.2.0 通过 MCP 创建业务请求，由 `DouyinWikiService` 写入持久任务。Web 管理已有批次和任务、阅读资料、灵感和专题笔记；CLI 保留安装、授权、运行和维护。业务 CLI 及 Web 新建请求已停用。
 
-| 模式 | 校正与分析执行者 |
-| --- | --- |
-| `gateway` | 外部 Agent 获取上下文、提交校正版和分析；本地 Worker 暂停等待 |
-| `provider` | 本地 Worker 调用配置的 OpenAI-compatible 模型接口 |
-| `local` | 本地启发式分析，不调用模型 |
+校正与分析只使用 `analysis_mode="gateway"`。本地 Worker 不持有会话、不调用对话模型；新视频转写后等待校正提交，再等待分析提交，静态图文 OCR 后直接等待分析。重新分析使用已保存材料。没有 provider/local 后端、Web 聊天或专题自动生成。
 
-Gateway 的传输版本由原工具上的可选 `gateway_protocol` 控制，默认 1 保持旧形状，
-显式 2 使用分阶段上下文、OCR 投影、增量校正、证据引用和简短状态。它独立于 `analysis_version=2`。
-`gateway_sources.py` 只处理材料及原始范围，`gateway_protocol.py` 构造 schema、确定性材料版本和回执；
-`service_analysis.py` 读取快照、检查阶段/版本，保留数据库并发比较，并将引用展开为标准模型后校验原始材料。
-原稿、OCR、校正稿和标准分析存储不变，编号不进入 Vault；provider/local、Web 和 ASR/OCR 适配器不走新传输逻辑。
-调用顺序与错误恢复见 [Gateway 指南](gateway-agents.md#紧凑协议gateway_protocol2)。
+Gateway 的可选 `gateway_protocol` 默认 `1`，新调用优先显式使用 `2`。协议 2 使用分阶段上下文、OCR 投影、增量校正、证据引用和简短状态，独立于 `analysis_version=2`。`gateway_sources.py` 处理材料及原始范围，`gateway_protocol.py` 构造 schema、材料版本和回执；`service_analysis.py` 检查阶段、版本及并发状态，展开引用后校验原始材料。原稿、OCR、校正稿和标准分析持久存储不变，编号不进入 Vault。调用顺序见[Gateway 指南](gateway-agents.md#紧凑协议gateway_protocol2)。
 
 ```mermaid
 flowchart TD
-    entry[Web / CLI / MCP] --> service[Service 创建持久任务]
+    entry[MCP 请求] --> service[Service 创建持久任务]
     service --> queue[SQLite 队列]
     queue --> worker[Worker 领取任务并续租]
     worker --> kind{任务类型}
-    kind -->|博主 / 收藏 / 合集| inventory[清点作品，等待选择和确认]
-    inventory --> children[创建采集子任务]
+    kind -->|博主 / 收藏 / 合集| inventory[清点，等待选择与确认]
+    inventory --> children[创建或复用采集子任务]
     children --> queue
     kind -->|单条视频 / 图文| media[下载与本地文字提取]
-    media --> mode{分析模式}
-    mode -->|gateway| agent[保存上下文，等待 Agent 提交]
-    mode -->|provider| provider[模型校正与分析]
-    mode -->|local| local[本地降级分析]
-    agent --> publish[写入 Vault 和 SQLite 检索投影]
-    provider --> publish
-    local --> publish
-    publish --> done[完成状态与事件]
+    media --> agent[保存材料，等待 Gateway 校正与分析]
+    agent --> publish[Worker 写入 Vault 与检索投影]
+    publish --> done[完成状态与持久事件]
+    done --> reply[Agent 回复原会话]
 ```
 
 视频优先通过专用 Playwright Profile 获取媒体地址，再由下载工具保存；失败时回退到页面下载。音轨只由 Qwen3-ASR 转录，使用 Silero 判断静音、ForcedAligner 计算时间，流式识别窗口最多 600 秒，主对齐窗口最多 180 秒，展示段默认最多 30 秒。源样本与字符归属完整；异常预测的有界重新对齐仍保持原文和严格时间检查，不能返回部分成功结果。视频抽帧与静态图文由 OCR 后端识字；`auto` 优先 RapidOCR，初始化不可用时使用 Vision。旧 ASR 配置在内存中迁移，不自动改写旧稿；详情见根目录 README。
 
 新视频由同一分析模型直接校正后继续入库，普通 ASR/OCR 疑点只记录，不新增人工复核步骤。用户选定的视频直接处理，不因时长暂停；转写不设置整条音轨的总时长上限，仍按最多 600 秒的窗口逐块处理。旧 `needs_review` 任务可显式重试，旧 `waiting_confirmation` 任务保留 `approve_job` 恢复入口；授权失效和模型错误仍按对应任务状态处理。
-
-Provider 的完整分段汇总超出模型预算时，保留各段内容与证据并降级拼接。只有最终拼接的标签超过三个时，才用全部分段内容概要单独归纳全文标签，不直接截断或提供已有标签清单；归纳也超出预算时留空标签，在分析中记录原因。标签归纳的连接错误或无效输出仍使任务失败，重试复用已成功的分段检查点。
 
 ## 文件职责
 
@@ -58,24 +43,24 @@ Provider 的完整分段汇总超出模型预算时，保留各段内容与证�
 | `batch_capture.py` | 收藏、博主和合集共用的作品身份及活动任务查重 |
 | `capture_sharing.py` | 短链解析后的活动采集复用、持久等待者、批次关联重指及结果同步 |
 | `tags.py` | 标签、别名与资料关联；沿用数据库事务和解析约定 |
-| `analysis_rules.py` | 网关与 Provider 共用的内容标签规则与新分析数量上限 |
+| `analysis_rules.py` | Gateway 校正 / 分析的提示版本、内容标签规则和数量上限 |
 | `adapters/favorites.py` | 收藏清点的 Profile 锁、账号保护、目录与指定夹分页、去重和检查点；全部模式的 DOM 作品读取 |
 | `adapters/favorites_api.py`、`adapters/favorites_browser.py` | 原始收藏 JSON 与稳定 ID 解析；网页原生只读请求、响应关联、重试预算和监听生命周期 |
 | `adapters/collection.py`、`adapters/collection_api.py`、`adapters/collection_browser.py` | 专用 Profile、稳定账号保护、合集原生 GET、原始 JSON 与串行分页检查点 |
-| `adapters/` | 抖音解析与下载、媒体处理、模型、向量和系统提醒适配；`chat.py` 共用 HTTP/SSE 聊天传输 |
-| `webapp/chat.py`、`webapp/version.py` | Web 聊天上下文与旧聊天导入兼容；Web 版本常量，`app.WEB_VERSION` 继续导出，包入口延迟加载 `create_app` / `run_web` |
+| `adapters/` | 抖音解析与下载、Qwen3 / OCR 媒体处理、向量和系统提醒适配 |
+| `webapp/version.py` | Web 版本常量；`app.WEB_VERSION` 继续导出，包入口延迟加载 `create_app` / `run_web` |
 | `search.py` | 证据分块、FTS 与向量检索、资料关系 |
 | `web_auth.py`、`auth_guidance.py` | Web 授权会话与 macOS 授权引导 |
 | `operation.py`、`web_operation.py` | 任务展示、授权状态与维护操作 |
-| `config.py`、`setup.py`、`secrets.py` | 配置、安装检查、LaunchAgent 与密钥访问 |
+| `config.py`、`setup.py` | Gateway 配置、安装检查与 LaunchAgent；不再使用对话模型密钥 |
 | `models.py`、`errors.py` | 数据契约与稳定错误类型 |
 | `localization.py`、`time_utils.py` | 面向用户的状态文案；时间解析、时区和显示转换 |
 
 ## 状态与数据
 
-用户 Vault 与源码仓库分离。Vault 保存不可变原始记录、可更新资料页、机器侧车和媒体；`.douyin-wiki/state.sqlite3` 保存任务、事件、授权会话、聊天及检索投影。重建知识索引不等于恢复全部操作历史。
+用户 Vault 与源码仓库分离。Vault 保存不可变原始记录、可更新资料页、机器侧车和媒体；`.douyin-wiki/state.sqlite3` 保存任务、事件、授权会话及检索投影，没有聊天表。重建知识索引不等于恢复全部操作历史。
 
-合集 schema 15 使用 `collections/collection_works` 保存知识关系，`collection_runs/collection_run_items` 保存批次世代、选择及子任务关联；博主运行项补充 `child_job_id`。`Database.capture_parent_ids()` 与 `batch_child_ids()` 查询真实关联，复用 capture 保留原 Gateway 上下文。确认先检查全部选项，再在一个写事务中发布子任务；短链后来解析出的重复请求保留 ID 和 Gateway，进入持久等待状态，批次关联指向执行任务。取消保护依据其他活动父任务及独立等待者，完成刷新覆盖全部相关入口。
+0.2.0 仅创建原生 schema 16 新库，旧版状态库明确拒绝，不自动迁移旧业务数据。新 schema 使用 `collections/collection_works` 保存知识关系，`collection_runs/collection_run_items` 保存批次世代、选择及子任务关联；博主运行项补充 `child_job_id`。`Database.capture_parent_ids()` 与 `batch_child_ids()` 查询真实关联，复用 capture 保留原 Gateway 上下文。确认先用 `CaptureOptions.processing_key()` 检查所有候选的有效处理选项，再在一个写事务中发布子任务；短链后来解析出的重复请求保留 ID 和 Gateway，进入持久等待状态，批次关联指向执行任务。取消保护依据其他活动父任务及独立等待者，完成刷新覆盖全部相关入口。
 
 取消批次先按原 `creator/favorites/collection_context.parent_job_id` 撤销其共享等待记录，再依据实际父任务关系决定是否停止执行者；共享结果刷新不会恢复已取消的记录。等待者单独重试在同一状态更新事务中移除 artifacts 和 result 的旧执行者关联，普通重试保留检查点。Web 保留等待记录自身状态和请求，用实际执行者展示阶段、进度、授权范围及跳转入口；进行中与需要用户操作筛选依据当前共享执行状态。
 
@@ -85,14 +70,19 @@ Provider 的完整分段汇总超出模型预算时，保留各段内容与证�
 
 定期维护由独立 LaunchAgent 调度，Worker 启动时补偿错过的维护。维护处理知识过期、孤立页面和媒体保留，不自动同步博主或收藏。Web 只监听本机回环地址。
 
+
+收藏的原生新 schema 按作品保存 `selection_explicit`。增量清点比较同账号、同范围的更早批次，只继承手动明确选择或已确认批次选择；本批首次清点冻结 `_baseline_work_ids`，详情读取不补写数据库。收藏范围由 MCP 新建参数确定，Web 只管理已有批次。
+
+共享只比较当前有效的 `retention`；`allow_long` 和 `approve_cloud_analysis` 继续接收，但不影响执行或共享。等待者保留原请求和 Gateway 上下文，材料读取和校正 / 分析提交使用 `result.shared_capture_job_id` 对应的执行任务。
+
 ## 开发验证
 
-收藏状态库自 schema 14 起按作品记录 `selection_explicit`：选择接口标记用户明确操作，已确认批次亦可作为可信选择来源。增量读取仍以最近同账号、同范围的作品清单作为新增比较基线，但只继承可信选择；旧记录与旧勾选保留。初始化时一次性冻结旧批次缺失的 `_baseline_work_ids`，详情查询的兼容回退只读，不再为了冻结基线取得写锁或补写状态库。Web/Worker 同时初始化时，新增选择来源列及旧基线补写在一个写事务中完成。
-
 ```bash
-uv sync --extra dev --extra embeddings
+uv sync --locked --extra dev --extra embeddings
 uv run ruff check src tests
 uv run pytest -q -m 'not live'
 ```
 
-`tests/conftest.py` 提供临时 Vault 与假适配器；`tests/support/web.py` 共用 Web 夹具、假聊天 provider 和带 Origin 的客户端，供正式测试及八个浏览器脚本调用。完整离线集有用例直接注入 `sentence_transformers`，因此验证环境也需 `embeddings` extra；该测试模拟模型初始化失败，不下载真实模型。浏览器回归使用隔离上下文和模拟网络。真实抖音冒烟需显式启用 `live`，前置条件见 `tests/test_live_smoke.py`。测试按接口、领域和恢复行为组织，不能因文件最初来自某轮审查就删除仍有效的回归用例。
+`tests/conftest.py` 提供临时 Vault 与假适配器；`tests/support/web.py` 共用 Web 夹具、离线媒体适配器和带 Origin 的客户端，供正式测试及八个浏览器脚本调用。完整离线集有用例直接注入 `sentence_transformers`，因此验证环境也需 `embeddings` extra；该测试模拟模型初始化失败，不下载真实模型。浏览器回归使用隔离上下文和模拟网络。真实抖音冒烟需显式启用 `live`，前置条件见 `tests/test_live_smoke.py`。测试按接口、领域和恢复行为组织，不能因文件最初来自某轮审查就删除仍有效的回归用例。
+
+正式服务由仓库外独立 runtime 的 wheel 安装提供，开发和浏览器验证只使用隔离工作区与临时 Vault；部署入口及安装验收见[README](../README.md#本地发行包与运行安装)。

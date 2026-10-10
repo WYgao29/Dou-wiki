@@ -215,14 +215,16 @@ assert service.get_job(owner_id).status == JobStatus.AWAITING_AGENT_ANALYSIS
 
 ## Task 7：同步现行契约及版本（步骤 6 的第三项）
 
-**Files:** Modify：`README.md`、`CHANGELOG.md`、`docs/README.md`、`docs/architecture.md`、`docs/gateway-agents.md`、`docs/service-collaboration-api.md`、`docs/web-ui-design-system.md`、`docs/favorites-import.md`、`docs/collections-import.md`、`docs/agents/README.md`、`docs/agents/self-setup.md`、`docs/agents/integration-contract.md`、`src/douyin_wiki/mcp_server.py` 的说明、`vault.py` 的生成规则、`pyproject.toml`、`uv.lock`、`src/douyin_wiki/__init__.py`、`webapp/version.py`；Test：调整 `tests/test_documentation.py` 中受影响的现行约定，复用现有版本测试。
+**Files:** Modify：`README.md`、`CHANGELOG.md`、`docs/README.md`、`docs/architecture.md`、`docs/gateway-agents.md`、`docs/service-collaboration-api.md`、`docs/web-ui-design-system.md`、`docs/favorites-import.md`、`docs/collections-import.md`、`docs/troubleshooting.md`、`docs/agents/README.md`、`docs/agents/self-setup.md`、`docs/agents/integration-contract.md`、`src/douyin_wiki/mcp_server.py` 的说明、`vault.py` 的生成规则、`pyproject.toml`、`uv.lock`、`src/douyin_wiki/__init__.py`、`webapp/version.py`；Test：调整 `tests/test_documentation.py` 中受影响的现行约定，复用现有版本测试。
 
 **Interfaces:** Consumes：任务 2～6 的实际接口。Produces：包 `0.2.0`、Web `0.2.48`，反映当前能力的使用契约；不改写历史验证数量或截图证据。
 
-- [ ] **Step 1：更新当前文档。** 明确日常业务只通过 MCP、job_id 是中间回执、Agent 持续执行、协议 2 优先而 1 保留、共享等待者按执行者取材料、Web 不能唤醒结束的对话。列出全部有意停用行为及客户端重连要求，专题研究 / 问答使用保留工具，保存用 `save_topic_note`。删除模型配置、Web 新建和自动成果的现行操作指引，保留 auth、运行命令、monitor-events 兼容说明和新库重建。部署说明改为独立 runtime wheel，不新增 Hermes 配置或额外心跳要求。
-- [ ] **Step 2：更新版本与锁文件。** 将 pyproject 与 `__version__` 同时改为 `0.2.0`、WEB_VERSION 改为 `0.2.48`。工作区内执行 `uv lock`，核对锁文件仅有根包版本及已确认依赖声明的变化；不借此升级系统或其他依赖。在工作区独立 `.venv` 中同步已锁依赖以刷新包 metadata，原仓库 `.venv` 不动。
-- [ ] **Step 3：检查实际说明与版本。** Run：`uv run --no-sync pytest -q tests/test_documentation.py tests/test_interfaces.py::test_package_version_matches_metadata`、`uv run --no-sync ruff check src tests`、`git diff --check`。审计 `generate_topic_artifact / configure-model / provider / local / chat` 的现行文档引用，保留明确停用、旧版说明和历史记录，删除误导性现行指令。Expected：检查通过、版本一致、所有链接可读。
-- [ ] **Step 4：提交并报告步骤 6。** 消息 `docs: describe gateway-only 0.2.0 interfaces and runtime installation`。确认文档更新没有丢失主工作区原索引中的已确认内容。等待用户确认步骤 7。
+- [x] **Step 1：更新当前文档。** 明确日常业务只通过 MCP、job_id 是中间回执、Agent 持续执行、协议 2 优先而 1 保留、共享等待者按执行者取材料、Web 不能唤醒结束的对话。列出全部有意停用行为及客户端重连要求，专题研究 / 问答使用保留工具，保存用 `save_topic_note`。删除模型配置、Web 新建和自动成果的现行操作指引，保留 auth、运行命令、monitor-events 兼容说明和新库重建。部署说明改为独立 runtime wheel，不新增 Hermes 配置或额外心跳要求。
+- [x] **Step 2：更新版本与锁文件。** 将 pyproject 与 `__version__` 同时改为 `0.2.0`、WEB_VERSION 改为 `0.2.48`。工作区内执行 `uv lock`，核对锁文件仅有根包版本及已确认依赖声明的变化；不借此升级系统或其他依赖。在工作区独立 `.venv` 中同步已锁依赖以刷新包 metadata，原仓库 `.venv` 不动。
+- [x] **Step 3：检查实际说明与版本。** Run：`uv run --no-sync pytest -q tests/test_documentation.py tests/test_interfaces.py::test_package_version_matches_metadata`、`uv run --no-sync ruff check src tests`、`git diff --check`。审计 `generate_topic_artifact / configure-model / provider / local / chat` 的现行文档引用，保留明确停用、旧版说明和历史记录，删除误导性现行指令。Expected：检查通过、版本一致、所有链接可读。
+- [x] **Step 4：提交并报告步骤 6。** 消息 `docs: describe gateway-only 0.2.0 interfaces and runtime installation`。确认文档更新没有丢失主工作区原索引中的已确认内容。等待用户确认步骤 7。
+
+实际验证：文档、包 metadata、轻量 Web 版本导出及三项 Vault 初始化 / 原文件保留检查共 `6 passed in 2.20s`，Ruff 通过。13 份现行文档的 95 个链接可读，五组历史内容及原索引已确认段落保留；当前教程不再使用停用业务 CLI。实际 STDIO initialize / tools/list 返回 51 项，名称和 inputSchema 与旧快照相比仅移除 generate_topic_artifact；instructions 为当前版本，业务调用为 0，Vault 未创建。四个运行文件仅修改说明常量或版本常量，锁文件仅更新根包版本；隔离环境的其余 99 个依赖保持原名称与版本。首次 Ruff 提示说明行过长，后续只做保持完整 Python AST 和 instructions 值相同的换行，记录原验证输入并重新通过 Ruff。第 6 大步骤完成，尚未集成主线或部署；等待第 7 大步骤确认。
 
 ## Task 8：全分支审查与必要修复（步骤 7）
 

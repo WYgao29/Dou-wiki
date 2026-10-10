@@ -2,39 +2,23 @@
 
 合集导入按“清点 → 选择 → 确认 → 逐条处理”执行。每个作品使用现有视频或静态图文采集流程；合集目录保存顺序及知识资料链接，同一作品跨合集、收藏、博主或单条导入仍复用同一份资料。
 
-本功能及后续审查修复已集成本地 `main`，合并验证与分支清理见[主线集成记录](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md#主线集成与清理2026-10-10)。真实样本与验收范围见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)。
+0.1.5 合集功能及后续审查修复的历史记录：已集成本地 `main`，合并验证与分支清理见[主线集成记录](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md#主线集成与清理2026-10-10)。真实样本与验收范围见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)。
 
 ## 网页操作
 
-在导入中心粘贴合集分享文案，或进入 `/imports/collections`。支持 `https://www.douyin.com/collection/{mix_id}` 及 `v.douyin.com` 合集短链。粘贴只识别方式并预填表单；点击“开始清点合集”才创建读取任务，此时不下载作品。
+Agent 通过 `capture_douyin_collection` 提交 `https://www.douyin.com/collection/{mix_id}` 或 `v.douyin.com` 合集分享文本，清点时不下载作品。Web `/imports/collections` 没有新建表单，展示已有历史和清单；通过 `?job=<任务ID>` 打开 Agent 已创建的批次。
 
 读取完成后，新作品默认“待选择”。每件可导入且未入库的作品都需要选择或跳过；“全选全部页”作用于本轮全部作品，包括没有打开的页。已有完整资料直接关联。选择保存失败时保留重试入口，确认按钮等待保存成功。刷新页面根据地址中的 `job` 恢复批次和已保存的选择。
 
-确认前页面显示预计新建、复用、已有资料与不可导入数量，作品提供封面及独立显示的时长；选择改变后数量随之更新。确认后显示实际任务、失败和取消数量。Gateway 模式下，本地 Worker 完成转写后等待原会话 Agent 校正和分析；等待不代表整批完成。完整清单需要再次读取时创建新批次，不自动选择新发现作品，也不创建定期同步。
+确认前页面显示预计新建、复用、已有资料与不可导入数量，作品提供封面及独立显示的时长；选择改变后数量随之更新。确认后显示实际任务、失败和取消数量。只支持 Gateway，本地 Worker 完成转写后等待原会话 Agent 校正和分析；等待不代表整批完成。完整清单需要再次读取时创建新批次，不自动选择新发现作品，也不创建定期同步。
 
-## CLI
+## 选择范围与停用入口
 
-后台 Worker 需要运行。`add` 返回 `job_id`；以下 `JOB_ID` 必须替换为实际值，等清点进入 `needs_selection` 后再选择。
+选择使用本轮 `ordinal`、稳定 `work_ids` 或 `all_works`，三者只能选一种；界面展示的集数 `episode_label` 可能与 ordinal 不同。部分导入时先将其他可导入作品标为 skipped，再选择目标作品。
 
-```bash
-uv run douyin-wiki collection add 'https://v.douyin.com/mTVp-S6IApM/'
-uv run douyin-wiki collection inventory JOB_ID
-uv run douyin-wiki collection select JOB_ID --all
-uv run douyin-wiki collection confirm JOB_ID
-uv run douyin-wiki collection inventory JOB_ID
-```
+`get_collection_inventory` 不传 page/limit 返回全部清单；显式分页时 limit 为 1–1000。`retry_collection_import` 在确认前重试失败、需要登录或不完整清点，确认后只重试失败子任务。完整清单需要重新读取时由 Agent 创建新批次。
 
-只导入第 1、3 件时，先跳过全部，再选择这些编号：
-
-```bash
-uv run douyin-wiki collection select JOB_ID --all --skip
-uv run douyin-wiki collection select JOB_ID --ordinal 1 --ordinal 3
-uv run douyin-wiki collection confirm JOB_ID
-```
-
-编号是本轮清单的 `ordinal`；界面展示的集数 `episode_label` 可能不同。也可使用重复的 `--work-id` 指定稳定作品 ID。编号、作品 ID、`--all` 必须三选一。
-
-`collection inventory` 不传 `--page/--limit` 返回全部清单；显式分页时 limit 为 1–1000。`collection retry JOB_ID` 在确认前重试失败、需要登录或不完整的清点，确认后只重试失败子任务。`collection list` / `show MIX_ID` 查询持久合集关系，`collection history` 查询导入历史。
+`collection add / inventory / select / confirm / retry / list / show / history` CLI 已停用，保留合法旧参数识别并返回非零说明。Web `POST /api/collections/inventory` 直接返回 `410`；已有清单的 GET、选择、确认、取消及重试继续可用。
 
 ## MCP 与 Gateway
 
@@ -61,11 +45,11 @@ uv run douyin-wiki collection confirm JOB_ID
 
 原生网页请求在抖库专用浏览器会话中执行；Python 读取网络原始 JSON，避免 19 位 ID 被 JavaScript 数字转换改变。分页按返回 cursor 前进，只有可信 `has_more=false` 且没有警告才表示完整。空/null 异常页、重复 cursor、数量差异或中途失败会保留已经读取的作品和原因。
 
-部分清单确认必须显式传 `accept_partial=true`，网页对应“我接受清单可能不完整”。这项决定只授权本轮已读清单。在确认前可点击“重新清点”，或调用 `retry_collection_import` / `collection retry` 重读同一批次；保留仍存在作品的明确选择，新作品仍待选择，旧轮消失的作品不计入本轮。已确认的批次再次读取需要新批次。
+部分清单确认必须显式传 `accept_partial=true`，网页对应“我接受清单可能不完整”。这项决定只授权本轮已读清单。在确认前可点击“重新清点”，或调用 `retry_collection_import` 重读同一批次；保留仍存在作品的明确选择，新作品仍待选择，旧轮消失的作品不计入本轮。已确认的批次再次读取需要新批次。
 
 登录失效或切换账号进入 `needs_auth`，沿用授权中心的抖音通道。恢复原账号后可重试同一批次；换账号需新建批次。普通签名/403 错误不会一律被解释为登录失效。账号身份只用于运行保护，不进入合集知识侧车。
 
-相同作品已有完整知识条目时直接关联；已有同选项活动采集时复用。处理选项冲突会拒绝整批确认，不创建一部分新任务；短链稍后解析才发现冲突时，仅该重复任务失败，原任务保留。取消一个批次保留其他活动批次或独立等待任务仍需要的执行任务；最后一个使用者取消后，停止已经无人使用的批次执行任务。独立创建的执行任务仍按原任务执行。一个子任务失败不会删除其他已入库结果，全部结束后父任务显示 `completed` 或 `completed_with_warnings`。全部已有资料或全部跳过时仍生成一次正常的批次完成事件，重复确认不重复通知。
+相同作品已有完整知识条目时直接关联；已有相同有效处理选项的活动采集时复用。当前仅 `retention` 影响共享，旧 `allow_long / approve_cloud_analysis` 参数继续接收但不影响执行。有效选项冲突会拒绝整批确认，不创建一部分新任务；短链稍后解析才发现冲突时，仅该重复任务失败，原任务保留。取消一个批次保留其他活动批次或独立等待任务仍需要的执行任务；最后一个使用者取消后，停止已经无人使用的批次执行任务。独立创建的执行任务仍按原任务执行。一个子任务失败不会删除其他已入库结果，全部结束后父任务显示 `completed` 或 `completed_with_warnings`。全部已有资料或全部跳过时仍生成一次正常的批次完成事件，重复确认不重复通知。
 
 取消批次也会撤销它原先创建的共享等待记录，即使批次已改为关联独立执行任务。被撤销的记录不再跟随成功或产生完成通知，其他批次仍可取得原执行任务的结果。合集、收藏和博主批次使用同一取消规则。
 

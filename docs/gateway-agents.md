@@ -1,6 +1,6 @@
 # Gateway Agent 接入指南
 
-抖库默认使用 `analysis_mode = "gateway"`。接入的 Agent 是用户入口和 AI 执行者；
+抖库 0.2.0 只使用 `analysis_mode = "gateway"`，业务请求通过 MCP 创建。接入的 Agent 是用户入口和 AI 执行者；
 `douyin-wiki` Worker 是不持有会话的本地媒体处理与入库服务。
 
 ## 运行边界
@@ -27,7 +27,7 @@ flowchart LR
 ```
 
 本地执行且不消耗 AI token：链接解析、下载、音频提取、ASR、OCR、任务队列、Markdown、
-索引和 Git。`gateway` 模式下只有视频逐字稿校正、作品分析以及 Gateway 给用户组织回复时使用
+索引和 Git。视频逐字稿校正、作品分析以及 Gateway 给用户组织回复时使用
 当前 Agent 模型并消耗 token。原视频和原图不会发给模型；模型只收到文字、OCR 和元数据。
 
 ## 调用边界与多客户端
@@ -36,9 +36,9 @@ flowchart LR
 
 外部 Agent 默认使用 `tools/list` 返回的全部 MCP 工具，按用户任务和已有授权完成查询、采集、分析、博主、收藏与合集导入、专题、提醒、重分析及维护，不设置查询或采集角色白名单，不逐项重复询问已授权操作。
 
-本项目源码由 Codex 维护。外部 Agent 对仓库只读，不修改源码、项目配置、测试、依赖或 Git 状态，不在其中创建配置、技能、脚本、日志或临时文件。生效配置和工作目录放在仓库外，STDIO 启动命令可指向仓库现有解释器，并禁止写入 Python 字节码。
+本项目源码由 Codex 维护。外部 Agent 对仓库只读，不修改源码、项目配置、测试、依赖或 Git 状态，不在其中创建配置、技能、脚本、日志或临时文件。生效配置和工作目录放在仓库外，STDIO 从仓库外独立 runtime 的 wheel 安装启动，并禁止写入 Python 字节码；不使用源码 editable 安装。
 
-接入时复用已有服务配置、Vault 和已登录浏览器 Profile，确认全部工具和共用规则实际加载；不能仅保存一个不会被读取的文件。全部工具开放不改变任务归属和工具参数要求，目录划分及提示词也不提供服务端鉴权或任务排他领取。
+接入时复用与 0.2.0 对应的已确认服务配置、schema 16 新库和已登录浏览器 Profile，确认全部工具和共用规则实际加载；不能仅保存一个不会被读取的文件。全部工具开放不改变任务归属和工具参数要求，目录划分及提示词也不提供服务端鉴权或任务排他领取。
 
 多个 Agent 接入时，每个客户端使用独立 `gateway` 标识，保存 `channel`、`conversation_id`、`message_id` 和 `reply_target`，并约定各自处理的任务和会话。只处理分配给自己的事件，其他事件跳过且不确认；提交前调用 `get_job` / `get_analysis_context` 重读最新阶段，成功处理或交付后再确认。轮询需逐页扫描未确认事件，即使整页属于其他客户端也继续翻页；重启、失败重试与游标处理见下文“事件接续”。
 
@@ -49,6 +49,10 @@ flowchart LR
 按[自助配置步骤](agents/self-setup.md)读取客户端实际版本与配置机制，再将[STDIO 启动契约](agents/integration-contract.md#stdio-启动契约)映射为原生配置。现有入口 `douyin-wiki-mcp` 保持；通用启动方式使用已安装的 Python、`-B -m douyin_wiki.mcp_server`、仓库外工作目录和显式的 `DOUYIN_WIKI_CONFIG`。
 
 共用规范不规定某个客户端的配置文件或字段，也不在仓库保存生效配置。接入 Agent 自己发现和转换格式，开放服务返回的全部工具；不能把一份特定客户端示例当作所有 Agent 的配置。服务当前只支持 STDIO，其他传输能力不足时记录限制，不修改源码补适配层。
+
+0.2.0 不迁移旧版状态库，旧 provider/local 分析配置也不会自动切换。安装与新库由维护流程准备，接入 Agent 不自行删除旧库或同步现用环境。Web 只管理已有批次、任务与知识，不能代替 Agent 分析或唤醒已结束的对话；业务 CLI、Web 新建、聊天、模型设置及专题自动生成均已停用，详见[README](../README.md)。
+
+服务提供 51 个工具，仅移除旧 `generate_topic_artifact`；其他名称与 inputSchema 保留。升级后退出旧 STDIO 进程并重新连接，读取最新 `tools/list`、instructions 和规则；客户端不继续使用缓存的工具清单或旧教程。四个运行入口应使用同一独立 runtime，启动模板见[接入契约](agents/integration-contract.md#stdio-启动契约)。
 
 ## Agent 必须执行的工具顺序
 
@@ -86,7 +90,7 @@ flowchart LR
 
 ## 紧凑协议（gateway_protocol=2）
 
-服务保留默认协议 1，调用方显式选择整数 `2` 才启用紧凑传输。它与分析结果的
+服务保留默认协议 1，新调用优先显式选择整数 `2` 使用紧凑传输。它与分析结果的
 `analysis_version=2` 是两个独立字段。状态查询可以单独使用 `get_job(..., gateway_protocol=2)`，
 只需核对该工具的 schema 支持 `2`；这不要求校正和分析改用协议 2。校正和分析采用紧凑传输前，检查 MCP tool input schema：`get_job`、
 `get_analysis_context`、`submit_transcript_correction`、`submit_gateway_analysis` 应都有
@@ -250,6 +254,14 @@ Gateway 应先调用 `get_auth_status` 和 `get_job` 复核最新状态，不要
 
 `get_collection/list_collections` 查询持久知识关系，`list_collection_imports` 查询操作历史。合集索引引用已有资料目录，清理批次历史不会删除知识关系。详细参数及验证边界见[合集导入](collections-import.md)。
 
+## 收藏与专题
+
+收藏通过 `scan_favorites` 开始清点，可传 `folder_ids`、`include_images`、`directory_only` 和原会话 `gateway_context`。用 `get_favorites_import` / `list_favorites_imports` 读取批次，`set_favorites_selection` 保存选择，`confirm_favorites_import` 按已有授权确认，`retry_favorites_import` 按状态重试。没有新建 Web 表单或额外扫描模式参数；Web 保留已有批次管理。收藏子任务的 `favorites_context.batch_silent=true` 只抑制逐条完成消息，校正和分析仍须完成。
+
+专题研究先用 `search_knowledge` / `get_entry` 读取资料，通过 `create_topic` / `set_topic_sources` 保存范围；专题内只用 `search_topic` / `get_topic` 的当前启用来源回答。没有证据时明确说明，不回退全库。用户要求保存或已有授权覆盖保存时，用 `save_topic_note(..., confirmed=true)` 逐字保存笔记。专题没有自动成果生成，Web 也不提供 AI 聊天。
+
+共享适用于单条、博主、收藏与合集。有效选项通过 `CaptureOptions.processing_key()` 比较，目前仅 `retention` 影响共享；旧 `allow_long / approve_cloud_analysis` 继续接收但不影响执行。`result.shared_capture_job_id` 指向实际执行者，`result.shared_job_status` 是其状态。按执行任务 ID 读取和提交材料，同一执行者由已约定的 Agent 处理；等待者保留自身任务 ID、灵感与原会话通知，不能对等待记录重复分析。
+
 ## 事件接续
 
 ### 当前任务内持续执行
@@ -271,14 +283,14 @@ Agent 收到 `job_id` 后保持当前任务运行，使用 `get_job` 和 `list_j
 ### 对话结束后的自动接续
 
 `list_job_events` 是持久事件游标，不是内存通知。它支持 `after_event_id`、只返回未确认事件，
-并携带原始 `gateway_context`。没有 `gateway_context` 的 CLI 任务不会进入投递队列。写入事件本身不会启动 Agent；
+并携带原始 `gateway_context`。没有 `gateway_context` 的任务不会进入投递队列。写入事件本身不会启动 Agent，Web 也不能唤醒已结束的对话；
 只有需要在对话结束后继续处理时，才由客户端提供自动续跑、会话心跳、定时任务或事件桥。
 会话心跳是在会话空闲后自动发起下一轮检查的客户端功能，与 Worker 的运行状态记录不同。
 调度归客户端管理，不作为普通采集的接入前提。优先复用客户端已有机制，可选择：
 
 - 在支持后台任务续跑时，把 `job_id` 交给 Gateway 自身的后台任务；
 - 使用客户端的会话心跳或定时任务调用 `list_job_events`；
-- 使用无 Agent 的本地定时器运行现有 `jobs events` 分页入口，再由 Gateway 的事件桥
+- 使用无模型的 MCP 客户端分页调用 `list_job_events`，再由 Gateway 的事件桥
   唤醒一次 Agent。
 
 #### 客户端原生自动接续
@@ -290,21 +302,20 @@ Agent 收到 `job_id` 后保持当前任务运行，使用 `get_job` 和 `list_j
 #### 自建事件桥（可选）
 
 最后一种方式的“事件桥”属于 Agent 的部署配置，不由本项目自动安装。以下步骤和伪代码只适用于选择自建事件桥的实例，
-不作为客户端原生自动接续的前提。该桥的空轮询只运行本地命令、不调用模型；有可操作事件时才唤醒 Agent：
+不作为客户端原生自动接续的前提。该桥的空轮询只调用本地 MCP 工具、不调用模型；有可操作事件时才唤醒 Agent：
 
 1. 配置上面的 MCP STDIO server，并让 Agent 能访问 `list_job_events`、`get_job`、
    `get_analysis_context`、提交、复核和 `acknowledge_job_event` 工具。
-2. 配置一个随 Agent 启动并持续运行的无模型监控任务，在仓库外工作目录沿用服务启动环境逐页执行
-   `<PYTHON_EXECUTABLE> -B -m douyin_wiki jobs events --after-event-id <cursor> --limit 100`，或使用等价的
-   `list_job_events(after_event_id=cursor, unacknowledged_only=true, limit=100)` 调用。
+2. 仅在选用自建桥时，配置仓库外的无模型 MCP 客户端，沿用同一服务启动环境逐页调用
+   `list_job_events(after_event_id=cursor, unacknowledged_only=true, limit=100)`。
    每轮从 `cursor=0` 开始，按整页最后一个事件的 ID 推进；即使本页事件全部属于其他客户端，
-   也继续翻页，直到返回空数组。CLI 空页输出 `[]`，不能用“stdout 是否为空”判断。
+   也继续翻页，直到返回空数组。工具空页返回 `[]`，不能用“stdout 是否为空”判断。
    只唤醒分配给当前 Gateway/会话的事件，并按 `gateway_context` 路由到原会话。
    不要只依赖“输出变化”触发：处理或交付失败时保留未确认，按失败次数有界重试并退避，
    同时继续扫描本页其他事件及后续页。每轮和重启后重新从头扫描，
    不跨轮持久化 `after_event_id` 高水位，以免跳过早先失败的未确认事件。
-   CLI 输出用于事件 ID 和路由；判断业务状态时读取 MCP `get_job` 返回的英文 `status` 与
-   `get_analysis_context.phase`，不要将 CLI 的中文显示状态或 label 与内部状态码比较。
+   事件用于 ID 和路由；业务分支读取 MCP `get_job` 的英文 `status` 与
+   `get_analysis_context.phase`，不要将中文 label 与内部状态码比较。
 3. Agent 处理每个事件前按上述状态读取规则查询任务，核对任务仍处于该事件对应的可操作阶段；
    仅在当前任务需要 AI 处理时调用 `get_analysis_context` 读取最新 `phase` 和 schema，终态事件直接处理结果。
    `awaiting_agent_analysis`
@@ -320,13 +331,10 @@ Agent 收到 `job_id` 后保持当前任务运行，使用 `get_job` 和 `list_j
 every polling interval:
     cursor = 0
     while true:
-        output = run_without_model(
-            [PYTHON_EXECUTABLE, "-B", "-m", "douyin_wiki", "jobs", "events",
-             "--after-event-id", str(cursor), "--limit", "100"],
-            cwd=EXTERNAL_WORK_DIR, env=SERVER_ENV
+        events = mcp_without_model.list_job_events(
+            after_event_id=cursor, unacknowledged_only=true, limit=100
         )
-        if command failed or output is not a valid JSON array: retry with backoff; return
-        events = parse_json(output)
+        if MCP failed or events is not an array: retry with backoff; return
         if events is empty: break
         cursor = events[-1].id  # advance past the whole page, including skipped events
         for event in events:
@@ -355,8 +363,8 @@ Hermes 可按实际版本选择[持续目标](https://hermes-agent.nousresearch.
 不停止其他任务或客户端共用调度。状态没有变化时不反复通知用户。
 客户端确实无法在对话结束后恢复时如实报告限制，不将其写成所有桌面客户端都必须手动检查。
 
-自建事件桥使用上述伪代码执行无模型分页扫描，CLI 入口为 `jobs events`，
-在仓库外工作目录运行并沿用服务的配置环境。兼容命令 `douyin-wiki gateway monitor-events` 在没有未确认事件时
+自建事件桥使用上述伪代码调用 MCP 进行无模型分页扫描，在仓库外运行并沿用服务配置。
+兼容命令 `douyin-wiki gateway monitor-events` 在没有未确认事件时
 不输出任何内容，有事件时固定返回最早的 100 条；它只作单页探测，不能代替完整分页扫描。
 选用 Hermes 时可用 `hermes mcp test douyin-wiki` 检查 MCP；只有使用 Hermes cron 接续时才检查相应定时任务：
 
@@ -372,7 +380,7 @@ hermes cron runs --limit 10
 ```text
 使用 tools/list 返回的全部抖库 MCP 工具，按用户任务和已有授权执行，不逐项重复审批。
 抖库源码由 Codex 维护，本 Agent 对仓库只读；所有配置、技能、脚本、日志和临时文件放在仓库外。
-复用已有抖库配置、Vault 和已登录浏览器 Profile。
+复用已确认的 0.2.0 配置、schema 16 新库和已登录浏览器 Profile；从独立 runtime 启动，升级后重建连接。
 用户提交抖音作品时调用 capture_douyin；灵感没有提供时不强求，有提供时必须逐字传递。
 只处理分配给当前 gateway/会话的事件，其他事件跳过且不确认；提交前重新读取任务和阶段。
 capture 时保存实际可获得的 gateway/channel/conversation/message 路由，不猜造缺失字段。
@@ -380,6 +388,8 @@ capture 时保存实际可获得的 gateway/channel/conversation/message 路由�
 先核对 get_job 的 schema；支持 gateway_protocol=2 时所有状态查询显式传 2，与校正和分析所用协议独立。
 默认完整 get_job 不用于反复轮询；旧服务以持久事件为主要等待入口，必要时兼容读取完整任务。
 视频直接按正常流程处理，不按时长增加确认或提示。
+新调用优先显式选择 Gateway 协议 2；默认 1 仍保留，提交携带当前阶段 context_revision。
+共享等待记录按 result.shared_capture_job_id 读取和提交实际执行任务，保留原 ID 与原会话通知。
 任务进入“待 AI 处理”后，视频先校正逐字稿，图文直接按返回的 schema 分析；
 不得改写灵感，不得把 AI 推断当作作品原话。历史任务按用户目标和已有授权处理，不重跑无关任务。
 “需要登录授权”时先调用 get_auth_status 和 get_job，等待本机授权引导完成并复核最新状态；
@@ -395,13 +405,9 @@ capture 时保存实际可获得的 gateway/channel/conversation/message 路由�
 
 ## 调试
 
-下列命令中的解释器需替换为实际路径，在仓库外工作目录执行，并沿用 MCP 的配置环境：
+在仓库外工作目录沿用实际 runtime 和 MCP 配置环境运行 `douyin-wiki doctor`、`auth status` 或 `web status`。单页兼容探测使用 `douyin-wiki gateway monitor-events`；完整事件扫描使用 MCP `list_job_events` 分页。
 
-```text
-<PYTHON_EXECUTABLE> -B -m douyin_wiki jobs events
-<PYTHON_EXECUTABLE> -B -m douyin_wiki gateway context JOB_ID
-<PYTHON_EXECUTABLE> -B -m douyin_wiki jobs get JOB_ID
-```
+任务状态用 `get_job(job_id, gateway_protocol=2)`，进入可处理阶段才用 `get_analysis_context` 读取材料；共享记录先检查执行任务 ID。业务 CLI 已停用，不以旧 CLI 提交命令诊断 Gateway。
 
 如果任务已完成但 Gateway 没有回复，先看未确认事件中是否保留了正确的
 `conversation_id`/`reply_target`。如果任务停在“待 AI 处理”，说明本地媒体处理已经

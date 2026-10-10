@@ -4,17 +4,15 @@
 
 在 Web「设置 › 授权状态」点击「检查」。视频探测使用库内作品和专用 Playwright 浏览器；没有可用作品、网络异常或拿不到媒体地址时会显示「暂时无法确认」，不能据此断定登录失效。
 
-视频主下载路径、图文、博主和收藏使用抖库专用 Profile。日常 Chrome 的登录状态不能代替专用 Profile 的授权。先完成专用浏览器登录，再重试暂停任务：
+视频主下载路径、图文、博主和收藏使用抖库专用 Profile。日常 Chrome 的登录状态不能代替专用 Profile 的授权。先完成专用浏览器登录，再通过 Web 任务详情或 MCP `retry_job` 重试暂停任务：
 
 ```bash
 uv run douyin-wiki auth douyin
-uv run douyin-wiki jobs retry JOB_ID
 ```
 
 `auth video` 打开配置的系统浏览器，供 yt-dlp 的最后回退使用。命令行检查可以指定已确认的视频地址：
 
 ```bash
-uv run douyin-wiki jobs get JOB_ID
 uv run douyin-wiki auth status --video-url 'https://www.douyin.com/video/作品ID'
 ```
 
@@ -30,8 +28,8 @@ Web 授权成功后会恢复对应范围内仍需授权的任务。专用 Profil
 | --- | --- |
 | `queued` | 检查 Worker 是否运行，以及任务中心的队列状态 |
 | `needs_auth` | 按任务的授权范围登录，验证后重试 |
-| `needs_selection` | 查看博主或收藏清单，完成选择并确认导入 |
-| `awaiting_agent_analysis` | Gateway 模式需外部 Agent 接续；见 [接入指南](gateway-agents.md) |
+| `needs_selection` | 查看博主、收藏或合集清单，完成选择并确认导入 |
+| `awaiting_agent_analysis` | 需原会话 Agent 读取阶段材料并提交 Gateway 结果；见 [接入指南](gateway-agents.md) |
 | `waiting_confirmation` | 旧版本保留的待确认任务；已有授权覆盖继续处理时调用 `approve_job` 恢复，新采集不因时长进入该状态 |
 | `needs_review` | 历史复核任务；可显式按当前模型校对策略重试 |
 | `failed` | 先读取错误原因，修正配置或外部条件后重试 |
@@ -41,6 +39,8 @@ Web 授权成功后会恢复对应范围内仍需授权的任务。专用 Profil
 
 ## 配置与诊断
 
-`provider` 模式要求可用的模型接口；调用失败不会静默替换成本地分析。到「设置 › 共用模型」核对地址、模型与连接结果，或运行 `uv run douyin-wiki doctor`。模型设置保存后会请求常驻 Worker 在当前任务结束后重载；手工启动的 Worker 需重新启动。
+0.2.0 只支持 `analysis_mode="gateway"`，旧 provider/local 模式会报错。模型设置和业务 CLI 已停用，排障使用 Web 或 MCP `get_job(..., gateway_protocol=2)`，运行诊断使用 `douyin-wiki doctor`。共享记录按 `result.shared_capture_job_id` 查询实际执行任务。
 
 先查看任务错误码、阶段和模型进度，再决定重试。普通重试保留可复用的检查点；不要为排障直接删除正式 SQLite 或原始记录。开发复现使用临时配置和独立 Vault。
+
+旧版状态库不能自动迁移到 schema 16；需要已准备的新库配置。更新 runtime、配置、Vault 或 Profile 后，退出旧 MCP 进程并重建连接，重新读取全部工具和规则。Web 不能唤醒已结束的 Agent 对话，当前任务持续执行及可选的客户端自动接续见[Gateway 指南](gateway-agents.md#事件接续)。

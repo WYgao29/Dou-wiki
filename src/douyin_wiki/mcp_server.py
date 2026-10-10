@@ -26,11 +26,16 @@ from .models import (
 )
 from .service import DouyinWikiService
 
-INSTRUCTIONS = """这是抖库，本地抖音知识库默认由当前 Gateway Agent 完成 AI 校正与分析。
+INSTRUCTIONS = """这是抖库 0.2.0，本地知识库只由当前 Gateway Agent 完成 AI 校正与分析，\
+业务请求通过 MCP 创建。
 使用 tools/list 返回的全部工具，按用户任务和已有授权执行，不逐项重复审批。
 源码仓库由 Codex 维护，外部 Agent 对仓库只读，不修改源码、项目配置、依赖或 Git 状态；
 所有客户端配置、技能、脚本、日志和临时文件放在仓库外。
-复用已有抖库配置、Vault 和已登录浏览器 Profile。
+复用已确认的 0.2.0 配置、schema 16 新库和已登录浏览器 Profile；旧库不自动迁移。
+正式运行使用仓库外独立 runtime 的 wheel 安装；升级后退出旧 STDIO 进程并重建连接，
+重新读取 tools/list 和 instructions。当前工具仅移除 generate_topic_artifact，其他输入契约保留。
+Web 管理已有任务、灵感和专题笔记，不创建业务请求，不提供聊天、模型设置或自动成果；
+Web 和持久事件本身不能唤醒已结束的 Agent 对话。业务 CLI 已停用。
 工具会保留英文内部状态码供程序判断，并同时返回对应的中文 label 字段。
 轮询与分支必须读英文 `status`（或事件中的机读状态），禁止用中文 label 做相等判断；
 面向用户回复时只能使用中文 label，不得展示英文状态码。
@@ -42,12 +47,15 @@ INSTRUCTIONS = """这是抖库，本地抖音知识库默认由当前 Gateway Ag
 必要时兼容读取完整任务，不传不支持的参数。job_id 是中间回执，不结束任务、不要求用户再发检查指令。
 用户选定的视频直接处理，不按时长增加确认或提示。当前对话内继续执行和回复结果不依赖后台回投，
 只有对话结束后仍需处理时才使用客户端的自动续跑、会话心跳或事件桥；原生自动接续无需额外常驻监控器，
-自建事件桥按 Gateway 指南单独配置。任务显示为
+自建事件桥按 Gateway 指南单独配置。
+共享等待记录的 result.shared_capture_job_id 指向执行任务，result.shared_job_status 表示其状态；
+读取材料、提交校正和分析使用执行任务 ID，同一执行任务由已约定的 Agent 处理，
+保留等待者任务 ID、灵感与原会话通知，不对等待记录重复分析。任务显示为
 “待 AI 处理”后：调用 get_analysis_context；根据原话上下文及对应 OCR 用当前模型直接校正，
 只修复识别错误、不扩写，无依据的数字或金额保留原表述；再调用 submit_transcript_correction，
 如 source_kind=image_note 且 phase=analysis，则直接根据 analysis_schema 调用
 submit_gateway_analysis；视频校正后重新读取分析上下文再提交，不调用独立复核模型。
-四个 Gateway 读取/提交工具默认 gateway_protocol=1；显式选 2 可读取分阶段紧凑材料，
+四个 Gateway 读取/提交工具默认 gateway_protocol=1；新调用优先显式选 2，读取分阶段紧凑材料，
 校正只提交改动片段（无改动为 []），分析可用 source_refs；两次提交都携带本阶段 context_revision。
 版本 2 用 get_job 获取简短状态，阶段变化后重新取上下文；业务契约以 Gateway 接入指南为准。
 历史任务若显示
@@ -69,7 +77,10 @@ get_creator_inventory 一次读取并展示全部作品，再用 set_creator_wor
 collection_context.batch_silent=true 的子任务仍需
 完成校正和分析，但不要逐条向用户发送完成消息；以父任务汇总结果为准。用户任务包含同步时调用
 sync_creator，包含定期同步时由客户端安排，普通一次性任务不扩展为长期订阅。
-专题研究必须使用 create_topic 等专题工具；search_topic 只检索当前启用来源。专题没有相关证据时
+收藏由 scan_favorites 创建，get_favorites_import / list_favorites_imports 读取，
+set_favorites_selection 保存选择，confirm_favorites_import 按已有授权确认；没有 Web 新建入口。
+专题研究使用 search_knowledge / get_entry 找资料、create_topic / set_topic_sources 保存范围；
+get_topic 读取专题与笔记，search_topic 只检索当前启用来源。专题没有相关证据时
 明确回复“当前专题没有相关证据”，不得调用 search_knowledge 回退到全库。用户要求保存或已有授权
 覆盖保存专题笔记时调用 save_topic_note，不重复确认。
 持续执行到完成（含提示）、失败、取消或确实需要用户补充信息。

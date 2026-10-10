@@ -8,7 +8,7 @@
 | [项目结构与处理流程](architecture.md) | 入口、分析模式、模块职责、数据落点与开发验证 |
 | [MCP 自助接入入口](agents/README.md) | 与客户端无关的配置步骤、参数契约和仓库外验收记录 |
 | [Gateway Agent 接入指南](gateway-agents.md) | MCP 接入、校正分析、批量选择与事件接续 |
-| [收藏批量导入](favorites-import.md) | 网页、CLI/MCP 操作和验证边界 |
+| [收藏批量导入](favorites-import.md) | MCP 新建、Web 已有批次管理与历史验证边界 |
 | [合集批量导入](collections-import.md) | 合集链接、跨页选择、逐条处理、知识关系与验收范围 |
 | [授权与任务排障](troubleshooting.md) | 登录、作品类型、待处理任务和失败重试 |
 | [Service 协作 API](service-collaboration-api.md) | Service 与 mixin 的命名、锁和发布约定 |
@@ -32,7 +32,12 @@
 
 本机 Web 和 Worker 随后已重启，合集网页及接口检查通过，按现有配置新建的 MCP 连接提供52个工具，包含8个合集工具。当前聊天仍缓存旧工具清单，需要客户端重新连接；检查范围与材料见[本机服务重启记录](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md#本机服务重启与入口检查2026-10-10)。
 
+
 ## 开发中的功能
+
+[MCP / Gateway 精简方案](design/2026-10-10-mcp-gateway-simplification-plan.md)及[实施计划](superpowers/plans/2026-10-10-mcp-gateway-simplification.md)已确认，当前在 `codex/mcp-gateway-simplification` 实施。包 0.2.0、Web 0.2.48 的当前文档描述该分支：业务通过 MCP 创建，只使用 Gateway，Web 保留已有批次与知识管理，新库为 schema 16。CLI 业务、Web 新建、聊天、模型配置和专题自动生成已停用。尚未完成全分支审查、发行包验收或生产部署，现用服务状态以实际配置和探针为准。
+
+上述「近期完成」中的数字、52 工具和服务重启属于 0.1.5 及更早的历史部署记录；0.2.0 实际工具清单移除 `generate_topic_artifact`，客户端升级后需重新连接。历史 Qwen3、收藏与合集验收内容继续保留。
 
 [独立 AI 术语仓库与热词接入方案](superpowers/specs/2026-10-08-ai-terms-design.md)已根据当前 Qwen3 主线编写，处于方案审阅阶段。建议先建立独立词库、Agent 维护规则与确定性数据导出，再接入抖库的主识别和局部识别；当前尚未建库或修改运行代码。
 
