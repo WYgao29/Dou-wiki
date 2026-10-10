@@ -6,6 +6,7 @@ from douyin_wiki.errors import JobLeaseLostError
 from douyin_wiki.models import (
     AnalysisMode,
     CaptureOptions,
+    CreatorWorkDecision,
     GatewayContext,
     InspirationInput,
     JobStatus,
@@ -26,6 +27,30 @@ async def confirmed_collection(service):
     child = service.confirm_collection_import(parent).result["child_job_ids"][0]
     service.resolver = FakeResolver()
     return parent, child
+
+
+async def confirmed_batch(service, kind, context):
+    if kind == "collection":
+        parent_id = await ready(service, ids=(A,), gateway_context=context)
+        service.collections.select(parent_id, "selected", all_works=True)
+        parent = service.confirm_collection_import(parent_id)
+    elif kind == "favorites":
+        from tests.test_favorites import scan, snapshot
+
+        parent = await scan(service, snapshot(kinds=[(A, "video")]), gateway_context=context)
+        parent = service.favorites.confirm(parent.id)
+    else:
+        from tests.test_creator import FakeCreatorAdapter, inventory_result
+
+        service.creator_adapter = FakeCreatorAdapter(inventory_result(A))
+        parent = service.capture_douyin_creator(
+            "https://www.douyin.com/user/example-sec-uid", gateway_context=context
+        )
+        await service.process_claimed_job(parent)
+        service.set_creator_work_selection(parent.id, CreatorWorkDecision.SELECTED, ordinals=[1])
+        parent = service.confirm_creator_import(parent.id)
+    service.resolver = FakeResolver()
+    return parent.id, parent.result["child_job_ids"][0]
 
 
 async def finish_gateway(service, job_id):
@@ -126,6 +151,38 @@ async def test_cancel_batch_keeps_capture_needed_by_independent_follower(service
     completed = await finish_gateway(service, owner)
     assert service.get_job(duplicate.id).result["entry_id"] == completed.result["entry_id"]
     assert service.get_job(parent).status == JobStatus.CANCELLED
+
+
+@pytest.mark.parametrize("kind", ["collection", "favorites", "creator"])
+async def test_cancel_batch_retracts_its_repointed_follower_only(service, kind):
+    service.config.analysis_mode = AnalysisMode.GATEWAY
+    owner_context = GatewayContext(gateway="original", conversation_id="independent-owner")
+    owner = service.capture_douyin(SHORT, gateway_context=owner_context)
+    batch_context = GatewayContext(gateway="batch", conversation_id="cancelled-batch")
+    parent, follower = await confirmed_batch(service, kind, batch_context)
+    assert follower != owner.id
+    assert (await Worker(service).run_once()).status == JobStatus.AWAITING_AGENT_ANALYSIS
+    assert (await Worker(service).run_once()).status == JobStatus.MONITORING
+    assert service.database.batch_child_ids(parent) == [owner.id]
+    # Another batch reuses the executor and must still be able to finish.
+    other_parent, other_child = await confirmed_batch(service, "collection", None)
+    assert other_child == owner.id
+
+    service.cancel_job(parent)
+    assert service.get_job(follower).status == JobStatus.CANCELLED
+    assert service.get_job(owner.id).status == JobStatus.AWAITING_AGENT_ANALYSIS
+    assert service.get_job(other_parent).status == JobStatus.MONITORING
+    assert service.get_job(owner.id).request.gateway_context == owner_context
+    assert service.get_job(follower).request.gateway_context == batch_context
+
+    await finish_gateway(service, owner.id)
+    service.capture_sharing.refresh_all()
+    assert service.get_job(follower).status == JobStatus.CANCELLED
+    assert service.get_job(parent).status == JobStatus.CANCELLED
+    assert service.get_job(other_parent).status == JobStatus.COMPLETED
+    assert [event.status for event in service.database.list_job_timeline(follower)] == [
+        JobStatus.CANCELLED
+    ]
 
 
 async def test_cancel_last_independent_follower_stops_abandoned_batch_capture(service):

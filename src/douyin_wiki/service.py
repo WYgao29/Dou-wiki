@@ -403,6 +403,7 @@ class DouyinWikiService(
     def _cancel_job_locked(self, job_id: str) -> JobRecord:
         job = self.database.request_cancel(job_id)
         if job.kind in {"creator_import", "favorites_import", "collection_import"}:
+            self.capture_sharing.cancel_batch_followers(job_id)
             terminal = {
                 JobStatus.COMPLETED,
                 JobStatus.COMPLETED_WITH_WARNINGS,

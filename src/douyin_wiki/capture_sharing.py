@@ -129,6 +129,25 @@ class CaptureSharing:
     def has_independent_waiters(self, owner_id):
         return any(live(job) and not batch_owned(job) for job in self.followers(owner_id))
 
+    def cancel_batch_followers(self, parent_id):
+        """Retract the batch's callers after its relations point at another executor.
+
+        The caller holds the entry operations lock so completion cannot revive them.
+        """
+        with self.database.connect() as conn:
+            followers = [self.database._job_from_row(row) for row in conn.execute(
+                "SELECT * FROM jobs WHERE kind='capture' "
+                "AND json_extract(artifacts_json,'$.shared_capture_job_id') IS NOT NULL "
+                "AND (json_extract(artifacts_json,'$.creator_context.parent_job_id')=? "
+                "OR json_extract(artifacts_json,'$.favorites_context.parent_job_id')=? "
+                "OR json_extract(artifacts_json,'$.collection_context.parent_job_id')=?)",
+                (parent_id, parent_id, parent_id),
+            )]
+        for follower in followers:
+            if live(follower):
+                with suppress(JobStateError):
+                    self.database.request_cancel(follower.id)
+
     def inspirations(self, owner):
         # Merge while the executor still owns its lease, before publishing its entry.
         result = list(owner.request.inspirations)
