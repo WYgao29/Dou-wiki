@@ -75,6 +75,7 @@ class DouyinWikiService(
         image_note_downloader: PlaywrightImageNoteDownloader | None = None,
         creator_adapter: DouyinCreatorAdapter | None = None,
         favorites_adapter=None,
+        collection_adapter=None,
         media: FFmpegMediaProcessor | None = None,
         transcriber: Transcriber | None = None,
         ocr: OCREngine | None = None,
@@ -101,6 +102,13 @@ class DouyinWikiService(
         self.favorites = FavoritesService(
             self,
             favorites_adapter or DouyinFavoritesAdapter(config.media, config.browser_profile_dir),
+        )
+        from .adapters.collection import DouyinCollectionAdapter
+        from .collections import CollectionService
+
+        self.collections = CollectionService(
+            self,
+            collection_adapter or DouyinCollectionAdapter(config.media, config.browser_profile_dir),
         )
         self.media = media or FFmpegMediaProcessor()
         self.transcriber = transcriber or SelectedTranscriber(config.media)

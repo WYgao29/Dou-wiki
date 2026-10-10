@@ -7,9 +7,9 @@ import sqlite3
 import uuid
 from typing import Any
 
-from .adapters.share import extract_douyin_url, extract_video_id
+from .batch_capture import capture_keys
 from .database import Database
-from .errors import BrowserAuthRequiredError, InvalidShareTextError, JobStateError
+from .errors import BrowserAuthRequiredError, JobStateError
 from .favorites_models import FavoriteInventory
 from .models import CaptureRequest, JobStatus
 from .time_utils import iso_now
@@ -52,23 +52,6 @@ def eligible(work: dict, options: dict) -> bool:
         set(options["folder_ids"]).intersection(work.get("folder_ids", []))
     )
     return bool(work.get("available", True) and type_allowed and folder_allowed)
-
-
-def capture_keys(request: CaptureRequest, artifacts: dict) -> list[str]:
-    keys = [request.share_text]
-    try:
-        if work_id := extract_video_id(extract_douyin_url(request.share_text)):
-            keys.append(work_id)
-    except InvalidShareTextError:
-        pass
-    for value in (
-        artifacts.get("resolved", {}).get("video_id"),
-        artifacts.get("metadata", {}).get("video_id"),
-        artifacts.get("favorites_context", {}).get("work_id"),
-    ):
-        if value:
-            keys.append(str(value))
-    return keys
 
 
 class FavoritesStore:

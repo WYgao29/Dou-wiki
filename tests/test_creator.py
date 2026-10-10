@@ -224,6 +224,7 @@ async def test_creator_inventory_selection_and_isolated_vault(creator_service) -
     creator = service.list_creators()[0]
     creator_root = service.config.vault_path / creator["folder_path"]
     assert (creator_root / "index.md").is_file()
+
     assert (creator_root / ".data" / "sources" / f"{entry.video_id}.md").is_file()
     assert list((creator_root / "raw" / "covers").glob("*.jpg"))
     creator_index = (creator_root / "index.md").read_text(encoding="utf-8")
@@ -241,6 +242,27 @@ async def test_creator_inventory_selection_and_isolated_vault(creator_service) -
     restored = service.database.get_creator_work(creator["id"], entry.video_id)
     assert restored.decision == CreatorWorkDecision.IMPORTED
     assert restored.entry_id == entry.id
+
+
+@pytest.mark.asyncio
+async def test_creator_dispatch_reuses_global_capture_and_records_batch_link(
+    creator_service,
+) -> None:
+    from douyin_wiki.models import CaptureRequest
+
+    service, adapter, _ = creator_service
+    work_id = "7676706580084141163"
+    adapter.inventory_result = inventory_result(work_id)
+    existing = service.database.create_job(
+        CaptureRequest(share_text=f"https://www.douyin.com/video/{work_id}")
+    )
+    parent = service.capture_douyin_creator("https://www.douyin.com/user/example-sec-uid")
+    await service.process_creator_import(parent)
+    service.set_creator_work_selection(parent.id, CreatorWorkDecision.SELECTED, ordinals=[1])
+    result = service.confirm_creator_import(parent.id)
+    assert result.result["child_job_ids"] == [existing.id]
+    assert service.database.capture_parent_ids(existing.id) == [parent.id]
+    assert service.database.get_job(existing.id).artifacts == existing.artifacts
 
 
 @pytest.mark.asyncio

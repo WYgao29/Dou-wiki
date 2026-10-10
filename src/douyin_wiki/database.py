@@ -387,6 +387,7 @@ class Database:
                 raise JobLeaseLostError("任务的 Worker 租约已失效")
 
     def initialize(self) -> None:
+        from .collection_store import COLLECTION_SCHEMA
         from .favorites_store import FAVORITES_SCHEMA, FavoritesStore
         from .tags import TAG_SCHEMA
 
@@ -395,9 +396,18 @@ class Database:
             conn.executescript(SCHEMA)
             conn.executescript(TAG_SCHEMA)
             conn.executescript(FAVORITES_SCHEMA)
+            conn.executescript(COLLECTION_SCHEMA)
             conn.executescript(AUTH_SESSIONS_SCHEMA)
             # Web and Worker may initialize together; inspect and migrate under one write lock.
             conn.execute("BEGIN IMMEDIATE")
+            creator_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(creator_run_items)")
+            }
+            if "child_job_id" not in creator_columns:
+                conn.execute(
+                    "ALTER TABLE creator_run_items ADD COLUMN child_job_id TEXT "
+                    "REFERENCES jobs(id) ON DELETE SET NULL"
+                )
             favorite_columns = {
                 row["name"] for row in conn.execute("PRAGMA table_info(favorites_items)")
             }
@@ -442,7 +452,28 @@ class Database:
             ).fetchall():
                 self._remember_tags_conn(conn, json.loads(row["tags_json"]), row["created_at"])
             self._retire_undeliverable_events_conn(conn)
-            conn.execute("PRAGMA user_version=14")
+            conn.execute(f"PRAGMA user_version={max(previous_version, 15)}")
+
+    def capture_parent_ids(self, child_id: str) -> list[str]:
+        with self.connect() as conn:
+            ids = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT i.parent_id FROM favorites_items i JOIN favorites_runs f ON "
+                    "f.parent_id=i.parent_id "
+                    "WHERE i.child_id=? AND f.confirmed=1 UNION "
+                    "SELECT i.parent_id FROM collection_run_items i JOIN collection_runs "
+                    "c ON c.parent_id=i.parent_id "
+                    "WHERE i.child_id=? AND c.confirmed=1 UNION "
+                    "SELECT job_id FROM creator_run_items WHERE child_job_id=?",
+                    (child_id, child_id, child_id),
+                )
+            }
+            # Older creator runs may lack an unambiguous per-work child link; retain protection.
+            for row in conn.execute("SELECT id,result_json FROM jobs WHERE kind='creator_import'"):
+                if child_id in json.loads(row["result_json"]).get("child_job_ids", []):
+                    ids.add(row["id"])
+        return sorted(ids)
 
     @staticmethod
     def _rebuild_fts_conn(conn: sqlite3.Connection) -> None:
@@ -939,9 +970,14 @@ class Database:
         complete: bool = False,
     ) -> dict[str, Any]:
         updated = self.compare_and_update_auth_session(
-            session_id, expected_stages=None, stage=stage, error_summary=error_summary,
-            affected_job_count=affected_job_count, retried_job_ids=retried_job_ids,
-            account_hint=account_hint, complete=complete,
+            session_id,
+            expected_stages=None,
+            stage=stage,
+            error_summary=error_summary,
+            affected_job_count=affected_job_count,
+            retried_job_ids=retried_job_ids,
+            account_hint=account_hint,
+            complete=complete,
         )
         assert updated is not None
         return updated
@@ -1502,7 +1538,10 @@ class Database:
             if active := _ACTIVE_CLAIM.get():
                 self.assert_job_claim(conn, active[0])
             return self._upsert_creator_conn(
-                conn, profile, creator_id=creator_id, folder_path=folder_path,
+                conn,
+                profile,
+                creator_id=creator_id,
+                folder_path=folder_path,
                 inspirations=inspirations,
             )
 
@@ -1624,7 +1663,12 @@ class Database:
             conn.execute("BEGIN IMMEDIATE")
             self.assert_job_claim(conn, job_id)
             return self._record_creator_inventory_conn(
-                conn, job_id, creator_id, works, complete=complete, sync=sync,
+                conn,
+                job_id,
+                creator_id,
+                works,
+                complete=complete,
+                sync=sync,
             )
 
     def _record_creator_inventory_conn(
@@ -1772,11 +1816,19 @@ class Database:
             # Media copies may take long enough for the original lease to expire.
             self.assert_job_claim(conn, job_id)
             creator = self._upsert_creator_conn(
-                conn, prepared.profile, creator_id=creator_id, folder_path=folder,
+                conn,
+                prepared.profile,
+                creator_id=creator_id,
+                folder_path=folder,
                 inspirations=inspirations,
             )
             result = self._record_creator_inventory_conn(
-                conn, job_id, creator.id, prepared.works, complete=prepared.complete, sync=sync,
+                conn,
+                job_id,
+                creator.id,
+                prepared.works,
+                complete=prepared.complete,
+                sync=sync,
             )
             self.assert_job_claim(conn, job_id)
             row = conn.execute("SELECT * FROM creators WHERE id=?", (creator.id,)).fetchone()
@@ -1971,6 +2023,8 @@ class Database:
 
     def dispatch_creator_import(self, job_id: str, *, accept_partial: bool = False) -> JobRecord:
         """Publish the complete child set and its parent in one transaction."""
+        from .batch_capture import active_capture_jobs
+
         terminal = {
             JobStatus.CANCELLED,
             JobStatus.FAILED,
@@ -2000,6 +2054,7 @@ class Database:
             if any(row["decision"] == CreatorWorkDecision.PENDING.value for row in rows):
                 raise JobStateError("仍有未决定作品；请先选择或跳过全部作品")
             child_ids = []
+            active = active_capture_jobs(conn)
             for row in rows:
                 if row["decision"] != CreatorWorkDecision.SELECTED.value:
                     continue
@@ -2025,6 +2080,12 @@ class Database:
                     ).fetchone()
                 if child_row is not None and self._job_from_row(child_row).status not in terminal:
                     child_id = str(child_row["id"])
+                    if self._job_from_row(child_row).request.options != parent.request.options:
+                        raise JobStateError(f"作品 {work.work_id} 已有不同处理选项的活动任务")
+                elif shared := active.get(work.work_id) or active.get(work.canonical_url):
+                    if shared.request.options != parent.request.options:
+                        raise JobStateError(f"作品 {work.work_id} 已有不同处理选项的活动任务")
+                    child_id = shared.id
                 else:
                     child_id = self._insert_job_conn(
                         conn,
@@ -2047,6 +2108,10 @@ class Database:
                 conn.execute(
                     "UPDATE creator_works SET last_job_id=? WHERE creator_id=? AND work_id=?",
                     (child_id, creator_id, work.work_id),
+                )
+                conn.execute(
+                    "UPDATE creator_run_items SET child_job_id=? WHERE job_id=? AND work_id=?",
+                    (child_id, job_id, work.work_id),
                 )
                 child_ids.append(child_id)
             summary = {decision.value: 0 for decision in CreatorWorkDecision}
