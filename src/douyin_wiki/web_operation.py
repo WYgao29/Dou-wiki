@@ -19,12 +19,14 @@ from .operation import (
     TERMINAL_STATUSES,
     USER_ACTION_STATUSES,
     analysis_presentation,
+    effective_job_status,
     job_display_title,
     job_is_in_progress,
     parent_job_id,
     present_auth_check,
     present_job,
     sanitize_public_payload,
+    shared_capture_job_id,
     worker_is_fresh,
 )
 from .operation import requires_user_action as job_needs_user
@@ -61,6 +63,19 @@ class WebOperationService:
 
     def present(self, job, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         merged = dict(extra or {})
+        owner_id = shared_capture_job_id(job)
+        if owner_id:
+            owner = self.core.database.get_job(owner_id)
+            job = job.model_copy(update={
+                "result": {**job.result, "shared_job_status": owner.status.value}
+            })
+            executor = present_job(owner, analysis_mode=self.analysis_mode)
+            merged.update({
+                key: executor[key]
+                for key in ("stage", "stage_label", "progress", "auth_scope")
+            })
+            merged["state_label"] = "等待同一作品处理"
+            merged["message_for_user"] = f"同一作品已有任务。{executor['message_for_user']}"
         merged["display_title"] = job_display_title(job, hints=self._title_hints(job))
         return present_job(job, analysis_mode=self.analysis_mode, extra=merged)
 
@@ -153,7 +168,8 @@ class WebOperationService:
             jobs = [job for job in jobs if job.kind == kind]
         if in_progress:
             jobs = [
-                job for job in jobs if job_is_in_progress(job) and job.status != JobStatus.QUEUED
+                job for job in jobs
+                if job_is_in_progress(job) and effective_job_status(job) != JobStatus.QUEUED
             ]
         elif status == JobStatus.COMPLETED.value:
             done = {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}

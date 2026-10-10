@@ -160,6 +160,28 @@ def user_dismissed(job: JobRecord) -> bool:
     return bool((job.artifacts or {}).get("user_dismissed"))
 
 
+def shared_capture_job_id(job: JobRecord) -> str | None:
+    if (
+        job.kind != "capture"
+        or job.status != JobStatus.MONITORING
+        or job.artifacts.get("user_deleted")
+        or job.artifacts.get("cancel_requested")
+    ):
+        return None
+    owner_id = job.artifacts.get("shared_capture_job_id")
+    return str(owner_id) if owner_id else None
+
+
+def effective_job_status(job: JobRecord) -> JobStatus:
+    """Use the executor's current state for a live shared caller's presentation."""
+    if shared_capture_job_id(job):
+        try:
+            return JobStatus(job.result.get("shared_job_status"))
+        except (TypeError, ValueError):
+            pass
+    return job.status
+
+
 _GENERIC_SUBJECTS = {"抖音视频", "抖音作品", "抖音博主", "抖音图文", "未命名"}
 # Douyin captions append #话题 tokens. Drop them before the length cut so a tag
 # is not what the row title gets truncated into.
@@ -245,14 +267,15 @@ def child_job_ids(job: JobRecord) -> list[str]:
 def requires_user_action(job: JobRecord) -> bool:
     if user_dismissed(job):
         return False
-    if job.status in USER_ACTION_STATUSES:
+    status = effective_job_status(job)
+    if status in USER_ACTION_STATUSES:
         return True
-    return job.status == JobStatus.FAILED
+    return status == JobStatus.FAILED
 
 
 def job_is_in_progress(job: JobRecord) -> bool:
     """Machine is working. Excludes finished jobs, operator todos, and Gateway waits."""
-    return job.status in RUNNING_STATUSES and not requires_user_action(job)
+    return effective_job_status(job) in RUNNING_STATUSES and not requires_user_action(job)
 
 
 def retryable(job: JobRecord) -> bool:
@@ -274,6 +297,13 @@ def next_action_for(
     *,
     analysis_mode: str,
 ) -> dict[str, Any] | None:
+    owner_id = shared_capture_job_id(job)
+    if owner_id:
+        return {
+            "code": "view_shared_capture",
+            "label": "查看执行任务",
+            "href": f"/jobs/{owner_id}",
+        }
     scope = _auth_scope(job)
     if job.status == JobStatus.NEEDS_AUTH:
         channel = "video" if scope == "video" else "douyin"

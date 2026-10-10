@@ -130,7 +130,7 @@
   function quietAction(job) {
     const action = job.next_action;
     if (!action?.href || job.requires_user_action) return null;
-    if (action.code !== "open_entry" && action.code !== "view_children") return null;
+    if (!["open_entry", "view_children", "view_shared_capture"].includes(action.code)) return null;
     return followLink(action.href, action.label);
   }
 

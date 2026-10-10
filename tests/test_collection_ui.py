@@ -201,3 +201,49 @@ async def test_collection_ui_waits_for_save_and_retries_error(collection_ui, tmp
     await page.keyboard.press("x")
     await expect(page.locator("#collection-summary")).to_contain_text("已选 104")
     assert ui.errors == []
+
+
+@pytest.mark.parametrize("pause", [JobStatus.AWAITING_AGENT_ANALYSIS, JobStatus.NEEDS_AUTH])
+@pytest.mark.parametrize("width,theme", [(1440, "light"), (390, "dark")])
+async def test_shared_capture_ui_links_executor_from_list_and_detail(
+    collection_ui, tmp_path, pause, width, theme
+):
+    from tests.test_capture_sharing_web import shared_pair
+
+    ui, page = collection_ui, collection_ui.page
+    owner, follower = await shared_pair(ui.service, pause)
+    message = (
+        "视频下载授权已失效" if pause == JobStatus.NEEDS_AUTH else "需要外部 Agent 接续"
+    )
+    await page.goto(ui.url + "/jobs")
+    await page.locator("[data-theme-select]").select_option(theme)
+    await page.set_viewport_size({"width": width, "height": 900})
+    row = page.locator(f'#jobs-list [data-job-id="{follower}"]')
+    await expect(row).to_contain_text(message)
+    action = row.get_by_text("查看执行任务", exact=True)
+    await expect(action).to_be_visible()
+    await action.click(trial=True)
+    await page.screenshot(path=str(tmp_path / "shared-list.png"), animations="disabled")
+    await action.click()
+    await expect(page).to_have_url(f"{ui.url}/jobs/{owner}")
+    await expect(page.locator("#job-detail-content")).to_contain_text(message)
+
+    await page.goto(f"{ui.url}/jobs/{follower}")
+    detail = page.locator("#job-detail-content")
+    await expect(detail).to_contain_text(message)
+    action = detail.get_by_role("button", name="查看执行任务", exact=True)
+    await expect(action).to_be_visible()
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.screenshot(path=str(tmp_path / "shared-detail.png"), animations="disabled")
+    await action.click()
+    await expect(page).to_have_url(f"{ui.url}/jobs/{owner}")
+    await expect(detail).to_contain_text(message)
+
+    await page.goto(f"{ui.url}/jobs/{follower}")
+    await detail.get_by_role("button", name="取消", exact=True).click()
+    await page.locator("#confirm-destructive").click()
+    await expect(detail).to_contain_text("此任务已取消。")
+    await expect(detail.get_by_text("查看执行任务", exact=True)).to_have_count(0)
+    assert ui.service.get_job(follower).status == JobStatus.CANCELLED
+    assert ui.service.get_job(owner).status == pause
+    assert ui.errors == []
