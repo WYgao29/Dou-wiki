@@ -206,7 +206,9 @@ async def ux_ui():
             if detail:
                 await page.locator(".job-detail-summary").wait_for()
             else:
-                await page.wait_for_function("!document.getElementById('favorites-scope').disabled")
+                await page.wait_for_function(
+                    "!document.getElementById('favorites-history').disabled"
+                )
 
         def fail_next():
             nonlocal fail_selection
@@ -218,10 +220,14 @@ async def ux_ui():
         await browser.close()
 
 
-async def test_directory_entry_is_visible_beside_folder_choices(ux_ui):
+async def test_new_directory_controls_are_absent_but_existing_records_are_selectable(ux_ui):
     await ux_ui.open()
-    await ux_ui.page.locator("#favorites-scope").select_option("folders")
-    assert await ux_ui.page.locator("#favorites-directory").is_visible()
+    assert (
+        await ux_ui.page.locator("#favorites-scope, #favorites-directory, #favorites-scan").count()
+        == 0
+    )
+    assert await ux_ui.page.locator("#favorites-history").is_enabled()
+    assert await ux_ui.page.locator("#favorites-items input").count() == 3
 
 
 async def test_confirmation_can_cancel_without_dispatching(ux_ui):
@@ -348,7 +354,8 @@ async def test_search_is_automatic_and_imported_rows_are_hidden_initially(ux_ui)
 async def test_cancelled_and_old_records_explain_how_to_continue(ux_ui):
     await ux_ui.open("cancelled")
     assert await ux_ui.page.locator("#favorites-cancelled").is_visible()
-    assert await ux_ui.page.locator("#favorites-restart").is_visible()
+    assert await ux_ui.page.locator("#favorites-restart").count() == 0
+    assert "Agent" in await ux_ui.page.locator("#favorites-cancelled").inner_text()
     await ux_ui.open("legacy")
     assert any(
         "旧版本" in text

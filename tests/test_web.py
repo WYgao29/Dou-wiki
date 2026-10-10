@@ -106,7 +106,6 @@ def test_library_article_rendering_and_media_security(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -169,9 +168,12 @@ content_type: explanation
         assert "只读文章" in article.json()["html"]
         assert client.get("/media/raw/assets/456/example.webp").status_code == 200
 
-        assert client.post(
-            "/api/chat/sessions", json={"scope": "entry", "context_entry_id": "dy-456"}
-        ).status_code == 410
+        assert (
+            client.post(
+                "/api/chat/sessions", json={"scope": "entry", "context_entry_id": "dy-456"}
+            ).status_code
+            == 410
+        )
         managed = next(item for item in library.json()["items"] if item["entry_id"] == "dy-123")
         assert managed["database_managed"] is True
 
@@ -303,7 +305,6 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -311,7 +312,7 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
         assert page.status_code == 200
         assert '<main class="library-main" id="main-content"' in page.text
         assert 'aria-label="资料库导航"' in page.text
-        assert 'aria-label="抖库 AI 对话"' in page.text
+        assert 'aria-label="右侧面板"' in page.text
         assert 'data-library-view="list"' in page.text
         assert 'data-library-view="gallery"' in page.text
         assert 'data-section="favorite"' in page.text
@@ -330,7 +331,7 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
         assert 'id="trash-restore-selected"' in page.text
         assert 'id="trash-purge-selected"' in page.text
         assert 'id="destructive-dialog"' in page.text
-        assert 'id="imports-toggle"' in page.text
+        assert 'id="imports-toggle"' not in page.text
         assert 'id="settings-nav"' in page.text
         assert 'id="auth-nav"' not in page.text
         assert "已保存视图" not in page.text
@@ -345,7 +346,7 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
         assert 'value="in_progress"' in page.text
         assert 'id="creator-focus-bar"' in page.text
         assert 'id="imports-single-view"' in page.text
-        assert 'id="single-share"' in page.text
+        assert 'id="single-share"' not in page.text
         assert 'id="capture-dialog"' not in page.text
         assert "/static/icons.svg#" in page.text
         assert "cdn." not in page.text
@@ -376,7 +377,7 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
         )
         assert "::view-transition-group(active-album-cover)" in stylesheet.text
         assert "view-transition-name: app-sidebar" in stylesheet.text
-        assert ".message.is-new" in stylesheet.text
+        assert ".message.is-new" not in stylesheet.text
         script = client.get("/static/app.js")
         assert script.status_code == 200
         assert 'uiVersion: "douyin-wiki.ui-version"' in script.text
@@ -391,14 +392,14 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
         assert "animatedEntryIds" in script.text
         assert "删除文章" in script.text
         assert "彻底删除" in script.text
-        assert "最近一次用量：${latestAssistant.total_tokens} token" in script.text
+        assert "最近一次用量：${latestAssistant.total_tokens} token" not in script.text
         assert "function isDatabaseManaged(item)" in script.text
         assert "if (!isDatabaseManaged(item)) return null;" in script.text
         assert "if (state.topicSelectionMode && isDatabaseManaged(item))" in script.text
         assert "if (!isDatabaseManaged(findLibraryItem(entryId))) return;" in script.text
         assert ".filter(isDatabaseManaged)" in script.text
-        assert 'state.panelPage === "article" && isDatabaseManaged(item)' in script.text
-        assert "只读 Markdown，发送时使用全库对话" in script.text
+        assert 'state.panelPage === "article" && isDatabaseManaged(item)' not in script.text
+        assert "只读 Markdown，发送时使用全库对话" not in script.text
         assert "只读 Markdown 文章不能保存灵感" in script.text
         assert "currentArticleItem: null" in script.text
         assert "state.currentArticleItem = data.item;" in script.text
@@ -436,40 +437,28 @@ def test_web_filter_popover_can_paint_above_sidebar(tmp_path: Path) -> None:
         ("3.21 复制打开抖音，看看【测试作者的作品】实用技巧 https://v.douyin.com/AbCdEfG/ 08/31"),
     ],
 )
-def test_web_capture_queues_link_or_share_text(tmp_path: Path, share_text: str) -> None:
+def test_web_capture_is_disabled_for_link_or_share_text(tmp_path: Path, share_text: str) -> None:
     config, service = _web_fixture(tmp_path)
-    service.resolver.transport = httpx.MockTransport(
-        lambda request: (
-            httpx.Response(
-                302, headers={"location": "https://www.douyin.com/video/7659645255277039717"}
-            )
-            if request.url.host == "v.douyin.com"
-            else httpx.Response(200)
-        )
-    )
-    app = create_app(config, service=service, start_watcher=False)
 
-    with local_client(app) as client:
+    def reject_resolution(request):
+        raise AssertionError("Disabled capture must not resolve links")
+
+    service.resolver.transport = httpx.MockTransport(reject_resolution)
+    with local_client(create_app(config, service=service, start_watcher=False)) as client:
         response = client.post("/api/captures", json={"share_text": share_text})
-
-    assert response.status_code == 202
-    payload = response.json()
-    assert payload["status"] == "queued"
-    assert service.get_job(payload["job_id"]).request.share_text == share_text
+    assert response.status_code == 410
+    assert "capture_douyin" in response.json()["detail"]
+    assert service.list_jobs() == []
 
 
-def test_web_capture_rejects_text_without_douyin_link(tmp_path: Path) -> None:
+def test_web_capture_stops_before_validating_share_text(tmp_path: Path) -> None:
     config, service = _web_fixture(tmp_path)
-    app = create_app(config, service=service, start_watcher=False)
-
-    with local_client(app) as client:
+    with local_client(create_app(config, service=service, start_watcher=False)) as client:
         response = client.post(
-            "/api/captures",
-            json={"share_text": "看看这个网页 https://example.com/video/123"},
+            "/api/captures", json={"share_text": "https://example.com/video/123"}
         )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "分享文本中没有找到有效的抖音链接"
+    assert response.status_code == 410
+    assert "Agent" in response.json()["detail"]
     assert service.list_jobs() == []
 
 
@@ -478,7 +467,6 @@ def test_article_trash_restore_and_permanent_delete(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-
         start_watcher=False,
     )
     source = config.vault_path / "wiki" / "sources" / "测试文章_123.md"
@@ -599,7 +587,6 @@ def test_trash_batch_restore_and_permanent_delete(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -804,7 +791,6 @@ def test_topic_web_flow_notes_and_retired_generation(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -846,7 +832,6 @@ def test_model_settings_page_shares_theme_and_accessible_controls(tmp_path: Path
     app = create_app(
         config,
         service=service,
-
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -856,31 +841,31 @@ def test_model_settings_page_shares_theme_and_accessible_controls(tmp_path: Path
         assert 'id="app-shell"' in page.text
         assert 'id="model-view"' in page.text
         assert 'id="analysis-view"' in page.text
-        assert 'aria-label="显示 API Key"' in page.text
-        assert "/static/icons.svg#eye" in page.text
+        assert 'aria-label="显示 API Key"' not in page.text
+        assert 'id="model-api-key"' not in page.text
         assert f"/static/model-settings.js?v={WEB_VERSION}" in page.text
-        assert "对话模型" in page.text
+        assert "共用模型配置已停用" in page.text
         assert "共用模型" in page.text
-        assert 'name="analysis-mode"' in page.text
-        assert "保存分析方式" in page.text
+        assert 'name="analysis-mode"' not in page.text
+        assert "保存分析方式" not in page.text
         assert 'href="/settings/analysis"' in page.text
-        assert 'data-route="/settings/model"' in page.text
+        assert 'data-route="/settings/model"' not in page.text
         assert "settings-info-panel" not in page.text
         assert "settings-shell" not in page.text
 
         analysis = client.get("/settings/analysis")
         assert analysis.status_code == 200
         assert 'id="app-shell"' in analysis.text
-        assert "导入后的分析方式" in analysis.text
-        assert 'value="provider"' in analysis.text
+        assert "Gateway Agent" in analysis.text
+        assert 'value="provider"' not in analysis.text
         assert f"/static/analysis-settings.js?v={WEB_VERSION}" in analysis.text
-        assert 'href="/settings/model"' in analysis.text
+        assert 'href="/settings/model"' not in analysis.text
         assert 'data-route="/settings/analysis"' in analysis.text
 
 
 def test_local_host_and_same_origin_are_enforced(tmp_path: Path) -> None:
     config, service = _web_fixture(tmp_path)
-    app = create_app(config, service=service,  start_watcher=False)
+    app = create_app(config, service=service, start_watcher=False)
     with TestClient(app) as client:
         assert client.get("/", headers={"host": "example.com"}).status_code == 400
         blocked = client.post(
@@ -962,7 +947,7 @@ inspirations: []
     hidden = config.vault_path / "creators" / "示例_abcd" / ".data" / "sources" / "999.md"
     hidden.parent.mkdir(parents=True)
     hidden.write_text("---\ntype: source\nvideo_id: '999'\n---\n# 不应出现", encoding="utf-8")
-    app = create_app(config, service=service,  start_watcher=False)
+    app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
         library = client.get("/api/library").json()
         assert {item["entry_id"] for item in library["items"]} == {"dy-123", "dy-456"}
@@ -974,7 +959,7 @@ inspirations: []
 
 def test_file_watcher_refreshes_library_without_generating_html(tmp_path: Path) -> None:
     config, service = _web_fixture(tmp_path)
-    app = create_app(config, service=service,  start_watcher=True)
+    app = create_app(config, service=service, start_watcher=True)
     with local_client(app) as client:
         assert client.get("/api/library").json()["total"] == 1
         added = config.vault_path / "wiki" / "sources" / "自动刷新_789.md"

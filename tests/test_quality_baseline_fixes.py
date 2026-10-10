@@ -459,13 +459,11 @@ def test_new_favorites_account_is_unbound_and_only_seeds_same_account(service):
     assert service.favorites.get(third.id)["summary"]["new"] == 1
 
 
-def test_web_imports_all_501_previously_skipped_works(service):
+def test_service_imports_all_501_previously_skipped_works(service):
     parent = creator_parent(service, 501)
     service.database.set_creator_run_selection(parent.id, CreatorWorkDecision.SKIPPED)
     ids = [work.work_id for work in service.database.list_creator_works("dyc-baseline")]
-    with local_client(create_app(service.config, service=service, start_watcher=False)) as client:
-        response = client.post("/api/creators/dyc-baseline/import-skipped", json={"work_ids": ids})
-        assert response.status_code == 202, response.text
+    service.import_creator_works("dyc-baseline", work_ids=ids)
     assert len(service.database.list_jobs(kinds={"capture"}, limit=None)) == 501
 
 
@@ -505,7 +503,6 @@ def test_tag_rename_preserves_valid_yaml_and_external_anchor_values(tmp_path, ta
         "delete",
         "trash",
         "favorite",
-        "capture",
         "creator",
         "topic_create",
         "topic_note",
@@ -530,9 +527,7 @@ def test_waiting_web_operations_leave_health_responsive(tmp_path, monkeypatch, a
             entry.model_copy(update={"updated_at": utc_now()}),
             service.database.get_entry_data(entry.id),
         )
-    app = create_app(
-        config, service=service,  start_watcher=False
-    )
+    app = create_app(config, service=service, start_watcher=False)
     acquired, attempted, release = Event(), Event(), Event()
     original = service.vault.entry_operations_locked
 
@@ -554,7 +549,6 @@ def test_waiting_web_operations_leave_health_responsive(tmp_path, monkeypatch, a
         "delete": ("DELETE", f"/api/jobs/{job.id}", {}),
         "trash": ("DELETE", "/api/articles/dy-123", {"confirmed": True}),
         "favorite": ("PUT", "/api/articles/dy-123/favorite", {"favorite": True}),
-        "capture": ("POST", "/api/captures", {"share_text": "https://www.douyin.com/video/456"}),
         "creator": ("POST", f"/api/creator-imports/{job.id}/confirm", {}),
         "topic_create": ("POST", "/api/topics", {"title": "新专题", "entry_ids": ["dy-123"]}),
         "topic_note": (

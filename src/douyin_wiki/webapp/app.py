@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
@@ -18,11 +17,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from watchfiles import awatch
 
-from ..adapters.share import extract_douyin_url
 from ..config import (
     AppConfig,
     default_config_path,
@@ -32,15 +30,12 @@ from ..errors import DouyinWikiError, EntryNotFoundError, JobStateError
 from ..localization import add_display_labels, label_entry_status
 from ..models import (
     AnalysisMode,
-    CaptureOptions,
-    CaptureRequest,
     InspirationDraft,
     InspirationInput,
-    RetentionPolicy,
 )
 from ..service import DouyinWikiService
 from ..setup import update_config_values, write_config
-from ..time_utils import beijing_iso, format_beijing, parse_clock_to_ms
+from ..time_utils import beijing_iso, format_beijing
 from ..vault import entry_operation_observer
 from ..web_operation import WebOperationService
 from .catalog import CONTENT_TYPE_LABELS, LibraryCatalog
@@ -57,73 +52,7 @@ ANALYSIS_MODE_INFO = {
         ),
         "web_can_complete": False,
     },
-
 }
-
-
-def _capture_inspirations(items: list[CaptureInspirationBody]) -> list[InspirationInput]:
-    parsed: list[InspirationInput] = []
-    for item in items:
-        try:
-            start = parse_clock_to_ms(item.start_ms)
-            end = parse_clock_to_ms(item.end_ms)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        text = item.text.strip()
-        quote = (item.quote or "").strip() or None
-        if not text and quote is None and start is None and end is None:
-            continue
-        try:
-            parsed.append(InspirationInput(text=text, quote=quote, start_ms=start, end_ms=end))
-        except ValidationError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="结束时间不能早于开始时间，且填写结束时间时也要填写开始时间",
-            ) from exc
-    return parsed
-
-
-def _existing_capture(core, video_id: str) -> dict[str, Any] | None:
-    entry = core.database.find_entry_by_video_id(video_id)
-    if entry is not None:
-        return {
-            "duplicate": True,
-            "in_trash": False,
-            "entry_id": entry.id,
-            "title": entry.title,
-            "href": f"/articles/{entry.id}",
-            "message": "已在资料库",
-        }
-    for item in core.list_trashed_entries():
-        if str(item.get("work_id") or "") == video_id:
-            return {
-                "duplicate": True,
-                "in_trash": True,
-                "trash_id": item.get("trash_id"),
-                "entry_id": item.get("entry_id"),
-                "title": item.get("title") or "",
-                "href": "/trash",
-                "message": "已在废纸篓",
-            }
-    return None
-
-
-class CaptureInspirationBody(BaseModel):
-    """Capture form clocks stay strings so a bad clock can return HTTP 400, not 422."""
-
-    model_config = ConfigDict(extra="ignore")
-    text: str = Field(default="", max_length=4000)
-    quote: str | None = Field(default=None, max_length=4000)
-    start_ms: int | str | None = None
-    end_ms: int | str | None = None
-
-
-class CaptureSubmissionRequest(BaseModel):
-    share_text: str = Field(min_length=1, max_length=20_000)
-    inspirations: list[CaptureInspirationBody] = Field(default_factory=list)
-    retention: RetentionPolicy = RetentionPolicy.TEMPORARY
-    allow_long: bool = False
-    approve_cloud_analysis: bool = False
 
 
 class CreateTopicRequest(BaseModel):
@@ -317,14 +246,6 @@ async def _watch_catalog(
         known_fingerprint = current
         if not published:
             await notifier.publish()
-
-
-class FavoritesScanBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    folder_ids: list[str] | None = None
-    include_images: bool = False
-    directory_only: bool = False
-    update_mode: Literal["incremental", "full"] = "incremental"
 
 
 class FavoritesFilterBody(BaseModel):
@@ -673,80 +594,12 @@ def create_app(
             "version": catalog.version,
         }
 
-    @app.post("/api/captures", status_code=202)
-    async def create_capture(payload: CaptureSubmissionRequest):
-        try:
-            extract_douyin_url(payload.share_text)
-        except DouyinWikiError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        inspirations = _capture_inspirations(payload.inspirations)
-        try:
-            resolved = await core.resolver.resolve(payload.share_text)
-        except DouyinWikiError as exc:
-            raise HTTPException(400, detail=str(exc)) from exc
-
-        def enqueue():
-            with core.vault.entry_operations_locked():
-                existing = _existing_capture(core, resolved.video_id)
-                if existing:
-                    return JSONResponse(existing, status_code=200)
-                if catalog.compute_fingerprint() != catalog.fingerprint:
-                    catalog.refresh()
-                item = next(
-                    (item for item in catalog.list_items() if item.work_id == resolved.video_id),
-                    None,
-                )
-                if item:
-                    return JSONResponse(
-                        {
-                            "duplicate": True,
-                            "in_trash": False,
-                            "entry_id": item.entry_id,
-                            "href": f"/articles/{item.entry_id}",
-                            "title": item.title,
-                            "message": "已在资料库",
-                        }
-                    )
-                new_job_id = uuid.uuid4().hex
-                job = core.database.get_or_create_active_job(
-                    CaptureRequest(
-                        share_text=payload.share_text,
-                        inspirations=inspirations,
-                        options=CaptureOptions(
-                            retention=payload.retention,
-                            allow_long=payload.allow_long,
-                            approve_cloud_analysis=payload.approve_cloud_analysis,
-                        ),
-                    ),
-                    kind="capture",
-                    new_job_id=new_job_id,
-                    match_artifact="work_id",
-                    artifacts={
-                        "work_id": resolved.video_id,
-                        "resolved": {
-                            "original_url": resolved.original_url,
-                            "canonical_url": resolved.canonical_url,
-                            "video_id": resolved.video_id,
-                            "source_kind": resolved.source_kind.value,
-                            "redirect_chain": list(resolved.redirect_chain),
-                        },
-                    },
-                )
-            if job.id != new_job_id:
-                return JSONResponse(
-                    {
-                        "duplicate": True,
-                        "active": True,
-                        "in_trash": False,
-                        "job_id": job.id,
-                        "href": f"/jobs/{job.id}",
-                        "message": "同作品已有采集任务；新填写的灵感与处理选项尚未保存",
-                    }
-                )
-            presented = operations.present(job)
-            return {"job_id": job.id, **presented}
-
-        return await asyncio.to_thread(enqueue)
+    @app.post("/api/captures")
+    async def create_capture():
+        raise HTTPException(
+            status_code=410,
+            detail="网页新建请求已停用，请通过 Agent 使用 MCP 工具 capture_douyin。",
+        )
 
     @app.get("/api/articles/{entry_id}")
     async def article(entry_id: str):
@@ -1076,10 +929,12 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
-    @app.post("/api/favorites/imports", status_code=202)
-    async def favorites_scan(body: FavoritesScanBody):
-        job = await favorites_call(core.favorites.start, **body.model_dump())
-        return {"job_id": job.id, "status": job.status}
+    @app.post("/api/favorites/imports")
+    async def favorites_scan():
+        raise HTTPException(
+            status_code=410,
+            detail="网页新建请求已停用，请通过 Agent 使用 MCP 工具 scan_favorites。",
+        )
 
     @app.get("/api/favorites/imports")
     async def favorites_history(limit: int = Query(50, ge=1, le=200)):

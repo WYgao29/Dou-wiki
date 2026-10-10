@@ -27,7 +27,6 @@ const state = {
   libraryRequestId: 0,
   libraryLoadedQuery: null,
   pendingArticleRequest: 0,
-  importsTrigger: null,
   readerObserver: null,
   readingBlocks: [],
   readingIndex: -1,
@@ -47,9 +46,6 @@ const state = {
   commandArticles: [],
   commandSearch: 0,
   commandTimer: 0,
-  pendingNewSession: false,
-  sessionScope: "",
-  sessionsByScope: new Map(),
   currentEntry: document.body.dataset.entryId || "",
   currentArticleItem: null,
   currentTopic: document.body.dataset.topicId || "",
@@ -58,11 +54,6 @@ const state = {
   selectedTrashIds: new Set(),
   topicSelectionMode: false,
   selectedEntryIds: new Set(),
-  currentSession: "",
-  sessions: [],
-  sending: false,
-  chatConfigured: true,
-  chatMessagesRequestId: 0,
   sidebarCollapsed: false,
   chatCollapsed: false,
   activeDrawer: "",
@@ -1001,49 +992,6 @@ function clearSearchAndFilters() {
   loadLibrary();
 }
 
-function closeImportsPopover() {
-  $("#imports-popover")?.classList.add("hidden");
-  $("#imports-toggle")?.setAttribute("aria-expanded", "false");
-}
-
-function importsAnchor() {
-  return [$("#imports-toggle"), $("#reader-back"), $("#nav-toggle"), $("#library-sidebar .brand")].find((node) => node?.getClientRects().length && !node.closest("[inert]")) || $("#main-content");
-}
-
-function restoreImportsFocus() {
-  const trigger = state.importsTrigger;
-  if (trigger?.isConnected && trigger.getClientRects().length && !trigger.closest("[inert], .hidden, [hidden]")) trigger.focus({preventScroll: true});
-  else importsAnchor().focus({preventScroll: true});
-}
-
-function positionImportsPopover() {
-  const toggle = importsAnchor();
-  const popover = $("#imports-popover");
-  if (!toggle || !popover) return;
-  const rect = toggle.getBoundingClientRect();
-  const viewportPadding = 16;
-  const gap = 8;
-  const width = Math.min(280, Math.max(0, window.innerWidth - viewportPadding * 2));
-  const left = Math.max(
-    viewportPadding,
-    Math.min(rect.left, window.innerWidth - width - viewportPadding),
-  );
-  popover.style.setProperty("--filter-popover-top", `${rect.bottom + gap}px`);
-  popover.style.setProperty("--filter-popover-left", `${left}px`);
-}
-
-function openImportsPopover() {
-  const popover = $("#imports-popover");
-  if (!popover) return;
-  if (popover.classList.contains("hidden")) state.importsTrigger = document.activeElement;
-  if (window.innerWidth < 960 && state.activeDrawer !== "sidebar") openDrawer("sidebar");
-  else if (state.sidebarCollapsed && window.innerWidth >= 960) setSidebarOpen(true);
-  popover.classList.remove("hidden");
-  $("#imports-toggle").setAttribute("aria-expanded", "true");
-  positionImportsPopover();
-  popover.focus();
-}
-
 function hideLegacyViews() {
   window.Douku?.hideAllViews();
   $("#article-view").classList.add("hidden");
@@ -1073,7 +1021,6 @@ function showLibrary(push = true) {
   if (!fromLibrary && (!state.libraryLoaded || state.libraryLoadedQuery !== state.query)) {
     loadLibrary({showLoading: false});
   }
-  updateChatContext();
   closeDrawers(false);
   if (returningFromReader) {
     $("#main-content").scrollTop = state.libraryScrollTop;
@@ -1165,7 +1112,6 @@ async function showTopics(push = true) {
   document.title = "专题 · 抖库";
   updateTopicSelectionButton();
   await loadTopics();
-  updateChatContext();
   closeDrawers();
 }
 
@@ -1367,41 +1313,7 @@ async function showTrash(push = true) {
   document.title = "废纸篓 · 抖库";
   updateTopicSelectionButton();
   await loadTrash();
-  updateChatContext();
   closeDrawers();
-}
-
-function artifactButtons(topicId) {
-  const group = document.createElement("div");
-  group.className = "topic-artifact-actions";
-  [
-    ["overview", "专题总览"], ["comparison", "对比表"],
-    ["evidence_map", "证据地图"], ["consensus", "共识与分歧"],
-    ["decision_brief", "决策简报"], ["faq", "FAQ"],
-  ].forEach(([kind, label]) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "secondary-button";
-    button.textContent = label;
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      button.textContent = "生成中…";
-      try {
-        await api(`/api/topics/${encodeURIComponent(topicId)}/artifacts`, {
-          method: "POST", body: JSON.stringify({kind}),
-        });
-        await openTopic(topicId, false);
-        toast(`${label}已生成`);
-      } catch (error) {
-        toast(error.message);
-      } finally {
-        button.disabled = false;
-        button.textContent = label;
-      }
-    });
-    group.append(button);
-  });
-  return group;
 }
 
 function renderTopicData(value) {
@@ -1430,7 +1342,7 @@ function renderTopicData(value) {
   const sourceTitle = document.createElement("h2");
   sourceTitle.textContent = `${topic.sources.filter((source) => source.enabled).length} / ${topic.sources.length} 个来源已启用`;
   const sourceHint = document.createElement("p");
-  sourceHint.textContent = "停用后，该文章会立即退出专题问答范围。";
+  sourceHint.textContent = "停用后，Agent 研究专题时不再使用这篇资料。";
   const sourceList = document.createElement("div");
   sourceList.className = "topic-source-list";
   topic.sources.forEach((source) => {
@@ -1474,8 +1386,8 @@ function renderTopicData(value) {
   const artifactSection = document.createElement("section");
   artifactSection.className = "topic-section";
   const artifactTitle = document.createElement("h2");
-  artifactTitle.textContent = "研究成果";
-  artifactSection.append(artifactTitle, artifactButtons(topic.id));
+  artifactTitle.textContent = "专题笔记";
+  artifactSection.append(artifactTitle);
   const artifactList = document.createElement("div");
   artifactList.className = "topic-artifacts";
   value.artifacts.forEach((artifact) => {
@@ -1509,11 +1421,10 @@ function renderTopicData(value) {
   });
   if (!value.artifacts.length) {
     const empty = document.createElement("p");
-    empty.textContent = "尚未生成成果。只有点击上方按钮时才会调用模型并消耗 token。";
+    empty.textContent = "还没有专题笔记。可让 Agent 研究后，经确认保存笔记。";
     artifactList.append(empty);
   }
   artifactSection.append(artifactList);
-  artifactSection.insertBefore(window.Douku.node("p", "点击生成按钮才会调用模型并消耗 token。", "hint-copy"), artifactList);
   root.replaceChildren(header, artifactSection);
 }
 
@@ -1539,7 +1450,6 @@ async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
     document.title = `${value.topic.title} · 抖库`;
     await loadTopics();
     if (navigationId !== state.navigationRequestId) return;
-    updateChatContext();
     closeDrawers();
     $(".library-main").scrollTo({top: savedScroll, behavior: "instant"});
     if (preserve && drawerBefore === "chat") openDrawer("chat");
@@ -1778,7 +1688,6 @@ function renderArticleData(data, entryId, push) {
   if (push) history.pushState({entryId}, "", `/articles/${encodeURIComponent(entryId)}`);
   document.title = `${data.item.title} · 抖库`;
   renderLibrary();
-  updateChatContext();
   closeDrawers(false);
   state.lastOpenedEntryId = entryId;
   renderArticleToolbar(data.item);
@@ -1978,8 +1887,8 @@ function closeFilterPopover() {
 }
 
 const PANEL_TABS = JSON.parse($("#panel-tabs").dataset.panelConfig);
-const PANEL_PANES = {info: "info-pane", inspiration: "inspiration-pane", sources: "topic-sources-pane", chat: "chat-panel"};
-const PANEL_LABELS = {info: "信息", inspiration: "灵感", sources: "来源", chat: "AI 对话"};
+const PANEL_PANES = {info: "info-pane", inspiration: "inspiration-pane", sources: "topic-sources-pane"};
+const PANEL_LABELS = {info: "信息", inspiration: "灵感", sources: "来源"};
 
 function panelBreakpoint() {
   return window.innerWidth >= 1280 ? "desktop" : window.innerWidth >= 960 ? "overlay" : "drawer";
@@ -2014,8 +1923,8 @@ function renderPanelTabs(page) {
     state.panelPage = page;
   }
   moveHeaderControls(page);
-  const tabs = PANEL_TABS[page] || ["chat"];
-  const preferred = readStored(`douyin-wiki.panel-tab.${page}`, page === "topic" ? "chat" : tabs[0]);
+  const tabs = PANEL_TABS[page] || ["info"];
+  const preferred = readStored(`douyin-wiki.panel-tab.${page}`, tabs[0]);
   const root = $("#panel-tabs");
   root.replaceChildren(...tabs.map((tab) => {
     const button = document.createElement("button");
@@ -2049,7 +1958,7 @@ function renderPanelTabs(page) {
 }
 
 function selectPanelTab(tab, remember = true) {
-  if (!(PANEL_TABS[state.panelPage] || ["chat"]).includes(tab)) return;
+  if (!(PANEL_TABS[state.panelPage] || ["info"]).includes(tab)) return;
   const previouslyFocusedPane = document.activeElement?.closest(".panel-pane");
   state.panelTab = tab;
   $$("#panel-tabs [role='tab']").forEach((button) => {
@@ -2063,7 +1972,6 @@ function selectPanelTab(tab, remember = true) {
     pane.inert = name !== tab;
     if (name === tab) pane.setAttribute("aria-labelledby", `panel-tab-${name}`);
   });
-  closeChatMenu();
   if (remember) writePreference(`douyin-wiki.panel-tab.${state.panelPage}`, tab);
   if (previouslyFocusedPane?.hidden) $(`#panel-tab-${tab}`).focus({preventScroll: true});
 }
@@ -2132,6 +2040,15 @@ function renderInfoPanel(item, {context = "library"} = {}) {
     item.inspirations.forEach((value) => inspirations.append(window.Douku.node("p", value.text))); info.append(inspirations);
   }
   info.append(actions);
+}
+
+function formatLocation(location) {
+  if (location.image_index) return `第 ${location.image_index} 张图片`;
+  if (location.timestamp_ms != null) {
+    const seconds = Math.floor(location.timestamp_ms / 1000);
+    return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+  }
+  return "文章片段";
 }
 
 function renderInspirationsPanel(item) {
@@ -2258,15 +2175,13 @@ function openDrawer(kind) {
 function closeDrawers(restoreFocus = true) {
   const previous = state.activeDrawer;
   state.activeDrawer = "";
-  closeImportsPopover();
   renderPanelState();
   if (restoreFocus && previous) (previous === "sidebar" ? $("#nav-toggle") : $("#chat-toggle")).focus({preventScroll: true});
 }
 
 function trapDrawerFocus(event) {
   if (!state.activeDrawer || event.key !== "Tab" || $("dialog[open]")) return;
-  const importOpen = !$("#imports-popover").classList.contains("hidden");
-  const panel = importOpen ? $("#imports-popover") : state.activeDrawer === "sidebar" ? $("#library-sidebar") : $("#side-panel");
+  const panel = state.activeDrawer === "sidebar" ? $("#library-sidebar") : $("#side-panel");
   const focusable = focusableElements(panel);
   if (!focusable.length) { event.preventDefault(); return; }
   const first = focusable[0];
@@ -2298,16 +2213,12 @@ function fuzzyIncludes(text, query) {
 
 function commandCatalog() {
   return [
-    ["single", "导入单条", "plus", "⌘ I", () => window.Douku.navigate("/imports/single")],
-    ["creators", "导入博主", "user-round", "", () => window.Douku.navigate("/imports/creators")],
-    ["collections", "导入抖音合集", "list", "", () => window.Douku.navigate("/imports/collections")],
-    ["favorites", "导入抖音收藏", "bookmark", "", () => window.Douku.navigate("/imports/favorites")],
+    ["imports", "查看导入记录", "list", "", () => window.Douku.navigate("/imports")],
     ["jobs", "打开任务中心", "list-checks", "g j", () => window.Douku.navigate("/jobs")],
     ["tags", "打开标签", "hash", "g g", () => window.Douku.navigate("/tags")],
     ["topics", "打开专题", "layers", "g t", () => window.Douku.navigate("/topics")],
     ["trash", "打开废纸篓", "trash-2", "g x", () => window.Douku.navigate("/trash")],
     ["settings", "打开设置", "settings", "g s", () => window.Douku.navigate("/settings")],
-    ["chat", "新建 AI 对话", "message-square", "", () => { selectPanelTab("chat"); setChatPanelOpen(true); prepareNewChat(); $("#chat-input").focus(); }],
     ["theme", "切换主题", "sun", "", () => window.DoukuTheme.set(document.documentElement.dataset.theme === "dark" ? "light" : "dark")],
     ["shortcuts", "显示快捷键", "keyboard", "?", () => $("#shortcuts-dialog").showModal()],
   ].map(([commandId, title, icon, shortcut, run]) => ({commandId, title, icon, shortcut, run}));
@@ -2416,475 +2327,6 @@ function closeCommandMenu() {
   if ($("#command-dialog").open) $("#command-dialog").close();
 }
 
-function showChatNotice(message = "", unconfigured = false) {
-  const notice = $("#chat-persistent-error");
-  notice.classList.toggle("hidden", !message);
-  notice.setAttribute("role", unconfigured ? "status" : "alert");
-  notice.replaceChildren();
-  if (!message) return;
-  const copy = document.createElement("span");
-  copy.textContent = message;
-  notice.append(svgIcon("alert-circle"), copy);
-  if (unconfigured) {
-    const link = document.createElement("a");
-    link.href = "/settings/model";
-    link.dataset.route = "/settings/model";
-    link.textContent = "去设置";
-    link.title = "设置 › 共用模型";
-    notice.append(link);
-  }
-}
-
-function chatScopeKey() {
-  if (state.panelPage === "topic" && state.currentTopic) return `topic:${state.currentTopic}`;
-  const item = currentEntryItem();
-  if (state.panelPage === "article" && state.currentEntry && isDatabaseManaged(item)) {
-    return `entry:${state.currentEntry}`;
-  }
-  return "library";
-}
-
-function sessionInScope(session) {
-  if (!session) return false;
-  const key = session.scope === "topic" ? `topic:${session.context_topic_id}`
-    : session.scope === "entry" ? `entry:${session.context_entry_id}` : "library";
-  return key === chatScopeKey();
-}
-
-function prepareNewChat() {
-  state.pendingNewSession = true;
-  state.currentSession = "";
-  renderSessionSelect();
-  $("#chat-messages").replaceChildren(makeWelcome());
-}
-
-async function loadSessions(preferNew = false) {
-  try {
-    const data = await api("/api/chat/sessions");
-    state.sessions = data.sessions;
-    $("#model-label").textContent = `模型：${data.configured ? data.model : "未配置"}`;
-    state.chatConfigured = data.configured;
-    showChatNotice(data.configured ? "" : "尚未配置对话模型。", !data.configured);
-    if (preferNew || state.pendingNewSession) {
-      prepareNewChat();
-      return;
-    }
-    const current = state.sessions.find((item) => item.id === state.currentSession && sessionInScope(item));
-    state.currentSession = current?.id || state.sessions.find(sessionInScope)?.id || "";
-    renderSessionSelect();
-    if (state.currentSession) await loadMessages(); else $("#chat-messages").replaceChildren(makeWelcome());
-  } catch (error) {
-    showChatNotice(error.message);
-  }
-}
-
-async function createSession() {
-  const item = currentEntryItem();
-  const payload = state.panelPage === "topic" && state.currentTopic
-    ? {scope: "topic", context_topic_id: state.currentTopic}
-    : state.panelPage === "article" && isDatabaseManaged(item)
-      ? {scope: "entry", context_entry_id: state.currentEntry}
-      : {scope: "library"};
-  const session = await api("/api/chat/sessions", {method: "POST", body: JSON.stringify(payload)});
-  state.pendingNewSession = false;
-  state.currentSession = session.id;
-  await loadSessions(false);
-}
-
-function syncSessionScope() {
-  if (state.sending) return;
-  const scope = chatScopeKey();
-  const scopeChanged = scope !== state.sessionScope;
-  const previousSession = state.currentSession;
-  if (scopeChanged) {
-    if (state.sessionScope) state.sessionsByScope.set(state.sessionScope, {
-      id: state.currentSession, pending: state.pendingNewSession,
-    });
-    state.sessionScope = scope;
-    const remembered = state.sessionsByScope.get(scope);
-    state.currentSession = remembered?.id || "";
-    state.pendingNewSession = remembered?.pending || false;
-  }
-  if (!state.pendingNewSession && !state.sessions.some(session => session.id === state.currentSession && sessionInScope(session))) {
-    state.currentSession = state.sessions.find(sessionInScope)?.id || "";
-  }
-  if (scopeChanged || previousSession !== state.currentSession) {
-    state.chatMessagesRequestId += 1;
-    if (state.currentSession) loadMessages().catch(error => showChatNotice(error.message));
-    else $("#chat-messages").replaceChildren(makeWelcome());
-  }
-  renderSessionSelect();
-}
-
-function renderSessionSelect() {
-  const select = $("#session-select");
-  const groups = [["当前范围", state.sessions.filter(sessionInScope)]];
-  const nodes = [];
-  if (state.pendingNewSession || !state.currentSession) {
-    const pending = document.createElement("option");
-    pending.value = "";
-    pending.textContent = "新对话";
-    pending.selected = !state.currentSession;
-    nodes.push(pending);
-  }
-  groups.forEach(([label, sessions]) => {
-    if (!sessions.length) return;
-    const group = document.createElement("optgroup");
-    group.label = label;
-    sessions.forEach((session) => {
-      const option = document.createElement("option");
-      option.value = session.id;
-      option.textContent = session.title;
-      option.selected = session.id === state.currentSession;
-      group.append(option);
-    });
-    nodes.push(group);
-  });
-  if (!nodes.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "暂无对话";
-    nodes.push(option);
-  }
-  select.replaceChildren(...nodes);
-  updateChatContext();
-}
-
-function setChatContext(iconName, text) {
-  const root = $("#chat-context");
-  const copy = document.createElement("span");
-  copy.textContent = text;
-  root.replaceChildren(svgIcon(iconName), copy);
-  root.title = text;
-}
-
-function updateChatContext() {
-  const item = currentEntryItem();
-  const session = state.sessions.find((value) => value.id === state.currentSession);
-  const topicValue = state.topics.find((value) => value.topic.id === state.currentTopic);
-  if (topicValue && session?.scope === "topic" && session.context_topic_id === state.currentTopic) {
-    setChatContext("layers", `当前专题：${topicValue.topic.title}`);
-  } else if (topicValue) {
-    setChatContext("layers", `当前专题：${topicValue.topic.title} · 发送时会新建专题对话`);
-  } else if (item && !isDatabaseManaged(item)) {
-    setChatContext("file-text", `当前文章：${item.title} · 只读 Markdown，发送时使用全库对话`);
-  } else if (item && session?.scope === "entry" && session.context_entry_id === item.entry_id) {
-    setChatContext("file-text", `当前文章：${item.title}`);
-  } else if (item) {
-    setChatContext("file-text", `当前文章：${item.title} · 发送时会新建本文对话`);
-  } else if (session?.scope === "entry" || session?.scope === "topic") {
-    setChatContext("library", "当前会话属于其他范围；发送时会新建全库对话");
-  } else {
-    setChatContext("library", "整个资料库");
-  }
-  const welcome = $(".chat-welcome");
-  if (welcome) welcome.replaceWith(makeWelcome());
-  $$(".message.assistant").forEach(refreshMessageActions);
-}
-
-async function loadMessages() {
-  const requestId = ++state.chatMessagesRequestId;
-  const sessionId = state.currentSession;
-  try {
-    const data = await api(`/api/chat/sessions/${sessionId}`);
-    if (requestId !== state.chatMessagesRequestId || sessionId !== state.currentSession) return;
-    const box = $("#chat-messages");
-    box.replaceChildren(...(data.messages.length
-      ? data.messages.map((message) => makeMessage(message.role, message.content, message.html, message.citations))
-      : [makeWelcome()]));
-    const latestAssistant = [...data.messages]
-      .reverse()
-      .find((message) => message.role === "assistant");
-    $("#token-label").textContent = latestAssistant?.total_tokens != null
-      ? `最近一次用量：${latestAssistant.total_tokens} token`
-      : "用量：—";
-    box.scrollTop = box.scrollHeight;
-  } catch (error) {
-    if (requestId === state.chatMessagesRequestId && sessionId === state.currentSession) showChatNotice(error.message);
-  }
-}
-
-function makeWelcome() {
-  const root = document.createElement("div");
-  root.className = "chat-welcome";
-  const title = document.createElement("h3");
-  title.textContent = "问问你的资料库";
-  const copy = document.createElement("p");
-  copy.textContent = "回答会区分作品原话与 AI 推断，并附上可验证的文章引用。";
-  const examples = document.createElement("div");
-  examples.className = "chat-examples";
-  const questions = state.currentTopic
-    ? ["各来源的主要分歧是什么？", "这个专题有哪些共同结论？", "哪些观点还缺少证据？"]
-    : isDatabaseManaged(currentEntryItem())
-      ? ["这篇的核心论据是什么？", "哪些内容是作品原话，哪些是 AI 推断？", "这篇有哪些值得继续追问的问题？"]
-      : ["最近一周我收藏了哪些 AI 相关内容？", "帮我找出资料库里的共同主题。", "哪些资料适合一起回顾？"];
-  questions.forEach((question) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = question;
-    button.addEventListener("click", () => {
-      $("#chat-input").value = question;
-      resizeChatInput();
-      $("#chat-input").focus();
-    });
-    examples.append(button);
-  });
-  root.append(title, copy, examples);
-  return root;
-}
-
-function formatLocation(citation) {
-  if (citation.image_index) return `第 ${citation.image_index} 张图片`;
-  if (citation.timestamp_ms != null) {
-    const seconds = Math.floor(citation.timestamp_ms / 1000);
-    return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-  }
-  return "文章片段";
-}
-
-function makeCitation(citation, index) {
-  const row = document.createElement("section");
-  row.className = "citation";
-  const number = document.createElement("span");
-  number.className = "citation-number";
-  number.textContent = `[${index + 1}]`;
-  const copy = document.createElement("div");
-  copy.className = "citation-copy";
-  const title = document.createElement("a");
-  title.className = "citation-title";
-  title.href = `/articles/${encodeURIComponent(citation.entry_id)}`;
-  title.textContent = citation.article_title;
-  title.addEventListener("click", (event) => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    openArticle(citation.entry_id, true, null, citation);
-  });
-  const meta = document.createElement("div");
-  meta.className = "citation-meta";
-  const location = document.createElement("span");
-  location.textContent = formatLocation(citation);
-  meta.append(location);
-  if (citation.original_url) {
-    let safeSourceUrl = null;
-    try {
-      const parsed = new URL(citation.original_url);
-      if (["http:", "https:"].includes(parsed.protocol)) safeSourceUrl = parsed.href;
-    } catch (_error) {
-      safeSourceUrl = null;
-    }
-    if (safeSourceUrl) {
-    const source = document.createElement("a");
-    source.href = safeSourceUrl;
-    source.target = "_blank";
-    source.rel = "noopener noreferrer";
-    source.textContent = "原作品";
-    source.append(svgIcon("external-link"));
-    meta.append(document.createTextNode("·"), source);
-    }
-  }
-  copy.append(title, meta);
-  if (citation.snippet) {
-    const preview = document.createElement("p");
-    preview.className = "citation-preview";
-    preview.textContent = citation.snippet;
-    copy.append(preview);
-    row.title = citation.snippet;
-  }
-  row.append(number, copy);
-  return row;
-}
-
-function makeMessage(role, content, html = "", citations = [], isNew = false) {
-  const node = document.createElement("div");
-  node.className = `message ${role}`;
-  if (isNew) node.classList.add("is-new");
-  if (role === "assistant" && html) node.innerHTML = html;
-  else node.textContent = content;
-  if (citations?.length) {
-    const list = document.createElement("div");
-    list.className = "citations";
-    const heading = document.createElement("div");
-    heading.className = "citations-heading";
-    heading.textContent = "引用";
-    list.append(heading);
-    citations.forEach((citation, index) => list.append(makeCitation(citation, index)));
-    node.append(list);
-  }
-  node.chatContent = content;
-  refreshMessageActions(node);
-  return node;
-}
-
-function refreshMessageActions(node) {
-  const previous = $(".message-actions", node);
-  if (!node.classList.contains("assistant") || node.classList.contains("error") || node.classList.contains("is-streaming") || !node.chatContent) {
-    previous?.remove();
-    return;
-  }
-  const canSave = !state.currentEntry || isDatabaseManaged(currentEntryItem());
-  const context = `${canSave}:${state.currentTopic}`;
-  if (previous?.dataset.context === context) return;
-  previous?.remove();
-  const content = node.chatContent;
-  const actions = document.createElement("div");
-  actions.className = "message-actions";
-  actions.dataset.context = context;
-  if (canSave) {
-    const save = document.createElement("button");
-    save.type = "button";
-    save.className = "save-inspiration";
-    save.append(svgIcon("quote"), document.createTextNode("保存为灵感"));
-    save.addEventListener("click", () => openInspiration(content, save));
-    actions.append(save);
-  }
-  if (state.currentTopic) {
-    const note = document.createElement("button");
-    note.type = "button";
-    note.className = "save-inspiration";
-    note.append(svgIcon("layers"), document.createTextNode("保存为专题笔记"));
-    note.addEventListener("click", async () => {
-      const topicId = state.currentTopic;
-      if (!topicId) return;
-      if (!await window.Douku.confirmDanger({title: "保存专题笔记", description: "将这段内容逐字保存为当前专题笔记？", confirmLabel: "保存笔记"})) return;
-      try {
-        await api(`/api/topics/${encodeURIComponent(topicId)}/notes`, {
-          method: "POST",
-          body: JSON.stringify({content, title: "对话笔记", confirmed: true}),
-        });
-        await openTopic(topicId, false);
-        toast("专题笔记已逐字保存");
-      } catch (error) {
-        toast(error.message);
-      }
-    });
-    actions.append(note);
-  }
-  if (actions.childElementCount) node.append(actions);
-}
-
-function parseSSEChunk(buffer, onEvent) {
-  const blocks = buffer.replaceAll("\r\n", "\n").split("\n\n");
-  const rest = blocks.pop();
-  blocks.forEach((block) => {
-    let name = "message";
-    const dataLines = [];
-    block.split("\n").forEach((line) => {
-      if (line.startsWith("event:")) name = line.slice(6).trim();
-      if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
-    });
-    if (!dataLines.length) return;
-    try {
-      onEvent(name, JSON.parse(dataLines.join("\n")));
-    } catch (_error) {
-      onEvent("error", {message: "收到的流式响应格式不完整，请重试。"});
-    }
-  });
-  return rest;
-}
-
-function setSending(sending) {
-  state.sending = sending;
-  if (!sending) syncSessionScope();
-  const button = $("#send-button");
-  button.disabled = sending;
-  button.setAttribute("aria-label", sending ? "正在生成回答" : "发送消息");
-  button.replaceChildren(svgIcon(sending ? "square" : "arrow-up"));
-  ["#session-select", "#new-session", "#delete-session"].forEach((selector) => { $(selector).disabled = sending; });
-  $("#chat-messages").setAttribute("aria-busy", String(sending));
-  $("#screen-reader-status").textContent = sending ? "正在生成回答" : "回答完成";
-}
-
-async function sendChat(text) {
-  if (state.sending) return;
-  setSending(true);
-  const current = state.sessions.find((item) => item.id === state.currentSession);
-  try {
-    if (!state.currentSession || !sessionInScope(current)) await createSession();
-  } catch (error) {
-    showChatNotice(error.message);
-    $("#chat-input").value = text;
-    resizeChatInput();
-    setSending(false);
-    return;
-  }
-  const sessionId = state.currentSession;
-  ++state.chatMessagesRequestId;
-  showChatNotice();
-  const box = $("#chat-messages");
-  $(".chat-welcome", box)?.remove();
-  box.append(makeMessage("user", text, "", [], true));
-  const answer = makeMessage("assistant", "正在准备检索…", "", [], true);
-  answer.classList.add("is-streaming");
-  box.append(answer);
-  box.scrollTop = box.scrollHeight;
-  let raw = "";
-  let citations = [];
-  let completed = false;
-  let failed = false;
-  const fail = (message) => {
-    failed = true;
-    answer.classList.remove("is-streaming");
-    answer.classList.add("error");
-    answer.replaceChildren(svgIcon("alert-circle"), document.createTextNode(message));
-    if (!state.chatConfigured) showChatNotice("尚未配置对话模型。", true);
-    $("#screen-reader-status").textContent = message;
-  };
-  try {
-    const response = await fetch(`/api/chat/sessions/${sessionId}/messages`, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({content: text}),
-    });
-    if (!response.ok || !response.body) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || "发送失败");
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const onEvent = (name, data) => {
-      if (name === "meta") {
-        citations = data.citations || [];
-        if (!raw && !failed) answer.textContent = "";
-      }
-      if (name === "delta" && !failed) {
-        raw += data.text;
-        answer.textContent = raw;
-      }
-      if (name === "error") fail(data.message || "AI 对话暂时不可用");
-      if (name === "done" && !failed) {
-        answer.replaceWith(makeMessage("assistant", data.message.content || raw, data.message.html, citations));
-        completed = true;
-        const usage = data.usage;
-        $("#token-label").textContent = usage?.total_tokens != null
-          ? `本次用量：${usage.total_tokens} token`
-          : "本次用量：未知";
-      }
-      box.scrollTop = box.scrollHeight;
-    };
-    while (true) {
-      const {value, done} = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
-      buffer = parseSSEChunk(buffer, onEvent);
-      if (done) break;
-    }
-    if (!completed && !failed) fail("回答中断，请稍后重试。");
-    if (completed && !failed) await loadSessions(false);
-  } catch (error) {
-    fail(error.message || "AI 对话暂时不可用");
-  } finally {
-    answer.classList.remove("is-streaming");
-    setSending(false);
-    if (failed) $("#screen-reader-status").textContent = "回答失败，请稍后重试。";
-  }
-}
-
-function resizeChatInput() {
-  const input = $("#chat-input");
-  input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
-}
-
 function fillInspirationTargets() {
   const items = (state.allItems.length ? state.allItems : state.items).filter(isDatabaseManaged);
   $("#inspiration-entry").replaceChildren(...items.map((item) => {
@@ -2945,17 +2387,11 @@ async function saveInspiration() {
     if (state.currentEntry === payload.entry_id) {
       await openArticle(payload.entry_id, false);
       if (state.panelTab === "inspiration") $("#inspiration-pane .add-inspiration")?.focus({preventScroll: true});
-      else if (state.panelTab === "chat" && state.lastDialogTrigger?.isConnected) state.lastDialogTrigger.focus({preventScroll: true});
     }
   } catch (error) {
     errorNode.textContent = error.message;
     errorNode.classList.remove("hidden");
   }
-}
-
-function closeChatMenu() {
-  $("#chat-menu").classList.add("hidden");
-  $("#chat-menu-toggle").setAttribute("aria-expanded", "false");
 }
 
 function handleGlobalKeydown(event) {
@@ -2969,15 +2405,10 @@ function handleGlobalKeydown(event) {
   if ((event.metaKey || event.ctrlKey) && key === "k") {
     event.preventDefault(); openCommandMenu(); return;
   }
-  if ((event.metaKey || event.ctrlKey) && key === "i") {
-    event.preventDefault(); openImportsPopover(); return;
-  }
   if (event.key === "Escape") {
     state.navigationPrefixAt = 0;
     if (!$("#entry-menu").classList.contains("hidden")) { closeEntryMenu(true); }
     else if (!$("#filter-popover").classList.contains("hidden")) { closeFilterPopover(); $("#filter-toggle").focus(); }
-    else if (!$("#imports-popover").classList.contains("hidden")) { closeImportsPopover(); restoreImportsFocus(); }
-    else if (!$("#chat-menu").classList.contains("hidden")) { closeChatMenu(); $("#chat-menu-toggle").focus(); }
     else if (state.activeDrawer) closeDrawers();
     else if (panelBreakpoint() === "overlay" && isPanelOpen()) setChatPanelOpen(false);
     else if (state.pendingArticleRequest) showLibrary(false);
@@ -3008,16 +2439,15 @@ function handleGlobalKeydown(event) {
   }
   window.Douku.chordPending = false;
   state.navigationPrefixAt = 0;
-  if (state.panelPage === "article" && !event.target.closest("#entry-menu,#imports-popover,#filter-popover")) {
+  if (state.panelPage === "article" && !event.target.closest("#entry-menu,#filter-popover")) {
     const interactive = Boolean(event.target.closest("button,a,[role='tab'],#library-sidebar"));
     if (key === "u" && !interactive && !state.activeDrawer) { event.preventDefault(); showLibrary(); return; }
     if (state.currentArticleItem) {
-      if (event.shiftKey && ["i", "n", "c"].includes(key)) {
+      if (event.shiftKey && ["i", "n"].includes(key)) {
         event.preventDefault();
-        const tab = {i: "info", n: "inspiration", c: "chat"}[key];
+        const tab = {i: "info", n: "inspiration"}[key];
         selectPanelTab(tab); setChatPanelOpen(true);
         if (key === "n") openInspiration("", $("#inspiration-pane .add-inspiration") || document.activeElement);
-        else if (key === "c") $("#chat-input").focus();
         else $("#panel-tab-info").focus();
         return;
       }
@@ -3037,7 +2467,7 @@ function handleGlobalKeydown(event) {
     }
   }
   if (state.panelPage === "library" && !state.activeDrawer
-      && !event.target.closest("#side-panel, #library-sidebar, #filter-popover, #entry-menu, #imports-popover")) {
+      && !event.target.closest("#side-panel, #library-sidebar, #filter-popover, #entry-menu")) {
     const items = $("#library-results").classList.contains("hidden") ? [] : filteredItems();
     if (key === "v") { event.preventDefault(); $(state.libraryView === "list" ? "#view-gallery" : "#view-list").click(); return; }
     if (key === "f" && event.shiftKey) { event.preventDefault(); openFilterPopover(); return; }
@@ -3090,14 +2520,13 @@ function authSummaryLabel(value) {
 }
 
 async function loadSettingsSummary() {
-  ["auth", "analysis", "model", "system"].forEach((id) => { $(`#settings-value-${id}`).textContent = "—"; });
-  const values = await Promise.allSettled([api("/api/auth/status"), api("/api/system/analysis"), api("/api/settings/model"), api("/api/system/health")]);
+  ["auth", "analysis", "system"].forEach((id) => { $(`#settings-value-${id}`).textContent = "—"; });
+  const values = await Promise.allSettled([api("/api/auth/status"), api("/api/system/analysis"), api("/api/system/health")]);
   values.forEach((result, index) => {
     if (result.status !== "fulfilled") return;
-    const value = result.value; const id = ["auth", "analysis", "model", "system"][index];
+    const value = result.value; const id = ["auth", "analysis", "system"][index];
     const label = id === "auth" ? authSummaryLabel(value)
       : id === "analysis" ? value.label || value.mode_label || value.analysis_mode_label || value.mode
-      : id === "model" ? value.configured && value.model ? value.model : "未配置"
       : value.worker?.running ? "运行中" : "未运行";
     $(`#settings-value-${id}`).textContent = label || "—";
   });
@@ -3129,88 +2558,6 @@ function bindEvents() {
     else $("#jobs-view").insertBefore(filters, $("#jobs-list"));
   };
   positionJobFilters(); window.addEventListener("resize", positionJobFilters);
-  let pasteToken = 0;
-  let pasteKind = "";
-  const pasteContinue = $("#import-paste-form button[type='submit']");
-  const classifyPaste = async () => {
-    const value = $("#import-paste").value.trim();
-    const token = ++pasteToken;
-    const kind = $("#import-paste-kind");
-    if (!value) {
-      pasteKind = "";
-      kind.textContent = "粘贴后识别导入方式";
-      if (pasteContinue) pasteContinue.disabled = true;
-      return;
-    }
-    const lower = value.toLowerCase();
-    const douyin = lower.includes("douyin.com") || lower.includes("iesdouyin.com");
-    if (!douyin) {
-      pasteKind = "";
-      kind.textContent = "无法识别";
-      if (pasteContinue) pasteContinue.disabled = true;
-      return;
-    }
-    if (lower.includes("douyin.com/collection/")) {
-      pasteKind = "collection"; kind.textContent = "识别为：抖音合集";
-      if (pasteContinue) pasteContinue.disabled = false; return;
-    }
-    if (lower.includes("douyin.com/user/") || lower.includes("iesdouyin.com/share/user/")) {
-      pasteKind = "creator";
-      kind.textContent = "识别为：博主主页";
-      if (pasteContinue) pasteContinue.disabled = false;
-      return;
-    }
-    if (/douyin\.com\/(?:share\/)?(?:video|note|gallery)\//.test(lower) || /[?&](?:aweme_id|item_id|modal_id)=\d{10,}/.test(lower)) {
-      pasteKind = "work";
-      kind.textContent = "识别为：单条作品";
-      if (pasteContinue) pasteContinue.disabled = false;
-      return;
-    }
-    if (lower.includes("v.douyin.com")) {
-      pasteKind = "";
-      kind.textContent = "正在识别短链…";
-      if (pasteContinue) pasteContinue.disabled = true;
-      try {
-        const data = await api("/api/imports/classify", {method: "POST", body: JSON.stringify({text: value})});
-        if (token !== pasteToken) return;
-        if (["creator", "work", "collection"].includes(data.kind)) {
-          pasteKind = data.kind;
-          kind.textContent = data.kind === "collection" ? "识别为：抖音合集" : data.kind === "creator" ? "识别为：博主主页" : "识别为：单条作品";
-          if (pasteContinue) pasteContinue.disabled = false;
-        } else {
-          kind.textContent = "无法识别";
-          if (pasteContinue) pasteContinue.disabled = true;
-        }
-      } catch (_error) {
-        if (token !== pasteToken) return;
-        kind.textContent = "无法识别";
-        if (pasteContinue) pasteContinue.disabled = true;
-      }
-      return;
-    }
-    pasteKind = "";
-    kind.textContent = "无法识别";
-    if (pasteContinue) pasteContinue.disabled = true;
-  };
-  if (pasteContinue) pasteContinue.disabled = true;
-  $("#import-paste").addEventListener("input", () => { classifyPaste(); });
-  $("#import-paste").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      if (pasteContinue && !pasteContinue.disabled) $("#import-paste-form").requestSubmit();
-    }
-  });
-  $("#import-paste-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const value = $("#import-paste").value.trim();
-    if (!value || !pasteKind) return;
-    if (pasteKind === "collection") {
-      window.Douku.navigate("/imports/collections"); $("#collection-source").value = value; return;
-    }
-    const creator = pasteKind === "creator";
-    window.Douku.navigate(creator ? "/imports/creators" : "/imports/single");
-    $(creator ? "#creator-source" : "#single-share").value = value;
-  });
   $$(".nav-item[data-section]").forEach((node) => node.addEventListener("click", () => {
     state.section = node.dataset.section;
     state.authors = [];
@@ -3236,14 +2583,6 @@ function bindEvents() {
   $("#library-selection-next").addEventListener("click", openTopicDialog);
   window.addEventListener("douku:page", (event) => {
     renderPanelTabs(event.detail.page);
-    syncSessionScope();
-  });
-  $("#imports-popover").addEventListener("keydown", (event) => {
-    if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
-    event.preventDefault();
-    const choices = $$(".import-choice", $("#imports-popover"));
-    const current = choices.indexOf(document.activeElement);
-    choices[(current + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % choices.length].focus();
   });
   $("#topics-nav").addEventListener("click", () => showTopics());
   $("#trash-nav").addEventListener("click", () => showTrash());
@@ -3257,16 +2596,10 @@ function bindEvents() {
     const path = node.getAttribute("data-route") || node.getAttribute("href");
     if (!path || !path.startsWith("/")) return;
     event.preventDefault();
-    closeImportsPopover();
     window.Douku?.navigate(path);
   }));
   $$("[data-back='library']").forEach((node) => node.addEventListener("click", () => showLibrary()));
   $("#back-jobs")?.addEventListener("click", () => window.Douku?.navigate("/jobs"));
-  $("#imports-toggle")?.addEventListener("click", () => {
-    if ($("#imports-popover").classList.contains("hidden")) openImportsPopover();
-    else closeImportsPopover();
-  });
-  $("#imports-close")?.addEventListener("click", () => { closeImportsPopover(); restoreImportsFocus(); });
   $("#topic-select-toggle").addEventListener("click", () => {
     if (!state.topicSelectionMode) {
       state.topicSelectionMode = true;
@@ -3357,54 +2690,6 @@ function bindEvents() {
   $("#chat-toggle").addEventListener("click", () => setChatPanelOpen(!isPanelOpen()));
   $("#chat-close").addEventListener("click", () => setChatPanelOpen(false));
   $("#drawer-backdrop").addEventListener("click", closeDrawers);
-  $("#chat-menu-toggle").addEventListener("click", () => {
-    const open = $("#chat-menu").classList.contains("hidden");
-    $("#chat-menu").classList.toggle("hidden", !open);
-    $("#chat-menu-toggle").setAttribute("aria-expanded", String(open));
-  });
-  $("#new-session").addEventListener("click", () => prepareNewChat());
-  $("#delete-session").addEventListener("click", async () => {
-    closeChatMenu();
-    if (!state.currentSession) return;
-    const confirmed = await window.Douku.confirmDanger({
-      title: "删除当前对话？",
-      description: "删除当前对话及全部历史消息。此操作无法撤销。",
-      confirmLabel: "删除对话",
-    });
-    if (!confirmed) return;
-    try {
-      await api(`/api/chat/sessions/${state.currentSession}`, {method: "DELETE"});
-      state.currentSession = "";
-      await loadSessions();
-      toast("对话已删除");
-    } catch (error) {
-      showChatNotice(error.message);
-    }
-  });
-  $("#session-select").addEventListener("change", async (event) => {
-    state.pendingNewSession = !event.target.value;
-    state.currentSession = event.target.value;
-    if (state.currentSession) await loadMessages();
-    else $("#chat-messages").replaceChildren(makeWelcome());
-    updateChatContext();
-  });
-  $("#chat-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (state.sending) return;
-    const input = $("#chat-input");
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = "";
-    resizeChatInput();
-    sendChat(text);
-  });
-  $("#chat-input").addEventListener("input", resizeChatInput);
-  $("#chat-input").addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      $("#chat-form").requestSubmit();
-    }
-  });
   $("#confirm-inspiration").addEventListener("click", (event) => {
     event.preventDefault();
     if (!$("#inspiration-form").reportValidity()) return;
@@ -3468,8 +2753,6 @@ function bindEvents() {
     if (panelBreakpoint() === "overlay" && isPanelOpen() && event.target.closest("#main-content") && !event.target.closest("#chat-toggle")) setChatPanelOpen(false);
     if (!event.target.closest("#entry-menu, .entry-more")) closeEntryMenu();
     if (!event.target.closest("#filter-popover, #filter-toggle")) closeFilterPopover();
-    if (!event.target.closest("#imports-popover, #imports-toggle")) closeImportsPopover();
-    if (!event.target.closest("#chat-menu, #chat-menu-toggle")) closeChatMenu();
   }, {capture: true});
   window.addEventListener("popstate", () => {
     beginNavigation();
@@ -3500,7 +2783,6 @@ function bindEvents() {
     renderPanelState();
     if (state.libraryLoaded) renderLibrary();
     if (!$("#filter-popover")?.classList.contains("hidden")) positionFilterPopover();
-    if (!$("#imports-popover")?.classList.contains("hidden")) positionImportsPopover();
   });
 }
 
@@ -3534,7 +2816,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   }
   refreshAuthChannelBanners();
-  await loadSessions();
   const events = new EventSource("/api/library/events");
   events.addEventListener("library", async (event) => {
     let origins = [null];

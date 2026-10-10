@@ -10,7 +10,7 @@
   D.bindCheckList($("items"));
   let jobId = null, current = null, page = 1, busy = false, generation = 0;
   let pollTimer = null, elapsedTimer = null, searchTimer = null, saveTimer = null;
-  let saving = null, saveError = false, configurationJob = null;
+  let saving = null, saveError = false;
   const pending = new Map();
 
   async function request(path, body) {
@@ -48,18 +48,15 @@
   }
   function controls() {
     view.querySelectorAll("button[data-action]").forEach((button) => { button.disabled = busy; });
-    ["scope", "history", "images", "mode", "limit"].forEach((id) => { $(id).disabled = busy; });
+    ["history", "limit"].forEach((id) => { $(id).disabled = busy; });
     const searchable = Boolean(current && !current.directory_only && current.summary?.discovered);
     ["search", "query", "filter", "only-new", "only-unimported"].forEach((id) => {
       $(id).disabled = busy || !searchable;
     });
     $("search-hint").textContent = searchable ? "输入标题或作者会自动筛选本次已读取的作品。"
-      : !current || current.directory_only ? "先点击上方“更新抖音收藏”读取作品，再搜索标题或作者。"
+      : !current || current.directory_only ? "请选择已有导入记录，再搜索标题或作者。"
       : ongoing.has(current.status) ? "正在读取作品，读取后即可搜索。"
-      : "当前清单暂无作品可搜索，可调整范围后重新读取。";
-    const boxes = [...$("folder-list").querySelectorAll("input")];
-    $("scan").disabled = busy || ($("scope").value === "folders" && !boxes.some((box) => box.checked));
-    ["folders-all", "folders-invert"].forEach((id) => { $(id).disabled = busy || !boxes.length; });
+      : "当前清单暂无作品可搜索；需要新批次时，请让 Agent 发起导入。";
     $("confirm").disabled = busy || !canSelect() || !selectedCount() || pending.size > 0 ||
       Boolean(saving) || saveError || (!current.complete && !$("partial").checked);
     $("confirm").hidden = Boolean(current?.confirmed || current?.directory_only || current?.status === "cancelled");
@@ -81,11 +78,9 @@
     $("stop").textContent = current?.cancel_requested ? "正在停止…"
       : current?.confirmed ? "取消剩余任务" : canSelect() ? "取消本批" : "停止读取";
     $("delete-history").disabled = busy || !jobId;
-    $("folders").hidden = $("scope").value !== "folders";
     view.querySelectorAll("input[data-work]").forEach((input) => {
       input.disabled = busy || !canSelect() || input.dataset.eligible !== "true";
     });
-    boxes.forEach((input) => { input.disabled = busy; });
     selectionStatus();
   }
   async function run(action, {flush = true} = {}) {
@@ -149,7 +144,7 @@
         if (!canSelect()) {
           pending.clear(); saveError = false;
           render(current);
-          D.toast("本批状态已改变，未保存的勾选不能继续提交。可以重新读取或选择其他记录。");
+          D.toast("本批状态已改变，未保存的勾选不能继续提交。可以选择其他记录，需要新批次时请交给 Agent。");
           return;
         }
       }
@@ -162,16 +157,15 @@
     $("only-new").checked = false; $("only-unimported").checked = true;
     $("partial").checked = false;
   }
-  function resetView(message = "尚未开始更新") {
-    current = null; configurationJob = null; pending.clear(); saveError = false;
+  function resetView(message = "请选择已有导入记录") {
+    current = null; pending.clear(); saveError = false;
     clearTimeout(saveTimer); clearTimeout(elapsedTimer); clearFilters();
     $("status").textContent = message;
-    $("summary").textContent = "更新抖音收藏会读取清单，勾选并确认后才会导入。";
-    ["waits", "warnings", "items", "folder-list", "error"].forEach((id) => $(id).replaceChildren());
+    $("summary").textContent = "选择已有清单中的作品，确认后继续下载和分析。";
+    ["waits", "warnings", "items", "error"].forEach((id) => $(id).replaceChildren());
     ["auth", "gateway", "partial-row", "cancelled", "progress", "elapsed", "library", "selection-inheritance"].forEach((id) => { $(id).hidden = true; });
     $("filter").replaceChildren(node("option", "全部收藏夹")); $("filter").firstChild.value = "";
     $("filter").hidden = true; $("page").textContent = "第 1 / 1 页 · 匹配 0 件";
-    $("folder-hint").textContent = "先读取目录，再选择要更新的收藏夹。";
     controls();
   }
   function formatTime(value) {
@@ -203,15 +197,6 @@
   }
   function render(data) {
     current = data; updateJobAddress();
-    const configurationChanged = configurationJob !== data.job_id;
-    if (configurationChanged) {
-      configurationJob = data.job_id;
-      if (data.directory_only) $("scope").value = "folders";
-      else {
-        $("scope").value = data.folder_ids?.length ? "folders" : "all";
-        $("mode").value = data.update_mode || "incremental"; $("images").checked = Boolean(data.include_images);
-      }
-    }
     const summary = data.summary || {}, reading = ongoing.has(data.status) && !data.confirmed;
     const directoryReady = data.directory_only && ["completed", "completed_with_warnings"].includes(data.status);
     const label = directoryReady ? legacy(data) ? "旧版本目录记录" : "收藏夹目录已读取" : data.status_label || data.status;
@@ -228,8 +213,7 @@
       .map(([status, text]) => text + " " + summary.child_status_counts[status]).join(" · ");
     $("warnings").replaceChildren(...(data.warnings || []).map((text) => node("li", text)));
     if (legacy(data)) {
-      const action = data.directory_only ? "读取我的收藏夹" : data.status === "cancelled" ? "重新读取清单" : "更新抖音收藏";
-      $("warnings").prepend(node("li", "这是旧版本留下的读取结果。点击“" + action + "”可用当前版本重新读取，旧记录不会被改写。"));
+      $("warnings").prepend(node("li", "此目录的分页未完成。需要完整清单时，请让 Agent 发起新的收藏读取。"));
     }
     const inheritance = data.selection_inheritance || {}, hints = [];
     if (inheritance.selected) hints.push("沿用了上次的 " + inheritance.selected + " 件选择，已入库作品仍会跳过。");
@@ -241,7 +225,6 @@
     $("partial-row").hidden = data.complete || data.directory_only || data.confirmed || data.status !== "needs_selection";
     $("retry").textContent = data.confirmed ? "重试失败作品" : data.status === "needs_auth" ? "授权好了，重试读取" : "重试读取";
     $("cancelled").hidden = data.status !== "cancelled";
-    $("restart").textContent = data.directory_only ? "重新读取目录" : "重新读取清单";
     const cancellationOnly = data.status === "cancelled" && ["已取消", "任务已取消"].includes(String(data.error_message || "").trim());
     $("error").textContent = cancellationOnly ? "" : data.error_message || "";
     const entryIds = data.imported_entry_ids || [];
@@ -259,19 +242,6 @@
       if (!active() || !ongoing.has(current?.status)) return;
       elapsed(); elapsedTimer = setTimeout(tick, 1000);
     }, 1000);
-    const chosen = configurationChanged && !data.directory_only ? new Set(data.folder_ids || [])
-      : new Set([...$("folder-list").querySelectorAll("input:checked")].map((input) => input.value));
-    $("folder-list").replaceChildren();
-    for (const folder of data.folders || []) {
-      const label = node("label", null, "check-row"), input = node("input");
-      input.type = "checkbox"; input.value = folder.id; input.checked = chosen.has(folder.id);
-      input.addEventListener("change", controls);
-      label.append(input, node("span", folder.name + (folder.reported_count == null ? "" : "（" + folder.reported_count + "）")));
-      $("folder-list").append(label);
-    }
-    $("folder-hint").textContent = reading && data.directory_only ? "正在读取收藏夹，完成后即可勾选。"
-      : data.folders?.length ? "勾选收藏夹，再点击“更新抖音收藏”读取作品。"
-      : "当前记录没有可用目录，点击“读取我的收藏夹”重新读取。";
     const filter = $("filter").value;
     $("filter").replaceChildren(node("option", "全部收藏夹")); $("filter").firstChild.value = "";
     for (const folder of data.folders || []) {
@@ -337,19 +307,11 @@
     const data = await request(base + "/" + encodeURIComponent(target) + "?" + params);
     if (token === generation && target === jobId && active()) render(data);
   }
-  async function start(directoryOnly) {
-    const folderIds = [...$("folder-list").querySelectorAll("input:checked")].map((input) => input.value);
-    if (!directoryOnly && $("scope").value === "folders" && !folderIds.length) throw new Error("请先选择至少一个收藏夹");
-    const result = await request(base, {directory_only: directoryOnly, include_images: $("images").checked,
-      update_mode: $("mode").value, folder_ids: !directoryOnly && $("scope").value === "folders" ? folderIds : null});
-    jobId = result.job_id; configurationJob = null; current = null; clearFilters();
-    await load(); await history();
-  }
   async function confirmImport() {
-    if (!canSelect()) throw new Error("本批已不能导入，请重新读取或选择其他记录");
+    if (!canSelect()) throw new Error("本批已不能导入，请选择其他记录，需要新批次时请交给 Agent");
     const count = selectedCount(), preview = current.confirmation_preview || {};
     if (!count) throw new Error("请先选择尚未入库的作品");
-    const mode = current.analysis_mode === "gateway" ? "网关 Agent，后续由外部 Agent 接续" : "当前模型";
+    const mode = "Gateway Agent，后续由 Agent 接续";
     $("confirm-description").textContent = "将处理 " + count + " 件所选作品" +
       (preview.new_tasks != null ? "：新建 " + preview.new_tasks + " 个任务，复用 " + (preview.reused_tasks || 0) + " 个进行中任务" : "") +
       "。清单中 " + (preview.already_imported ?? current.summary?.in_library ?? current.summary?.imported ?? 0) +
@@ -418,17 +380,10 @@
       $("auth-state").replaceChildren(node("span", (channel.user_state_label || "授权状态需在设置页检查") + " · "), link);
     }).catch(() => {});
   });
-  $("directory").addEventListener("click", () => run(() => start(true)));
-  $("scan").addEventListener("click", () => run(() => start(false)));
-  $("scope").addEventListener("change", controls);
-  ["folders-all", "folders-invert"].forEach((id) => $(id).addEventListener("click", () => {
-    $("folder-list").querySelectorAll("input").forEach((box) => { box.checked = id === "folders-all" || !box.checked; });
-    controls();
-  }));
   $("history").addEventListener("change", () => {
     const next = $("history").value;
     if (!next || busy) return;
-    run(async () => { jobId = next; configurationJob = null; clearFilters(); await load(); });
+    run(async () => { jobId = next; clearFilters(); await load(); });
   });
   $("refresh").addEventListener("click", () => run(async () => { await history(); await load(); }));
   $("search").addEventListener("click", search);
@@ -458,10 +413,9 @@
   $("retry").addEventListener("click", () => run(async () => {
     await request(base + "/" + encodeURIComponent(jobId) + "/retry", {}); await load();
   }));
-  $("restart").addEventListener("click", () => run(() => start(Boolean(current?.directory_only))));
   $("stop").addEventListener("click", () => run(async () => {
     const ok = await D.confirmDanger({title: current.confirmed ? "取消剩余任务" : canSelect() ? "取消本批" : "停止本批读取",
-      confirmLabel: "确认停止", description: "保留已读清单、选择和已入库资料。其他批次也在使用的任务会继续。此批停止后，可重新读取新建批次。"});
+      confirmLabel: "确认停止", description: "保留已读清单、选择和已入库资料。其他批次也在使用的任务会继续。需要新批次时，请让 Agent 发起导入。"});
     if (ok) { await request("/api/jobs/" + encodeURIComponent(jobId) + "/cancel", {}); await load(); await history(); }
   }));
   $("clear-cache").addEventListener("click", () => run(async () => {

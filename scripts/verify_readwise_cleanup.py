@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -56,7 +57,14 @@ def contrast(first, second):
 
 
 async def verify():
-    out = ROOT / "docs/screenshots/redesign/phase-6"
+    out = (
+        Path(
+            os.environ.get(
+                "DOUKU_VERIFY_OUTPUT_DIR", str(ROOT / "docs/screenshots/mcp-gateway-simplification")
+            )
+        )
+        / "cleanup"
+    )
     out.mkdir(parents=True, exist_ok=True)
     audit = audit_tokens()
     with TemporaryDirectory(prefix="douku-cleanup-check-") as tmp:
@@ -83,7 +91,6 @@ async def verify():
         app = create_app(
             config,
             service=service,
-
             config_path=Path(tmp) / "config.toml",
             start_watcher=False,
         )
@@ -102,8 +109,8 @@ async def verify():
             ("trash", "/trash", ".trash-item"),
             ("settings", "/settings", "#settings-view:not(.hidden)"),
             ("auth", "/settings/auth", "#auth-video-card .status-pill"),
-            ("analysis", "/settings/analysis", "#analysis-status-dot svg"),
-            ("model", "/settings/model", "#model-status-dot svg"),
+            ("analysis", "/settings/analysis", "#analysis-status-title"),
+            ("model", "/settings/model", "#model-view:not(.hidden)"),
             ("system", "/settings/system", ".system-metric"),
             ("not-found", "/no-such-page", "#not-found-view:not(.hidden)"),
         ]

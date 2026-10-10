@@ -10,14 +10,11 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..adapters.share import DouyinShareResolver, assert_creator_share
+from ..adapters.share import DouyinShareResolver
 from ..errors import DouyinWikiError, EntryNotFoundError, JobStateError
 from ..localization import add_display_labels
 from ..models import (
-    CaptureOptions,
     CreatorWorkDecision,
-    InspirationInput,
-    RetentionPolicy,
     SourceKind,
 )
 from ..operation import analysis_presentation, sanitize_public_payload
@@ -45,21 +42,6 @@ class ReviewBody(BaseModel):
     accept_uncertain: bool = False
 
 
-class CreatorInventoryBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    source_text: str = Field(min_length=1, max_length=20_000)
-    inspirations: list[InspirationInput] = Field(default_factory=list)
-    retention: RetentionPolicy = RetentionPolicy.TEMPORARY
-    allow_long: bool = False
-    approve_cloud_analysis: bool = False
-
-
-class CollectionInventoryBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    source_text: str = Field(min_length=1, max_length=20_000)
-    options: CaptureOptions = Field(default_factory=CaptureOptions)
-
-
 class CollectionSelectionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: Literal["selected", "skipped"]
@@ -84,11 +66,6 @@ class CreatorSelectionBody(BaseModel):
 class CreatorConfirmBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     accept_partial: bool = False
-
-
-class CreatorImportSkippedBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    work_ids: list[str] = Field(min_length=1)
 
 
 class ReanalyzeBody(BaseModel):
@@ -369,13 +346,12 @@ def register_operation_routes(
         except (DouyinWikiError, ValueError) as exc:
             raise _http_error(exc) from exc
 
-    @app.post("/api/collections/inventory", status_code=202)
-    async def collection_inventory(body: CollectionInventoryBody):
-        job = await collection_call(
-            core.capture_douyin_collection, body.source_text, options=body.options
+    @app.post("/api/collections/inventory")
+    async def collection_inventory():
+        raise HTTPException(
+            status_code=410,
+            detail="网页新建请求已停用，请通过 Agent 使用 MCP 工具 capture_douyin_collection。",
         )
-        await notifier.publish("jobs")
-        return {"job_id": job.id, "status": job.status.value}
 
     @app.get("/api/collections")
     async def list_collections():
@@ -419,30 +395,12 @@ def register_operation_routes(
         await notifier.publish("jobs")
         return {"job_id": job.id, "status": job.status.value}
 
-    @app.post("/api/creators/inventory", status_code=202)
-    async def creator_inventory(body: CreatorInventoryBody):
-        try:
-            source = assert_creator_share(body.source_text)
-            resolver = (
-                core.resolver
-                if hasattr(core.resolver, "resolve_creator")
-                else DouyinShareResolver()
-            )
-            source = await resolver.resolve_creator(source)
-            job = await asyncio.to_thread(
-                core.capture_douyin_creator,
-                source,
-                inspirations=body.inspirations,
-                options=CaptureOptions(
-                    retention=body.retention,
-                    allow_long=body.allow_long,
-                    approve_cloud_analysis=body.approve_cloud_analysis,
-                ),
-            )
-        except DouyinWikiError as exc:
-            raise _http_error(exc) from exc
-        await notifier.publish("jobs")
-        return operations.present(job)
+    @app.post("/api/creators/inventory")
+    async def creator_inventory():
+        raise HTTPException(
+            status_code=410,
+            detail="网页新建请求已停用，请通过 Agent 使用 MCP 工具 capture_douyin_creator。",
+        )
 
     @app.get("/api/creators")
     async def list_creators():
@@ -463,23 +421,19 @@ def register_operation_routes(
             raise HTTPException(status_code=404, detail="博主不存在") from exc
         return {"items": add_display_labels(core.list_creator_works(creator_id))}
 
-    @app.post("/api/creators/{creator_id}/sync", status_code=202)
+    @app.post("/api/creators/{creator_id}/sync")
     async def sync_creator(creator_id: str):
-        try:
-            job = await asyncio.to_thread(core.sync_creator, creator_id)
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail="博主不存在") from exc
-        await notifier.publish("jobs")
-        return operations.present(job)
+        raise HTTPException(
+            status_code=410,
+            detail="网页新建请求已停用，请通过 Agent 使用 MCP 工具 sync_creator。",
+        )
 
-    @app.post("/api/creators/{creator_id}/import-skipped", status_code=202)
-    async def import_skipped(creator_id: str, body: CreatorImportSkippedBody):
-        try:
-            job = await asyncio.to_thread(core.import_creator_works, creator_id, body.work_ids)
-        except (JobStateError, ValueError, KeyError) as exc:
-            raise _http_error(exc) from exc
-        await notifier.publish("jobs")
-        return operations.present(job)
+    @app.post("/api/creators/{creator_id}/import-skipped")
+    async def import_skipped(creator_id: str):
+        raise HTTPException(
+            status_code=410,
+            detail="网页新建请求已停用，请通过 Agent 使用 MCP 工具 import_creator_works。",
+        )
 
     @app.get("/api/creator-imports/{job_id}")
     async def creator_import_detail(

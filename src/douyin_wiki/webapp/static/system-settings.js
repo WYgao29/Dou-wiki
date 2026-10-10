@@ -19,8 +19,6 @@
     vault: "Vault",
     obsidian_vault: "Obsidian 库",
     database: "数据库",
-    llm: "后台模型",
-    web_llm: "共用模型",
     embeddings: "向量检索",
     qwen3: "Qwen3-ASR 模型与依赖",
     transcription: "语音识别",

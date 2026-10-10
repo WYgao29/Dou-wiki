@@ -348,45 +348,38 @@ async def test_running_cancel_wins_late_error_and_retry_clears_stale_flag(servic
     assert not retried.artifacts.get("cancel_requested")
 
 
-def test_short_link_duplicate_and_active_job_are_deduplicated(tmp_path):
+def test_retired_capture_does_not_resolve_or_change_active_and_stored_work(tmp_path):
     config, service = _web_fixture(tmp_path)
     calls = []
 
     def resolve(request):
         calls.append(str(request.url))
-        if request.url.host == "v.douyin.com":
-            return httpx.Response(302, headers={"location": f"https://www.douyin.com/video/{A}"})
-        return httpx.Response(200)
+        raise AssertionError("Disabled capture must not resolve a short link")
 
     service.resolver.transport = httpx.MockTransport(resolve)
-    app = create_app(config, service=service, start_watcher=False)
-    with local_client(app) as client:
-        short = "https://v.douyin.com/abc/"
-        first = client.post("/api/captures", json={"share_text": short})
-        second = client.post(
-            "/api/captures", json={"share_text": f"https://www.douyin.com/video/{A}"}
-        )
-        assert first.status_code == 202
-        assert second.status_code == 200
-        assert second.json()["active"]
-        assert "尚未保存" in second.json()["message"]
-        assert first.json()["id"] == second.json()["job_id"]
-        entry = service.database.get_entry("dy-123").model_copy(
-            update={"id": f"dy-{A}", "video_id": A}
-        )
-        service.database.upsert_entry(entry, service.database.get_entry_data("dy-123"))
-        duplicate = client.post("/api/captures", json={"share_text": short})
-        assert duplicate.status_code == 200
-        assert duplicate.json()["duplicate"]
+    active = service.capture_douyin(f"https://www.douyin.com/video/{A}")
+    entry = service.database.get_entry("dy-123").model_copy(update={"id": f"dy-{A}", "video_id": A})
+    service.database.upsert_entry(entry, service.database.get_entry_data("dy-123"))
+    with local_client(create_app(config, service=service, start_watcher=False)) as client:
+        for link in ("https://v.douyin.com/abc/", f"https://www.douyin.com/video/{A}"):
+            assert client.post("/api/captures", json={"share_text": link}).status_code == 410
         assert (
-            client.post("/api/creators/inventory", json={"source_text": short}).status_code == 400
+            client.post(
+                "/api/creators/inventory", json={"source_text": "https://v.douyin.com/abc/"}
+            ).status_code
+            == 410
         )
-        assert calls
         service.trash_entry(entry.id, confirmed=True)
-        in_trash = client.post("/api/captures", json={"share_text": short})
-        assert in_trash.status_code == 200
-        assert in_trash.json()["in_trash"]
-        assert len(service.database.list_jobs()) == 1
+        assert (
+            client.post(
+                "/api/captures", json={"share_text": "https://v.douyin.com/abc/"}
+            ).status_code
+            == 410
+        )
+    assert calls == []
+    assert [job.id for job in service.database.list_jobs()] == [active.id]
+    assert service.get_job(active.id).status == JobStatus.QUEUED
+    assert len(service.list_trashed_entries()) == 1
 
 
 def test_empty_inspiration_preserves_real_quotes():

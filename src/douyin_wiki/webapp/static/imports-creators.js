@@ -83,7 +83,6 @@
 
   function applyFocusMode() {
     const focused = Boolean(jobId);
-    D.$("creator-form")?.classList.toggle("hidden", focused);
     D.$("creators-list")?.classList.toggle("hidden", focused);
     const bar = D.$("creator-focus-bar");
     if (bar) bar.classList.toggle("hidden", !focused);
@@ -109,7 +108,7 @@
     const data = await D.api("/api/creators");
     const root = D.$("creators-list");
     if (!data.items?.length) {
-      root.replaceChildren(D.emptyState("还没有已同步的博主", "输入主页或作品链接后开始清点。"));
+      root.replaceChildren(D.emptyState("还没有已同步的博主", "请让 Agent 导入博主作品。"));
       return;
     }
     root.replaceChildren(...data.items.map((creator) => {
@@ -118,35 +117,6 @@
         D.node("h2", creator.nickname),
         D.node("p", `${creator.work_count || 0} 个作品 · 上次同步 ${beijingStamp(creator.last_synced_at)}`),
       );
-      const sync = D.node("button", "手动同步", "secondary-button");
-      sync.type = "button";
-      sync.addEventListener("click", async () => {
-        const job = await D.api(`/api/creators/${encodeURIComponent(creator.id)}/sync`, {
-          method: "POST",
-          body: "{}",
-        });
-        D.navigate(`/jobs/${job.id}`);
-      });
-      const skipped = (creator.counts && (creator.counts.skipped || creator.counts["未入库"])) || 0;
-      if (skipped) {
-        const button = D.node("button", "导入以前跳过的作品", "secondary-button");
-        button.type = "button";
-        button.addEventListener("click", async () => {
-          const works = await D.api(`/api/creators/${encodeURIComponent(creator.id)}/works`);
-          const ids = (works.items || []).filter((item) => item.decision === "skipped").map((item) => item.work_id);
-          if (!ids.length) {
-            D.toast("没有已跳过作品");
-            return;
-          }
-          const job = await D.api(`/api/creators/${encodeURIComponent(creator.id)}/import-skipped`, {
-            method: "POST",
-            body: JSON.stringify({work_ids: ids}),
-          });
-          D.navigate(`/jobs/${job.id}`);
-        });
-        card.append(button);
-      }
-      card.append(sync);
       return card;
     }));
   }
@@ -241,22 +211,6 @@
     renderInventory();
   }
 
-  async function startInventory(event) {
-    event.preventDefault();
-    const job = await D.api("/api/creators/inventory", {
-      method: "POST",
-      body: JSON.stringify({source_text: D.$("creator-source").value}),
-    });
-    jobId = job.id;
-    page = 1;
-    current = {job, status: job.status};
-    D.toast("已开始清点博主作品");
-    history.replaceState({}, "", `/imports/creators?job=${encodeURIComponent(jobId)}`);
-    applyFocusMode();
-    await loadInventory();
-    schedule();
-  }
-
   window.addEventListener("douku:route", async (event) => {
     const path = String(event.detail.path || "").split("?")[0];
     if (path !== "/imports/creators") {
@@ -288,9 +242,6 @@
 
   D.$("creator-partial")?.addEventListener("change", renderInventory);
   ["creator-select-all", "creator-exclude-all"].forEach((id) => { D.$(id).title = D.$("creator-select-hint").textContent; });
-  D.$("creator-form")?.addEventListener("submit", (event) => {
-    startInventory(event).catch((error) => D.toast(error.message));
-  });
   D.$("creator-query")?.addEventListener("input", () => { page = 1; });
   D.$("creator-query")?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;

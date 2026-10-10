@@ -123,8 +123,8 @@ async def favorites_ui(offline_page):
         if job_id:
             url += "?job=" + job_id
         await page.goto(url, wait_until="domcontentloaded")
-        await page.locator("#favorites-scan").wait_for(state="visible")
-        await page.wait_for_function("!document.getElementById('favorites-scope').disabled")
+        await page.locator("#favorites-status").wait_for(state="visible")
+        await page.wait_for_function("!document.getElementById('favorites-history').disabled")
 
     return page, open_page, calls
 
@@ -135,21 +135,20 @@ async def test_work_search_waits_for_work_inventory(favorites_ui, job_id):
     await open_page(job_id)
     for control in ("search", "query", "filter", "only-new"):
         assert await page.locator("#favorites-" + control).is_disabled()
-    assert "先点击上方“更新抖音收藏”" in await page.locator("#favorites-search-hint").inner_text()
+    assert "请选择已有导入记录" in await page.locator("#favorites-search-hint").inner_text()
     if job_id:
         assert "收藏夹目录已读取" in await page.locator("#favorites-status").inner_text()
         assert "尚未读取作品" in await page.locator("#favorites-summary").inner_text()
 
 
-@pytest.mark.parametrize("action", ["create", "history"])
+@pytest.mark.parametrize("action", ["direct", "history"])
 async def test_current_favorites_job_survives_page_reload(favorites_ui, action):
     from urllib.parse import parse_qs, urlsplit
 
     page, open_page, _ = favorites_ui
     await open_page("fixture-directory")
-    if action == "create":
-        await page.locator("#favorites-scope").select_option("all")
-        await page.locator("#favorites-scan").click()
+    if action == "direct":
+        await open_page("fixture-works")
     else:
         await page.locator(".fav-advanced > summary").click()
         await page.locator("#favorites-history").select_option("fixture-works")
@@ -437,7 +436,8 @@ async def test_ui_inventory_requires_separate_confirm_and_partial_acceptance(
     await page.evaluate(
         "window.dispatchEvent(new CustomEvent('douku:route', {detail:{path:'/imports/favorites'}}))"
     )
-    await page.locator("#favorites-scan").click()
+    await page.locator(".fav-advanced > summary").click()
+    await page.locator("#favorites-history").select_option("fixture-parent")
     await page.locator("#favorites-items a").wait_for()
     assert await page.locator("#favorites-items img").count() == 0
     assert await page.locator("#favorites-confirm").is_disabled()

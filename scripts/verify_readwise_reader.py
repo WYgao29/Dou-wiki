@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import struct
 import sys
 import zlib
@@ -146,15 +147,20 @@ notes.forEach(note => console.log(note));
 
 
 async def verify():
-    out = ROOT / "docs/screenshots/redesign/phase-3"
+    out = (
+        Path(
+            os.environ.get(
+                "DOUKU_VERIFY_OUTPUT_DIR", str(ROOT / "docs/screenshots/mcp-gateway-simplification")
+            )
+        )
+        / "reader"
+    )
     out.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="douku-reader-check-") as tmp:
         config, service = _web_fixture(Path(tmp))
         populate(config, service)
         reader_fixture(config, service)
-        app = create_app(
-            config, service=service,  start_watcher=False
-        )
+        app = create_app(config, service=service, start_watcher=False)
         with local_client(app) as client:
             async with async_playwright() as p:
                 browser = await p.chromium.launch()
@@ -314,12 +320,11 @@ async def verify():
                     == "dy-208"
                 )
 
-                # Reader import shortcuts remain anchored and return focus.
+                # Removed import shortcut leaves the reader and focus unchanged.
                 await key("Enter")
                 await page.wait_for_selector(".article-body h3")
                 await key("Control+i")
-                await page.wait_for_selector("#imports-popover:not(.hidden)")
-                await key("Escape")
+                assert await page.locator("#imports-popover").count() == 0
                 assert await page.evaluate("document.activeElement.id") == "main-content"
                 await key("u")
                 # Roving order and boundary buttons follow the current filtered catalogue.
@@ -334,7 +339,7 @@ async def verify():
                     await page.locator("#panel-tab-info").get_attribute("aria-selected") == "true"
                 )
                 await key("Shift+c")
-                assert await page.evaluate("document.activeElement.id") == "chat-input"
+                assert await page.locator("#chat-input").count() == 0
                 await page.locator("#main-content").focus()
                 await key("Shift+i")
                 await page.click(".source-file")
@@ -359,7 +364,29 @@ async def verify():
                 await page.fill("#inspiration-start", "1:05")
                 await page.fill("#inspiration-end", "2:30")
                 await page.click("#confirm-inspiration")
-                await page.locator(".inspiration-card", has_text="保留问题").wait_for()
+                try:
+                    await page.locator(".inspiration-card", has_text="保留问题").wait_for()
+                except Exception:
+                    (out / "inspiration-failure.json").write_text(
+                        json.dumps(
+                            {
+                                "errors": errors,
+                                "state": await page.evaluate(
+                                    """() => ({
+                                      page:state.panelPage, tab:state.panelTab,
+                                      entry:state.currentEntry,
+                                      dialog:document.querySelector('#inspiration-dialog').open,
+                                      error:document.querySelector('#inspiration-error').textContent,
+                                      pane:document.querySelector('#inspiration-pane').textContent,
+                                    })"""
+                                ),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
+                    await page.screenshot(path=out / "inspiration-failure.png")
+                    raise
                 assert (
                     await page.locator("#main-content").evaluate("e => e.scrollTop") == reading_top
                 )
@@ -370,9 +397,12 @@ async def verify():
                 await page.wait_for_selector("mark.citation-highlight.settled")
                 await page.locator("#main-content").focus()
                 await key("Shift+c")
-                assert await page.evaluate("document.activeElement.id") == "chat-input"
-                await page.fill("#chat-input", "j n p f 不触发阅读快捷键")
+                assert await page.locator("#chat-input").count() == 0
+                await key("Shift+n")
+                await page.wait_for_selector("#inspiration-dialog[open]")
+                await page.fill("#inspiration-text", "j n p f 不触发阅读快捷键")
                 assert "工作台整理" in await page.title()
+                await key("Escape")
                 await page.locator("#main-content").focus()
                 await key("Escape")
                 assert await page.locator("#library-view").is_visible()

@@ -76,13 +76,9 @@ def test_duplicate_import_does_not_create_job(tmp_path) -> None:
     with local_client(app) as client:
         before = client.get("/api/jobs").json()["total"]
         response = client.post("/api/captures", json={"share_text": LONG_URL})
-        assert response.status_code == 200
-        body = response.json()
-        assert body["duplicate"] is True
-        assert body["in_trash"] is False
-        assert body["entry_id"] == "dy-long"
-        assert body["href"] == "/articles/dy-long"
-        assert "已在资料库" in body["message"]
+        assert response.status_code == 410
+        assert "capture_douyin" in response.json()["detail"]
+        assert service.database.get_entry("dy-long").title == "已在库中"
         assert client.get("/api/jobs").json()["total"] == before
 
 
@@ -98,72 +94,48 @@ def test_trashed_duplicate_import_does_not_create_job(tmp_path) -> None:
     with local_client(app) as client:
         before = client.get("/api/jobs").json()["total"]
         response = client.post("/api/captures", json={"share_text": url})
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["duplicate"] is True
-        assert body["in_trash"] is True
-        assert body["href"] == "/trash"
+        assert response.status_code == 410, response.text
+        assert "capture_douyin" in response.json()["detail"]
+        assert len(service.list_trashed_entries()) == 1
         assert client.get("/api/jobs").json()["total"] == before
 
 
-def test_creator_import_rejects_non_creator_links(tmp_path) -> None:
+def test_creator_import_is_disabled_for_every_link_kind(tmp_path) -> None:
     _config, service, app = _client(tmp_path)
-    service.resolver.transport = httpx.MockTransport(
-        lambda request: httpx.Response(
-            302, headers={"location": "https://www.douyin.com/user/MS4wLjABAAAAcreator"}
-        )
-    )
+
+    def reject_resolution(request):
+        raise AssertionError("Disabled creator import must not resolve links")
+
+    service.resolver.transport = httpx.MockTransport(reject_resolution)
     with local_client(app) as client:
-        foreign = client.post(
-            "/api/creators/inventory", json={"source_text": "https://example.com/user/abc"}
-        )
-        assert foreign.status_code == 400
-        video = client.post(
-            "/api/creators/inventory",
-            json={"source_text": "https://www.douyin.com/video/7604970362420645155"},
-        )
-        assert video.status_code == 400
-        assert "博主" in video.json()["detail"]
-        home = client.post(
-            "/api/creators/inventory",
-            json={"source_text": "https://www.douyin.com/user/MS4wLjABAAAAabcdefgh"},
-        )
-        assert home.status_code == 202
-        short = client.post(
-            "/api/creators/inventory", json={"source_text": "https://v.douyin.com/abc/"}
-        )
-        assert short.status_code == 202
+        for link in (
+            "https://example.com/user/abc",
+            "https://www.douyin.com/video/7604970362420645155",
+            "https://www.douyin.com/user/MS4wLjABAAAAabcdefgh",
+            "https://v.douyin.com/abc/",
+        ):
+            response = client.post("/api/creators/inventory", json={"source_text": link})
+            assert response.status_code == 410
+            assert "capture_douyin_creator" in response.json()["detail"]
+        assert service.list_jobs() == []
 
 
-def test_single_import_saves_time_range_and_rejects_bad_clock(tmp_path) -> None:
-    _config, _service, app = _client(tmp_path)
+def test_retired_single_import_ignores_inspiration_clocks(tmp_path) -> None:
+    _config, service, app = _client(tmp_path)
     with local_client(app) as client:
-        created = client.post(
-            "/api/captures",
-            json={
-                "share_text": "https://www.douyin.com/video/7604970362420645001",
-                "inspirations": [
-                    {"text": "", "quote": "原句", "start_ms": "1:05", "end_ms": "1:20"}
-                ],
-            },
-        )
-        assert created.status_code == 202, created.text
-        inspiration = created.json()["inspirations"][0]
-        assert inspiration["text"] == ""
-        assert inspiration["quote"] == "原句"
-        assert inspiration["start_ms"] == 65_000
-        assert inspiration["end_ms"] == 80_000
-        rejected = client.post(
-            "/api/captures",
-            json={
-                "share_text": "https://www.douyin.com/video/7604970362420645002",
-                "inspirations": [
-                    {"text": "有灵感", "quote": "原句", "start_ms": "1:99", "end_ms": "2:00"}
-                ],
-            },
-        )
-        assert rejected.status_code == 400
-        assert "60" in rejected.json()["detail"]
+        for clock in ("1:05", "1:99"):
+            response = client.post(
+                "/api/captures",
+                json={
+                    "share_text": "https://www.douyin.com/video/7604970362420645002",
+                    "inspirations": [
+                        {"text": "有灵感", "quote": "原句", "start_ms": clock, "end_ms": "2:00"}
+                    ],
+                },
+            )
+            assert response.status_code == 410
+            assert "capture_douyin" in response.json()["detail"]
+        assert service.list_jobs() == []
 
 
 def test_cancel_queued_job(tmp_path) -> None:

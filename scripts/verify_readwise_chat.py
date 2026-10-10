@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,7 +22,14 @@ from tests.support.web import _web_fixture, local_client  # noqa: E402
 
 
 async def verify():
-    out = ROOT / "docs/screenshots/redesign/phase-4"
+    out = (
+        Path(
+            os.environ.get(
+                "DOUKU_VERIFY_OUTPUT_DIR", str(ROOT / "docs/screenshots/mcp-gateway-simplification")
+            )
+        )
+        / "chat"
+    )
     out.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="douku-note-check-") as tmp:
         config, service = _web_fixture(Path(tmp))
@@ -63,14 +71,19 @@ async def verify():
                     url = urlsplit(request.url)
                     assert url.hostname == "testserver", request.url
                     response = await asyncio.to_thread(
-                        client.request, request.method,
+                        client.request,
+                        request.method,
                         url.path + (f"?{url.query}" if url.query else ""),
                         content=request.post_data,
-                        headers={key: value for key, value in request.headers.items()
-                                 if key in {"content-type", "x-douku-client"}},
+                        headers={
+                            key: value
+                            for key, value in request.headers.items()
+                            if key in {"content-type", "x-douku-client"}
+                        },
                     )
                     await route.fulfill(
-                        status=response.status_code, body=response.content,
+                        status=response.status_code,
+                        body=response.content,
                         headers={"content-type": response.headers.get("content-type", "")},
                     )
 
@@ -82,10 +95,17 @@ async def verify():
                 await page.screenshot(path=str(out / "note-reader-desktop.png"))
                 assert not errors, errors
                 await browser.close()
-    print(json.dumps(
-        {"web_version": WEB_VERSION, "retired_endpoints": 10,
-         "topic_note": "PASS", "reader_information_panel": "PASS"}, ensure_ascii=False,
-    ))
+    print(
+        json.dumps(
+            {
+                "web_version": WEB_VERSION,
+                "retired_endpoints": 10,
+                "topic_note": "PASS",
+                "reader_information_panel": "PASS",
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":

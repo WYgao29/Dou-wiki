@@ -48,11 +48,11 @@ class ShellMarkup(HTMLParser):
 @pytest.mark.parametrize(
     ("path", "tabs", "reading"),
     [
-        ("/", ["info", "chat"], False),
-        ("/articles/dy-123", ["info", "inspiration", "chat"], True),
-        ("/topics/{topic}", ["sources", "chat"], False),
-        ("/settings", ["chat"], False),
-        ("/no-such-page", ["chat"], False),
+        ("/", ["info"], False),
+        ("/articles/dy-123", ["info", "inspiration"], True),
+        ("/topics/{topic}", ["sources"], False),
+        ("/settings", ["info"], False),
+        ("/no-such-page", ["info"], False),
     ],
 )
 def test_web_shell_contextual_tabs_and_local_fonts(tmp_path, path, tabs, reading):

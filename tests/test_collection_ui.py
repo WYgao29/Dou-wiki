@@ -69,17 +69,11 @@ async def collection_ui(config, service):
             sock.close()
 
 
-async def test_collection_ui_paste_all_pages_confirm_and_reload(collection_ui, tmp_path):
+async def test_collection_ui_existing_batch_all_pages_confirm_and_reload(collection_ui, tmp_path):
     ui, page = collection_ui, collection_ui.page
-    await page.goto(ui.url + "/imports")
-    await page.locator("#import-paste").fill(f"https://www.douyin.com/collection/{MIX}")
-    await expect(page.locator("#import-paste-kind")).to_contain_text("抖音合集")
-    await page.locator("#import-paste-form button[type=submit]").click()
-    await expect(page.locator("#collection-source")).to_have_value(
-        f"https://www.douyin.com/collection/{MIX}"
-    )
-    assert ui.service.database.list_jobs() == []
-    await page.locator("#collection-form button[type=submit]").click()
+    parent_id = ui.service.capture_douyin_collection(f"https://www.douyin.com/collection/{MIX}").id
+    await page.goto(ui.url + f"/imports/collections?job={parent_id}")
+    await expect(page.locator("#collection-form, #import-paste-form")).to_have_count(0)
     await expect(page.locator("#collection-summary")).to_contain_text("已读 105", timeout=12000)
     await expect(page.locator("#collection-status")).to_contain_text("待选择作品")
     await expect(page.locator("#collection-history option:checked")).to_contain_text(
@@ -135,9 +129,8 @@ async def test_collection_ui_preview_counts_and_partial_retry(collection_ui, tmp
     inventory.works[3] = CollectionWork(work_id=d, position=4, source_kind="article")
     inventory.works[4].available = False
     ui.service.collections.adapter = FakeCollectionAdapter(inventory)
-    await page.goto(ui.url + "/imports/collections")
-    await page.locator("#collection-source").fill(f"https://www.douyin.com/collection/{MIX}")
-    await page.locator("#collection-form button[type=submit]").click()
+    parent_id = ui.service.capture_douyin_collection(f"https://www.douyin.com/collection/{MIX}").id
+    await page.goto(ui.url + f"/imports/collections?job={parent_id}")
     await expect(page.locator("#collection-summary")).to_contain_text("已读 5", timeout=12000)
     await expect(page.locator("#collection-result")).to_contain_text("不可导入 2")
     await expect(page.locator("#collection-summary")).to_contain_text("已在资料库 1")
@@ -149,10 +142,13 @@ async def test_collection_ui_preview_counts_and_partial_retry(collection_ui, tmp
     await expect(page.locator("#collection-retry")).to_have_text("重新清点")
     await expect(page.locator("#collection-retry")).to_be_enabled()
     await page.screenshot(path=str(tmp_path / "collection-preview-partial.png"))
-    inventory = inventory.model_copy(update={
-        "complete": True, "warnings": [],
-        "works": [*inventory.works, CollectionWork(work_id=new, position=6)],
-    })
+    inventory = inventory.model_copy(
+        update={
+            "complete": True,
+            "warnings": [],
+            "works": [*inventory.works, CollectionWork(work_id=new, position=6)],
+        }
+    )
     ui.service.collections.adapter = FakeCollectionAdapter(inventory)
     await page.locator("#collection-retry").click()
     await expect(page.locator("#collection-summary")).to_contain_text("已读 6", timeout=12000)
@@ -165,9 +161,8 @@ async def test_collection_ui_preview_counts_and_partial_retry(collection_ui, tmp
 
 async def test_collection_ui_waits_for_save_and_retries_error(collection_ui, tmp_path):
     ui, page = collection_ui, collection_ui.page
-    await page.goto(ui.url + "/imports/collections")
-    await page.locator("#collection-source").fill(f"https://www.douyin.com/collection/{MIX}")
-    await page.locator("#collection-form button[type=submit]").click()
+    parent_id = ui.service.capture_douyin_collection(f"https://www.douyin.com/collection/{MIX}").id
+    await page.goto(ui.url + f"/imports/collections?job={parent_id}")
     await expect(page.locator("#collection-summary")).to_contain_text("已读 105", timeout=12000)
     gate = asyncio.Event()
 
@@ -212,9 +207,7 @@ async def test_shared_capture_ui_links_executor_from_list_and_detail(
 
     ui, page = collection_ui, collection_ui.page
     owner, follower = await shared_pair(ui.service, pause)
-    message = (
-        "视频下载授权已失效" if pause == JobStatus.NEEDS_AUTH else "需要外部 Agent 接续"
-    )
+    message = "视频下载授权已失效" if pause == JobStatus.NEEDS_AUTH else "需要外部 Agent 接续"
     await page.goto(ui.url + "/jobs")
     await page.locator("[data-theme-select]").select_option(theme)
     await page.set_viewport_size({"width": width, "height": 900})

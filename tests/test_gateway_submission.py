@@ -37,10 +37,14 @@ def test_fresh_gateway_accepts_existing_protocol_one_analysis_fields(service):
             "title": "已有 Agent 的分析",
             "summary": "保留现行协议输入",
             "core_points": ["原有结论"],
-            "claims": [{
-                "id": "claim-1", "text": "第二段内容",
-                "source_quote": "原始第二段。", "start_ms": 5000,
-            }],
+            "claims": [
+                {
+                    "id": "claim-1",
+                    "text": "第二段内容",
+                    "source_quote": "原始第二段。",
+                    "start_ms": 5000,
+                }
+            ],
         },
         producer="protocol-one-agent",
         gateway_protocol=1,
@@ -1012,63 +1016,51 @@ async def test_mcp_replay_checks_phase_and_keeps_batch_silent(service, monkeypat
 
 @pytest.mark.parametrize("protocol", [1, 2])
 @pytest.mark.parametrize("wrapped", [False, True])
-def test_cli_protocol_options_preserve_old_json_formats(
+def test_retired_cli_accepts_protocol_options_without_reading_json(
     service, monkeypatch, tmp_path, protocol, wrapped
 ):
     job = make_gateway_job(service)
-    monkeypatch.setattr(cli, "_service", lambda config_path: service)
+    before = service.get_job(job.id).model_dump()
+
+    def reject_service(config_path):
+        raise AssertionError("Disabled CLI must not initialize Service")
+
+    monkeypatch.setattr(cli, "_service", reject_service)
     runner = CliRunner()
     options = ["--gateway-protocol", str(protocol)] if protocol == 2 else []
     response = runner.invoke(cli.app, ["gateway", "context", job.id, *options])
-    assert response.exit_code == 0, response.output
-    assert (
-        "correction_schema" in response.output
-        if protocol == 2
-        else "transcript_raw" in response.output
-    )
+    assert response.exit_code == 2
+    assert "get_analysis_context" in response.output
     corrections = (
         []
         if protocol == 2
         else [{"id": row["id"], "text": row["text"]} for row in job.artifacts["transcript_raw"]]
     )
     path = tmp_path / "correction.json"
-    path.write_text(
-        json.dumps({"corrections": corrections} if wrapped else corrections), encoding="utf-8"
-    )
+    path.write_text(json.dumps({"corrections": corrections} if wrapped else corrections))
+    original = path.read_bytes()
     revision_options = ["--context-revision", context_revision(job)] if protocol == 2 else []
-    result = runner.invoke(
-        cli.app,
-        [
-            "gateway",
-            "submit-correction",
-            job.id,
-            str(path),
-            "--producer",
-            "test-agent",
-            *options,
-            *revision_options,
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    updated = service.database.get_job(job.id)
-    assert "artifacts" not in result.output if protocol == 2 else "artifacts" in result.output
-    path.write_text(json.dumps({"title": "资料", "one_liner": "分析摘要"}), encoding="utf-8")
-    revision_options = ["--context-revision", context_revision(updated)] if protocol == 2 else []
-    result = runner.invoke(
-        cli.app,
-        [
-            "gateway",
-            "submit-analysis",
-            job.id,
-            str(path),
-            "--producer",
-            "test-agent",
-            *options,
-            *revision_options,
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert service.database.get_job(job.id).status == JobStatus.QUEUED
+    for command, tool in (
+        ("submit-correction", "submit_transcript_correction"),
+        ("submit-analysis", "submit_gateway_analysis"),
+    ):
+        result = runner.invoke(
+            cli.app,
+            [
+                "gateway",
+                command,
+                job.id,
+                str(path),
+                "--producer",
+                "test-agent",
+                *options,
+                *revision_options,
+            ],
+        )
+        assert result.exit_code == 2, result.output
+        assert tool in result.output
+        assert path.read_bytes() == original
+        assert service.get_job(job.id).model_dump() == before
 
 
 @pytest.mark.asyncio

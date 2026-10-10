@@ -54,12 +54,7 @@ def test_web_collection_inventory_selection_and_queue(config, service):
         create_app(config, service=service, start_watcher=False),
         headers={"Origin": "http://testserver"},
     ) as client:
-        submitted = client.post(
-            "/api/collections/inventory",
-            json={"source_text": f"https://www.douyin.com/collection/{MIX}"},
-        )
-        assert submitted.status_code == 202
-        parent = submitted.json()["job_id"]
+        parent = service.capture_douyin_collection(f"https://www.douyin.com/collection/{MIX}").id
         asyncio.run(service.process_claimed_job(service.database.get_job(parent)))
         assert client.get(f"/api/collection-imports/{parent}").json()["summary"]["selected"] == 0
         assert client.post(f"/api/collection-imports/{parent}/confirm", json={}).status_code == 409
@@ -78,7 +73,8 @@ def test_web_collection_inventory_selection_and_queue(config, service):
         assert client.get("/api/collection-imports").json()[0]["job_id"] == parent
         page = client.get("/imports/collections")
         assert page.status_code == 200
-        assert 'id="collection-source"' in page.text
+        assert 'id="collection-source"' not in page.text
+        assert 'id="collection-history"' in page.text
         assert "imports-collections.js" in page.text
 
 
@@ -104,7 +100,7 @@ def test_collection_web_errors_and_pagination(config, service):
                 "/api/collections/inventory",
                 json={"source_text": f"https://www.douyin.com/video/{A}"},
             ).status_code
-            == 400
+            == 410
         )
         conflict = client.post(
             f"/api/collection-imports/{parent}/selection",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -25,7 +26,15 @@ from tests.test_web_operation import FakeAuthDownloader, FakeDouyinAuth  # noqa:
 
 
 async def verify(*, output_dir: Path | None = None):
-    out = output_dir or ROOT / "docs/screenshots/redesign/phase-5"
+    out = (
+        output_dir
+        or Path(
+            os.environ.get(
+                "DOUKU_VERIFY_OUTPUT_DIR", str(ROOT / "docs/screenshots/mcp-gateway-simplification")
+            )
+        )
+        / "operations"
+    )
     out.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="douku-operations-check-") as tmp:
         config, service = _web_fixture(Path(tmp))
@@ -103,7 +112,6 @@ async def verify(*, output_dir: Path | None = None):
             config,
             config_path=Path(tmp) / "config.toml",
             service=service,
-
             start_watcher=False,
         )
         with local_client(app) as client:
@@ -229,17 +237,14 @@ async def verify(*, output_dir: Path | None = None):
                     == 56
                 )
                 before = len(mutations)
-                await page.fill("#import-paste", inventory.profile.canonical_url)
-                await wait_count("#import-paste-kind", "博主")
-                await page.click("#import-paste-form button")
+                assert await page.locator("#import-paste-form").count() == 0
+                await page.locator(".destination-row[href='/imports/creators']").click()
                 await page.wait_for_selector("#imports-creators-view:not(.hidden)")
-                assert await page.input_value("#creator-source") == inventory.profile.canonical_url
+                assert await page.locator("#creator-form").count() == 0
                 assert len(mutations) == before
-                await fresh("/imports", "#imports-view:not(.hidden)")
-                await page.fill("#import-paste", "看看这个视频 https://v.douyin.com/test/")
-                await page.click("#import-paste-form button")
-                await page.wait_for_selector("#imports-single-view:not(.hidden)")
-                assert "https://v.douyin.com/test/" in await page.input_value("#single-share")
+                await fresh("/imports/single", "#imports-single-view:not(.hidden)")
+                assert "已停用" in await page.locator("#imports-single-view").inner_text()
+                assert await page.locator("#single-form").count() == 0
                 assert len(mutations) == before
                 await shot("single-light")
 
@@ -390,12 +395,12 @@ async def verify(*, output_dir: Path | None = None):
                 await page.wait_for_function(
                     "()=>document.querySelector('#settings-value-analysis').textContent !== '—'"
                 )
-                assert await page.locator("#settings-view .destination-row").count() == 4
+                assert await page.locator("#settings-view .destination-row").count() == 3
                 await shot("settings-light")
                 for path, ready, name in [
                     ("/settings/auth", "#auth-video-card .status-pill", "auth"),
-                    ("/settings/analysis", "#analysis-status-dot svg", "analysis"),
-                    ("/settings/model", "#model-status-dot svg", "model"),
+                    ("/settings/analysis", "#analysis-status-title", "analysis"),
+                    ("/settings/model", "#model-view:not(.hidden)", "model"),
                     ("/settings/system", ".system-metric", "system"),
                 ]:
                     await fresh(path, ready)
@@ -446,7 +451,7 @@ async def verify(*, output_dir: Path | None = None):
                     await shot("article-" + theme)
                 await page.keyboard.press("Meta+k")
                 await page.fill("#command-input", ">导入")
-                assert await page.locator(".command-result").count() == 3
+                assert await page.locator(".command-result").count() == 1
                 assert (
                     await page.locator("#command-dialog").evaluate(
                         "e=>e.getBoundingClientRect().width"
@@ -456,7 +461,7 @@ async def verify(*, output_dir: Path | None = None):
                 await shot("commands-dark")
                 await page.locator("#command-input").focus()
                 await page.keyboard.press("Enter")
-                await page.wait_for_selector("#imports-single-view:not(.hidden)")
+                await page.wait_for_selector("#imports-view:not(.hidden)")
                 await page.keyboard.press("Meta+k")
                 await page.fill("#command-input", "没有匹配文章")
                 await page.wait_for_selector("#command-results .command-help")
@@ -467,15 +472,12 @@ async def verify(*, output_dir: Path | None = None):
                         "nodes => nodes.map(node => node.dataset.commandId)"
                     )
                 ) == {
-                    "single",
-                    "creators",
-                    "favorites",
+                    "imports",
                     "jobs",
                     "tags",
                     "topics",
                     "trash",
                     "settings",
-                    "chat",
                     "theme",
                     "shortcuts",
                 }
@@ -488,11 +490,11 @@ async def verify(*, output_dir: Path | None = None):
                 await page.keyboard.press("Escape")
                 await page.keyboard.press("Meta+k")
                 await page.fill("#command-input", ">对话")
-                await page.locator("[data-command-id='chat']").click()
-                await page.wait_for_function("()=>document.activeElement.id==='chat-input'")
+                await page.wait_for_selector("#command-results .command-help")
+                assert await page.locator(".command-result").count() == 0
+                assert await page.locator("#chat-form").count() == 0
                 assert not any(m["path"] == "/api/chat/sessions" for m in mutations)
-                assert await page.evaluate("state.currentSession") == ""
-                assert await page.locator(".chat-welcome").is_visible()
+                await page.keyboard.press("Escape")
 
                 for path, ready, name in [
                     ("/imports", "#imports-view:not(.hidden)", "imports"),
@@ -517,8 +519,8 @@ async def verify(*, output_dir: Path | None = None):
                     (f"/topics/{topic['topic']['id']}", ".topic-artifact-card"),
                     ("/settings", "#settings-view:not(.hidden)"),
                     ("/settings/auth", "#auth-video-card .status-pill"),
-                    ("/settings/analysis", "#analysis-status-dot svg"),
-                    ("/settings/model", "#model-status-dot svg"),
+                    ("/settings/analysis", "#analysis-status-title"),
+                    ("/settings/model", "#model-view:not(.hidden)"),
                     ("/settings/system", ".system-metric"),
                     ("/trash", ".trash-item"),
                 ]

@@ -19,9 +19,7 @@ def test_web_inventory_to_selection_to_explicit_queue(config, service):
         create_app(config, service=service, start_watcher=False),
         headers={"Origin": "http://testserver"},
     ) as client:
-        submitted = client.post("/api/favorites/imports", json={})
-        assert submitted.status_code == 202
-        parent_id = submitted.json()["job_id"]
+        parent_id = service.favorites.start().id
         assert [j.kind for j in service.database.list_jobs()] == ["favorites_import"]
         asyncio.run(service.process_claimed_job(service.database.get_job(parent_id)))
         detail = client.get(f"/api/favorites/imports/{parent_id}").json()
@@ -46,7 +44,7 @@ def test_web_unproven_inventory_requires_acceptance_and_rejects_unknown_selectio
         create_app(config, service=service, start_watcher=False),
         headers={"Origin": "http://testserver"},
     ) as client:
-        parent_id = client.post("/api/favorites/imports", json={}).json()["job_id"]
+        parent_id = service.favorites.start().id
         asyncio.run(service.process_claimed_job(service.database.get_job(parent_id)))
         result = client.post(
             f"/api/favorites/imports/{parent_id}/selection",
@@ -115,7 +113,7 @@ def test_web_seven_reported_four_read_requires_explicit_partial_confirmation(con
         create_app(config, service=service, start_watcher=False),
         headers={"Origin": "http://testserver"},
     ) as client:
-        parent = client.post("/api/favorites/imports", json={"folder_ids": ["12"]}).json()["job_id"]
+        parent = service.favorites.start(folder_ids=["12"]).id
         asyncio.run(service.process_claimed_job(service.database.get_job(parent)))
         detail = client.get(f"/api/favorites/imports/{parent}").json()
         assert detail["folders"][0]["reported_count"] == 7

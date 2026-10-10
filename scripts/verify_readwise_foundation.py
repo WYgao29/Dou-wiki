@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,7 +22,14 @@ from tests.support.web import _web_fixture, local_client  # noqa: E402
 
 
 async def verify():
-    out = ROOT / "docs/screenshots/redesign/phase-0"
+    out = (
+        Path(
+            os.environ.get(
+                "DOUKU_VERIFY_OUTPUT_DIR", str(ROOT / "docs/screenshots/mcp-gateway-simplification")
+            )
+        )
+        / "foundation"
+    )
     out.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="douku-ui-check-") as tmp:
         config, service = _web_fixture(Path(tmp))
@@ -30,9 +38,7 @@ async def verify():
             status=JobStatus.NEEDS_AUTH,
         )
         topic_id = service.create_topic("字体请求验证", ["dy-123"])["topic"]["id"]
-        app = create_app(
-            config, service=service,  start_watcher=False
-        )
+        app = create_app(config, service=service, start_watcher=False)
         with local_client(app) as client:
             async with async_playwright() as p:
                 browser = await p.chromium.launch()

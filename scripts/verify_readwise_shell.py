@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,13 +20,18 @@ from tests.support.web import _web_fixture, local_client  # noqa: E402
 
 
 async def verify():
-    out = ROOT / "docs/screenshots/redesign/phase-1"
+    out = (
+        Path(
+            os.environ.get(
+                "DOUKU_VERIFY_OUTPUT_DIR", str(ROOT / "docs/screenshots/mcp-gateway-simplification")
+            )
+        )
+        / "shell"
+    )
     out.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="douku-shell-check-") as tmp:
         config, service = _web_fixture(Path(tmp))
-        app = create_app(
-            config, service=service,  start_watcher=False
-        )
+        app = create_app(config, service=service, start_watcher=False)
         with local_client(app) as client:
             async with async_playwright() as p:
                 browser = await p.chromium.launch()
@@ -123,14 +129,10 @@ async def verify():
                 assert (
                     await page.locator("#panel-tab-info").get_attribute("aria-selected") == "true"
                 )
-                await page.click("#panel-tab-chat")
+                await page.evaluate("localStorage.setItem('douyin-wiki.panel-tab.library', 'chat')")
                 await page.reload()
-                await page.wait_for_selector("#panel-tab-chat[aria-selected=true]")
-                await page.click("#panel-tab-chat")
-                await press("ArrowLeft")
-                assert (
-                    await page.locator("#panel-tab-info").get_attribute("aria-selected") == "true"
-                )
+                await page.wait_for_selector("#panel-tab-info[aria-selected=true]")
+                assert await page.locator("#panel-tab-chat").count() == 0
                 await page.locator("#main-content").focus()
                 await press("[")
                 assert await page.locator("#library-sidebar").evaluate("e => e.inert")
@@ -181,13 +183,10 @@ async def verify():
                 await page.wait_for_selector("#jobs-view:not(.hidden)")
                 await page.locator("#main-content").focus()
                 await press("Control+i")
-                await page.wait_for_selector("#imports-popover:not(.hidden)")
-                await press("ArrowDown")
-                assert (
-                    await page.evaluate("document.activeElement.dataset.route") == "/imports/single"
-                )
-                await press("Enter")
-                await page.wait_for_selector("#imports-single-view:not(.hidden)")
+                assert await page.locator("#imports-popover").count() == 0
+                assert page.url.endswith("/jobs")
+                await navigate("/imports/single")
+                assert "已停用" in await page.locator("#imports-single-view").inner_text()
                 await navigate("/")
                 for theme in ["light", "dark"]:
                     await page.select_option("[data-theme-select]", theme)
@@ -197,26 +196,11 @@ async def verify():
                 await navigate("/articles/dy-123")
                 await page.wait_for_selector(".article-body h2")
                 await assert_header_controls()
-                assert await page.locator("#panel-tabs [role=tab]").count() == 3
+                assert await page.locator("#panel-tabs [role=tab]").count() == 2
                 await page.click("#panel-tab-inspiration")
                 await press("ArrowRight")
-                assert await page.locator("#chat-panel").is_visible()
-                await page.fill("#chat-input", "这篇文章的核心收获是什么？")
-                await page.click("#send-button")
-                await page.wait_for_function(
-                    "() => document.querySelector('.message.assistant') || "
-                    "!document.querySelector('#chat-persistent-error').classList.contains('hidden')"
-                )
-                await page.wait_for_function(
-                    "() => !document.querySelector('#send-button').disabled"
-                )
-                answer = await page.locator("#chat-messages").inner_text()
-                assert "这是测试回答" in answer, (
-                    answer,
-                    await page.locator("#chat-persistent-error").inner_text(),
-                    errors,
-                    failed,
-                )
+                assert await page.locator("#info-pane").is_visible()
+                assert await page.locator("#chat-panel, #chat-input").count() == 0
                 for theme in ["light", "dark"]:
                     await page.select_option("[data-theme-select]", theme)
                     await page.evaluate("document.activeElement?.blur()")
@@ -253,7 +237,7 @@ async def verify():
                         await page.click("#chat-toggle")
                     else:
                         assert await page.locator("#main-content").evaluate("e => e.inert")
-                        # Focus trap covers tabs and close button, excludes hidden chat controls.
+                        # Focus trap covers tabs and close button, excludes hidden panes.
                         await page.locator("#info-pane .info-actions a").focus()
                         await press("Tab")
                         assert await page.evaluate("document.activeElement.id") == "panel-tab-info"
@@ -261,11 +245,10 @@ async def verify():
                         assert await page.evaluate(
                             "document.activeElement.closest('#info-pane .info-actions') !== null"
                         )
-                        await page.click("#panel-tab-chat")
-                        await page.locator("#chat-input").focus()
+                        await page.locator("#info-pane").focus()
                         await press("]")
-                        assert not await page.locator("#side-panel").evaluate("e => e.inert")
-                        await page.click("#panel-tab-info")
+                        assert await page.locator("#side-panel").evaluate("e => e.inert")
+                        await page.click("#chat-toggle")
                     await press("Escape")
                     assert await page.evaluate("document.activeElement.id") == "chat-toggle"
                     assert not await page.locator("#main-content").evaluate("e => e.inert")
@@ -305,9 +288,9 @@ async def verify():
                         await page.fill("#topic-title-input", "阅读清单")
                         await page.click("#confirm-topic")
                         await page.wait_for_selector("#topic-view:not(.hidden) #chat-toggle")
-                        assert await page.locator("#panel-tabs [role=tab]").count() == 2
+                        assert await page.locator("#panel-tabs [role=tab]").count() == 1
                         assert (
-                            await page.locator("#panel-tab-chat").get_attribute("aria-selected")
+                            await page.locator("#panel-tab-sources").get_attribute("aria-selected")
                             == "true"
                         )
 
@@ -378,7 +361,7 @@ async def verify():
                         "overlay dismissal",
                         "drawer focus trap",
                         "mobile topic selection",
-                        "article chat send",
+                        "article information and inspiration tabs",
                         "topic creation and tabs",
                     ],
                     "pageErrors": errors,

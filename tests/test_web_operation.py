@@ -1,22 +1,81 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from douyin_wiki.models import (
     AuthCheckResult,
+    CaptureOptions,
     CaptureRequest,
     InspirationInput,
     JobStatus,
     ReviewIssue,
 )
 from douyin_wiki.webapp.app import WEB_VERSION, create_app
+from tests.conftest import FakeDownloader
 from tests.support.web import _web_fixture, local_client
+
+NEW_CAPTURE_ENDPOINTS = [
+    ("/api/captures", {"share_text": "https://www.douyin.com/video/7672717300746907078"}),
+    ("/api/creators/inventory", {"source_text": "https://www.douyin.com/user/MS4wLjABAAAA_test"}),
+    ("/api/favorites/imports", {"folder_ids": ["folder-1"]}),
+    (
+        "/api/collections/inventory",
+        {"source_text": "https://www.douyin.com/collection/7672717300746907078"},
+    ),
+    ("/api/creators/missing/sync", {}),
+    ("/api/creators/missing/import-skipped", {}),
+]
+
+
+@pytest.mark.parametrize(("path", "old_payload"), NEW_CAPTURE_ENDPOINTS)
+@pytest.mark.parametrize("payload_kind", ["old", "empty", "missing"])
+def test_web_new_capture_endpoints_are_gone_without_creating_jobs(
+    tmp_path, monkeypatch, path, old_payload, payload_kind
+):
+    config, service = _web_fixture(tmp_path)
+    service.downloader = FakeDownloader()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("停用的新建入口不应查询实体、解析链接或启动任务")
+
+    for name in (
+        "capture_douyin",
+        "capture_douyin_creator",
+        "capture_douyin_collection",
+        "sync_creator",
+        "import_creator_skipped_works",
+        "get_creator",
+    ):
+        if hasattr(service, name):
+            monkeypatch.setattr(service, name, forbidden)
+    monkeypatch.setattr(service.favorites, "start", forbidden)
+
+    async def forbidden_http(*args, **kwargs):
+        pytest.fail("停用的新建入口不应访问外部网络")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", forbidden_http)
+    before = {job.id for job in service.database.list_jobs()}
+    application = create_app(config, service=service, start_watcher=False)
+    with local_client(application) as client:
+        arguments = (
+            {}
+            if payload_kind == "missing"
+            else {"json": old_payload if payload_kind == "old" else {}}
+        )
+        response = client.post(path, **arguments)
+    assert response.status_code == 410
+    assert "Agent" in response.json()["detail"]
+    assert {job.id for job in service.database.list_jobs()} == before
+    assert service.downloader.calls == 0
 
 
 def test_model_health_is_disabled_without_provider_requests(tmp_path, monkeypatch):
     config, service = _web_fixture(tmp_path)
+
     def forbidden(*args, **kwargs):
         raise AssertionError("停用的模型健康检查不应请求网络")
+
     monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
     app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
@@ -119,25 +178,16 @@ def test_capture_options_persist_and_open_job_detail(tmp_path) -> None:
     config, service = _web_fixture(tmp_path)
     app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
-        response = client.post(
-            "/api/captures",
-            json={
-                "share_text": "https://v.douyin.com/uvHsRpXIn8s/",
-                "inspirations": [
-                    {
-                        "text": "用来筛选信息源",
-                        "quote": "一手证据",
-                        "start_ms": 1000,
-                        "end_ms": 2000,
-                    }
-                ],
-                "retention": "keep",
-                "allow_long": True,
-                "approve_cloud_analysis": True,
-            },
+        job = service.capture_douyin(
+            "https://v.douyin.com/uvHsRpXIn8s/",
+            inspirations=[
+                InspirationInput(
+                    text="用来筛选信息源", quote="一手证据", start_ms=1000, end_ms=2000
+                )
+            ],
+            options=CaptureOptions(retention="keep", allow_long=True, approve_cloud_analysis=True),
         )
-        assert response.status_code == 202
-        job_id = response.json()["job_id"]
+        job_id = job.id
         detail = client.get(f"/api/jobs/{job_id}").json()
         assert detail["options"]["allow_long"] is True
         assert detail["options"]["approve_cloud_analysis"] is True
@@ -523,7 +573,8 @@ def test_web_028_settings_health_and_favorite_copy(tmp_path) -> None:
     assert 'id="settings-nav"' in page.text
     assert 'data-route="/settings"' in page.text
     assert ">设置</span>" in page.text
-    assert 'aria-label="更新抖音收藏"' in page.text
+    assert 'id="favorites-scan"' not in page.text
+    assert 'id="favorites-history"' in page.text
     assert 'aria-label="更新收藏"' not in page.text
     assert health.status_code == 307
     assert health.headers["location"].endswith("/api/system/health")
@@ -549,7 +600,6 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
         config,
         config_path=tmp_path / "config.toml",
         service=service,
-
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -572,8 +622,8 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
             assert removed not in footer
         assert "侧栏「授权状态」" not in page.text
         assert "设置 › 授权状态" in page.text
-        assert "设置 › 导入分析" in page.text
-        assert "设置 › 共用模型" in page.text
+        assert 'data-route="/settings/analysis"' in page.text
+        assert "共用模型配置已停用" in page.text
         for path in (
             "/settings",
             "/settings/auth",
@@ -597,10 +647,11 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
             for stale in ("auth-nav", "analysis-nav", "model-nav", "system-nav"):
                 assert f'setNav("{stale}")' not in scripts[name]
         assert "设置 › 授权状态" in scripts["app.js"]
-        assert "设置 › 共用模型" in scripts["app.js"]
+        assert "/api/settings/model" not in scripts["app.js"]
         assert "授权状态页" not in scripts["app.js"]
         assert "请到「共用模型」" not in scripts["app.js"]
-        assert "设置 › 共用模型" in scripts["analysis-settings.js"]
+        assert "/api/settings/model" not in scripts["analysis-settings.js"]
+        assert "/api/system/analysis" in scripts["analysis-settings.js"]
         client.get("/api/auth/status", params={"refresh": "true"})
         overview = client.get("/api/overview").json()
         unverified = next(

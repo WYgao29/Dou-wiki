@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+import json
 from urllib.parse import urlsplit
 
 import pytest
 from playwright.async_api import async_playwright, expect
 
-from douyin_wiki.models import CaptureRequest, JobStatus
+from douyin_wiki import mcp_server
+from douyin_wiki.models import CaptureRequest, InspirationInput, JobStatus
 from douyin_wiki.webapp.app import create_app
 from tests.support.web import _web_fixture, local_client
-from tests.test_favorites import A, scan, snapshot
+from tests.test_favorites import A, FakeFavoritesAdapter, scan, snapshot
 from tests.test_tags import source
 
 
@@ -21,7 +22,7 @@ async def ui(tmp_path):
     config, service = _web_fixture(tmp_path)
     source(service, "1000", ["AI 代理"], managed=True)
     source(service, "1001", ["AI Agent"], managed=True)
-    app = create_app(config, service=service,  start_watcher=False)
+    app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch()
@@ -74,6 +75,103 @@ async def test_command_search_closes_with_one_escape_and_keeps_query(ui):
     await page.keyboard.press("Escape")
     assert not await page.locator("#command-dialog").evaluate("dialog => dialog.open")
     assert await page.locator("#command-input").input_value() == "jev"
+
+
+async def test_existing_mcp_batch_remains_manageable_after_web_creation_is_removed(ui, monkeypatch):
+    page, service, _client, calls = ui
+    service.favorites.adapter = FakeFavoritesAdapter(snapshot(kinds=[(A, "video")]))
+    monkeypatch.setattr(mcp_server, "_SERVICE", service)
+    result = await mcp_server.mcp.call_tool("scan_favorites", {})
+    parent_id = json.loads(result.content[0].text)["job_id"]
+    await service.process_claimed_job(service.database.get_job(parent_id))
+    await page.goto(f"http://testserver/imports/favorites?job={parent_id}")
+    await expect(page.locator("#favorites-scan")).to_have_count(0)
+    await page.locator("#favorites-items .favorites-item").wait_for()
+    await page.locator("#favorites-select-page").click()
+    await expect(page.locator("#favorites-selected-count")).to_contain_text("1")
+    await page.locator("#favorites-confirm").click()
+    await page.locator("#favorites-confirm-submit").click()
+    await expect(page).to_have_url(f"http://testserver/jobs/{parent_id}")
+    assert service.favorites.get(parent_id)["confirmed"] is True
+    assert len([job for job in service.database.list_jobs() if job.kind == "capture"]) == 1
+    assert ("POST", "/api/favorites/imports") not in calls
+    assert ("POST", f"/api/favorites/imports/{parent_id}/selection") in calls
+    assert ("POST", f"/api/favorites/imports/{parent_id}/confirm") in calls
+
+
+async def test_timestamped_inspiration_remains_readable_without_chat(ui):
+    page, service, _client, _calls = ui
+    service.add_inspiration(
+        "dy-123", InspirationInput(text="保留时间定位", start_ms=1000, end_ms=2000)
+    )
+    await page.goto("http://testserver/articles/dy-123")
+    await page.locator("#panel-tab-inspiration").click()
+    await expect(page.locator("#inspiration-pane")).to_contain_text("保留时间定位")
+    await expect(page.locator("#inspiration-pane")).to_contain_text("00:01")
+    await expect(page.locator("#chat-panel")).to_have_count(0)
+
+
+@pytest.mark.parametrize("width", [1440, 390])
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_retired_links_and_preserved_right_panel(ui, width, theme):
+    page, service, _client, calls = ui
+    await page.set_viewport_size({"width": width, "height": 1000})
+    await page.evaluate("theme => window.DoukuTheme.set(theme)", theme)
+    for path, view in (
+        ("/imports/single", "imports-single-view"),
+        ("/settings/model", "model-view"),
+    ):
+        await page.goto(f"http://testserver{path}")
+        await expect(page.locator(f"#{view}")).to_contain_text("已停用")
+    await expect(
+        page.locator("#single-form, #model-settings-form, #imports-toggle, #chat-form")
+    ).to_have_count(0)
+    await page.goto("http://testserver/settings/analysis")
+    await expect(page.locator("#analysis-view")).to_contain_text("Gateway")
+    await expect(page.locator("input[name='analysis-mode']")).to_have_count(0)
+    await page.goto("http://testserver/articles/dy-123")
+    await page.locator("#article-content h1").first.wait_for()
+    if await page.locator("#chat-toggle").get_attribute("aria-expanded") != "true":
+        await page.locator("#chat-toggle").click()
+    await expect(page.locator("#panel-tab-info")).to_be_visible()
+    await expect(page.locator("#panel-tab-inspiration")).to_be_visible()
+    await expect(page.locator("#panel-tab-chat")).to_have_count(0)
+    await page.locator("#panel-tab-inspiration").click()
+    await expect(page.locator("#inspiration-pane")).to_contain_text("保留这段方法")
+    topic = service.create_topic("浏览器专题", ["dy-123"])
+    service.save_topic_note(
+        topic["topic"]["id"], "浏览器笔记正文", title="保留笔记", confirmed=True
+    )
+    await page.goto(f"http://testserver/topics/{topic['topic']['id']}")
+    await expect(page.locator("#topic-content")).to_contain_text("浏览器笔记正文")
+    if await page.locator("#chat-toggle").get_attribute("aria-expanded") != "true":
+        await page.locator("#chat-toggle").click()
+    await expect(page.locator("#panel-tab-sources")).to_be_visible()
+    await expect(page.locator("#topic-sources-pane")).to_contain_text("测试文章")
+    await expect(page.locator(".topic-artifact-actions button")).to_have_count(0)
+    await page.keyboard.press("Escape")
+    await page.keyboard.press("Meta+k")
+    await expect(
+        page.locator(
+            "[data-command-id='single'], [data-command-id='creators'], "
+            "[data-command-id='collections'], [data-command-id='favorites'], "
+            "[data-command-id='chat']"
+        )
+    ).to_have_count(0)
+    await page.keyboard.press("Escape")
+    url = page.url
+    await page.keyboard.press("Meta+i")
+    await page.evaluate(
+        """() => {
+          const data = new DataTransfer();
+          data.setData('text/plain', 'https://www.douyin.com/video/1234567890123456789');
+          document.dispatchEvent(new ClipboardEvent('paste', {bubbles:true, clipboardData:data}));
+        }"""
+    )
+    assert page.url == url
+    assert not any(
+        path.startswith("/api/chat/") or path == "/api/settings/model" for _method, path in calls
+    )
 
 
 @pytest.mark.parametrize("work_id,matching", [(A, 0), ("123", 1)])
@@ -159,9 +257,9 @@ async def test_scope_changes_and_command_query_clears_old_results(ui):
     await page.locator("#command-results [data-entry-id='dy-123']").wait_for()
 
 
-async def test_mobile_tag_controls_and_real_merge_undo(ui):
+async def test_mobile_tag_controls_and_real_merge_undo(ui, tmp_path):
     page, service, _client, _calls = ui
-    out = Path(__file__).parents[1] / "docs/screenshots/redesign/usability"
+    out = tmp_path / "usability"
     out.mkdir(parents=True, exist_ok=True)
     await page.evaluate("window.Douku.navigate('/tags')")
     await page.locator("#tags-rows tr").first.wait_for()
@@ -193,22 +291,18 @@ async def test_mobile_tag_controls_and_real_merge_undo(ui):
     assert service.database.get_entry("dy-1000").tags == ["AI 代理"]
     assert await page.locator("#tags-cards time").count() == 3
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-    out = Path(__file__).parents[1] / "docs/screenshots/redesign/usability"
+    out = tmp_path / "usability"
     out.mkdir(parents=True, exist_ok=True)
     for theme in ("light", "dark"):
         await page.evaluate("theme => window.DoukuTheme.set(theme)", theme)
         await page.screenshot(path=out / f"tags-mobile-{theme}.png")
 
 
-async def test_invalid_time_stops_submission_and_events_distinguish_background(ui):
+async def test_retired_import_and_events_distinguish_background(ui):
     page, _service, _client, calls = ui
     await page.evaluate("window.Douku.navigate('/imports/single')")
-    await page.fill("#single-share", "https://www.douyin.com/video/7604970362420645155")
-    await page.locator("#single-form details").evaluate("node => node.open = true")
-    await page.fill("#single-start", "2:00")
-    await page.fill("#single-end", "1:00")
-    await page.click("#single-form button[type=submit]")
-    assert "结束时间不能早于" in await page.locator("#single-error").inner_text()
+    await expect(page.locator("#imports-single-view")).to_contain_text("已停用")
+    await expect(page.locator("#single-form")).to_have_count(0)
     assert ("POST", "/api/captures") not in calls
     await page.evaluate(
         "window.Douku.toast('已收藏');"
@@ -224,7 +318,7 @@ async def test_invalid_time_stops_submission_and_events_distinguish_background(u
     await page.wait_for_function("document.querySelector('#toast').textContent === '资料库已更新'")
 
 
-async def test_reader_focus_fonts_and_selection_guidance(ui):
+async def test_reader_focus_fonts_and_selection_guidance(ui, tmp_path):
     page, _service, _client, calls = ui
     assert not any(path.endswith("/reading.css") or "/fonts/reading/" in path for _, path in calls)
     await page.evaluate("window.Douku.navigate('/topics')")
@@ -242,7 +336,7 @@ async def test_reader_focus_fonts_and_selection_guidance(ui):
         == "0px"
     )
     assert await page.locator("body").evaluate("node => getComputedStyle(node).fontSize") == "14px"
-    out = Path(__file__).parents[1] / "docs/screenshots/redesign/usability"
+    out = tmp_path / "usability"
     out.mkdir(parents=True, exist_ok=True)
     for theme in ("light", "dark"):
         await page.evaluate("theme => window.DoukuTheme.set(theme)", theme)

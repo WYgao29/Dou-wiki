@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,7 +21,14 @@ from tests.test_tags import source  # noqa: E402
 
 
 async def verify():
-    out = ROOT / "docs/screenshots/redesign/tags"
+    out = (
+        Path(
+            os.environ.get(
+                "DOUKU_VERIFY_OUTPUT_DIR", str(ROOT / "docs/screenshots/mcp-gateway-simplification")
+            )
+        )
+        / "tags"
+    )
     out.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="douku-tags-check-") as tmp:
         config, service = _web_fixture(Path(tmp))

@@ -104,24 +104,15 @@ def _client(config, service, favorites: FakeFavoritesService):
     )
 
 
-def test_web_scan_only_creates_inventory_job(config, service) -> None:
+def test_web_scan_is_disabled_without_creating_inventory(config, service) -> None:
     favorites = FakeFavoritesService()
     with _client(config, service, favorites) as client:
         response = client.post(
-            "/api/favorites/imports",
-            json={"folder_ids": ["folder-1"], "include_images": True},
+            "/api/favorites/imports", json={"folder_ids": ["folder-1"], "include_images": True}
         )
-
-    assert response.status_code == 202
-    assert response.json() == {"job_id": "favorites-1", "status": "queued"}
-    assert favorites.started == [
-        {
-            "folder_ids": ["folder-1"],
-            "include_images": True,
-            "directory_only": False,
-            "update_mode": "incremental",
-        }
-    ]
+    assert response.status_code == 410
+    assert "scan_favorites" in response.json()["detail"]
+    assert favorites.started == []
     assert favorites.confirmed == []
 
 

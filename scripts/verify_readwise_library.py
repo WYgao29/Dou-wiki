@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -89,14 +90,19 @@ def populate(config, service):
 
 
 async def verify():
-    out = ROOT / "docs/screenshots/redesign/phase-2"
+    out = (
+        Path(
+            os.environ.get(
+                "DOUKU_VERIFY_OUTPUT_DIR", str(ROOT / "docs/screenshots/mcp-gateway-simplification")
+            )
+        )
+        / "library"
+    )
     out.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="douku-library-check-") as tmp:
         config, service = _web_fixture(Path(tmp))
         populate(config, service)
-        app = create_app(
-            config, service=service,  start_watcher=False
-        )
+        app = create_app(config, service=service, start_watcher=False)
         with local_client(app) as client:
             async with async_playwright() as p:
                 browser = await p.chromium.launch()
@@ -391,9 +397,8 @@ async def verify():
                 mode = "empty"
                 await page.goto("http://testserver/")
                 await page.wait_for_selector("#empty-library:not(.hidden)")
-                assert await page.locator(".empty-import-links a").count() == 3
-                await page.locator(".empty-import-links a").first.click()
-                await page.wait_for_selector("#imports-single-view:not(.hidden)")
+                assert await page.locator(".empty-import-links a").count() == 0
+                assert "Agent" in await page.locator("#empty-library").inner_text()
                 mode = "loading"
                 await page.goto("http://testserver/", wait_until="domcontentloaded")
                 assert await page.locator("#library-status .skeleton-row").count() == 6
