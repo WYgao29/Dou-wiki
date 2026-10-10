@@ -1,5 +1,7 @@
 """Cross-entry captures share processing without losing callers or batch ownership."""
 
+import asyncio
+
 import pytest
 
 from douyin_wiki.errors import JobLeaseLostError
@@ -251,6 +253,67 @@ async def test_failed_follower_can_retry_without_reattaching_to_failed_owner(ser
     assert retried.id == duplicate.id and retried.status == JobStatus.AWAITING_AGENT_ANALYSIS
     assert "shared_capture_job_id" not in retried.artifacts
     assert service.downloader.calls == 2  # Explicit retry is a new attempt.
+
+
+async def test_follower_retry_removes_old_executor_from_queued_and_downloading_receipts(
+    service, monkeypatch
+):
+    from douyin_wiki import mcp_server
+    from douyin_wiki.gateway_protocol import compact_job_payload
+
+    service.config.analysis_mode = AnalysisMode.GATEWAY
+    _, owner = await confirmed_collection(service)
+    await Worker(service).run_once()
+    context = GatewayContext(gateway="retry", conversation_id="follower-retry")
+    follower = service.capture_douyin(SHORT, gateway_context=context)
+    await Worker(service).run_once()
+    service.database.update_job(owner, status=JobStatus.FAILED, error_message="分析失败")
+    service.refresh_job_parents(owner)
+    monkeypatch.setattr(mcp_server, "_SERVICE", service)
+    retried = service.retry_job(follower.id)
+    queued = mcp_server.get_job(follower.id, gateway_protocol=2)
+
+    downloading, release = asyncio.Event(), asyncio.Event()
+    original_download = service.downloader.download
+
+    async def delayed_download(*args):
+        downloading.set()
+        await release.wait()
+        return await original_download(*args)
+
+    monkeypatch.setattr(service.downloader, "download", delayed_download)
+    running = asyncio.create_task(Worker(service).run_once())
+    try:
+        await asyncio.wait_for(downloading.wait(), timeout=5)
+        live_payload = mcp_server.get_job(follower.id, gateway_protocol=2)
+    finally:
+        release.set()
+        processed = await running
+
+    assert retried.status == JobStatus.QUEUED
+    assert queued["status"] == JobStatus.QUEUED.value
+    assert live_payload["status"] == JobStatus.DOWNLOADING.value
+    assert processed.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    for payload in (compact_job_payload(retried), queued, live_payload):
+        assert "shared_capture_job_id" not in payload["result"]
+        assert "shared_job_status" not in payload["result"]
+    assert "shared_capture_job_id" not in retried.artifacts
+    assert service.get_job(follower.id).request.gateway_context == context
+    assert service.downloader.calls == 2
+
+
+async def test_ordinary_retry_keeps_gateway_result_and_media_checkpoints(service):
+    service.config.analysis_mode = AnalysisMode.GATEWAY
+    _, owner = await confirmed_collection(service)
+    await Worker(service).run_once()
+    failed = service.database.update_job(owner, status=JobStatus.FAILED, error_message="分析失败")
+    retried = service.retry_job(owner)
+    assert retried.status == JobStatus.QUEUED
+    assert retried.result == failed.result
+    assert retried.artifacts["metadata"] == failed.artifacts["metadata"]
+    assert retried.artifacts["transcript_raw"] == failed.artifacts["transcript_raw"]
+    assert (await Worker(service).run_once()).status == JobStatus.AWAITING_AGENT_ANALYSIS
+    assert service.downloader.calls == 1
 
 
 async def test_shared_capture_survives_service_restart(service):

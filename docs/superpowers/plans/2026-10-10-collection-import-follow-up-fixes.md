@@ -43,10 +43,10 @@
 
 接口：为现有 `Database.requeue_job(..., result=None)` 增加可选结果参数，旧调用不改变行为；`retry_job()` 仅在解除共享关系时删除共享 result 字段。
 
-- [ ] 回归 queued 和延迟合成下载期间的公开协议2查询，以及普通重试结果保留。
-- [ ] 运行新增断言，预期旧执行者字段仍出现。
-- [ ] 在同一数据库更新中清除共享 artifacts 与 result，保持 expected_updated_at 检查。
-- [ ] 运行共享、重试与 Gateway 回归，预期全部通过；记录结果并提交。
+- [x] 回归 queued 和延迟合成下载期间的公开协议2查询，以及普通重试结果保留。
+- [x] 运行新增断言，旧执行者字段仍出现；普通重试基线通过。
+- [x] 在同一数据库更新中清除共享 artifacts 与 result，保持 expected_updated_at 检查。
+- [x] 运行共享、重试与 Gateway 回归，189 项通过；记录结果并提交。
 
 ## Task 3：网页共享执行者入口
 

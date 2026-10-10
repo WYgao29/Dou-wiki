@@ -1393,6 +1393,7 @@ class Database:
         *,
         artifacts: dict[str, Any] | None = None,
         remove_artifacts: set[str] | None = None,
+        result: dict[str, Any] | None = None,
         clear_review_issues: bool = False,
         expected_updated_at: datetime | None = None,
     ) -> JobRecord:
@@ -1404,6 +1405,7 @@ class Database:
             status=JobStatus.QUEUED,
             artifacts=artifacts,
             remove_artifacts=remove_artifacts,
+            result=result,
             clear_review_issues=clear_review_issues,
             expected_updated_at=observed,
             expected_statuses={
