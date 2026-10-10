@@ -16,7 +16,7 @@ from douyin_wiki.gateway_protocol import (
     validate_gateway_protocol,
 )
 from douyin_wiki.gateway_sources import build_source_catalog
-from douyin_wiki.models import AnalysisMode, InspirationInput, JobStatus
+from douyin_wiki.models import InspirationInput, JobStatus
 from tests.support.gateway import make_gateway_job
 
 
@@ -417,15 +417,12 @@ def test_compact_receipt_keeps_auth_and_confirmation_explanations(service):
     assert auth["result"]["auth_scope"] == "video"
 
 
-def test_legacy_context_and_non_gateway_behavior_remain(service):
+def test_existing_protocol_one_context_remains(service):
     job = make_gateway_job(service)
     ctx = service.get_analysis_context(job.id)
     assert ctx == service.get_analysis_context(job.id, gateway_protocol=1)
     assert "transcript_raw" in ctx and "summary" in ctx["analysis_schema"]["properties"]
-    for mode in [AnalysisMode.PROVIDER, AnalysisMode.LOCAL]:
-        service.config.analysis_mode = mode
-        with pytest.raises(JobStateError):
-            service.get_analysis_context(job.id, gateway_protocol=2)
+
 
 
 @pytest.mark.parametrize("value", [True, False, 2.0, "2", 3, None])

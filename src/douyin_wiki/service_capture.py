@@ -8,16 +8,12 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from .adapters.llm import (
-    PROMPT_VERSION,
-    OpenAICompatibleProvider,
-)
+from .analysis_rules import PROMPT_VERSION
 from .errors import (
     ExternalToolError,
     JobStateError,
 )
 from .models import (
-    AnalysisMode,
     AnalysisResult,
     EntryRecord,
     JobRecord,
@@ -31,8 +27,6 @@ from .models import (
 )
 from .review import (
     apply_review_resolutions,
-    deduplicate_review_issues,
-    detect_review_issues,
     transcript_confidence_info,
 )
 from .time_utils import beijing_date, utc_now
@@ -190,12 +184,17 @@ class CaptureMixin:
             # Re-read after the work lock so a preceding capture can win the
             # first-write race and its user data is never lost.
             existing = self.database.find_entry_by_video_id(video_id)
+            if artifacts.get("reacquire_entry_id"):
+                self.database.get_entry(artifacts["reacquire_entry_id"])
             if existing:
                 for inspiration in self.capture_sharing.inspirations(job):
                     existing = self.add_inspiration_locked(existing.id, inspiration)
                 should_reacquire = (
-                    existing.media_status == "removed"
-                    and request.options.retention != RetentionPolicy.DISCARD
+                    artifacts.get("reacquire_entry_id") == existing.id
+                    or (
+                        existing.media_status == "removed"
+                        and request.options.retention != RetentionPolicy.DISCARD
+                    )
                 )
                 if not should_reacquire:
                     existing = self.repair_entry_if_needed_locked(existing)
@@ -209,6 +208,11 @@ class CaptureMixin:
                             "source_path": existing.source_path,
                         },
                         unlock=True,
+                    )
+                if artifacts.get("reacquire_entry_id") != existing.id:
+                    artifacts["reacquire_entry_id"] = existing.id
+                    self.database.update_job(
+                        job.id, artifacts={"reacquire_entry_id": existing.id}
                     )
         shared = self.capture_sharing.join_if_active(job.id, video_id)
         if shared is not None:
@@ -382,82 +386,9 @@ class CaptureMixin:
             self.database.update_job(job.id, artifacts={"media_provenance": provenance})
         ocr_items = artifacts.get("ocr", [])
 
-        checkpoints = artifacts.setdefault("llm_checkpoints", {})
-        model_stats = artifacts.setdefault(
-            "llm_stats",
-            {
-                "successful_calls": 0,
-                "http_requests": 0,
-                "retry_count": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-            },
-        )
-        last_model_response_at = (artifacts.get("analysis_progress") or {}).get("last_response_at")
-        last_model_usage = (artifacts.get("analysis_progress") or {}).get("usage", {})
-
-        def save_checkpoint(_fingerprint: str, _value: dict[str, Any]) -> None:
-            nonlocal last_model_response_at, last_model_usage
-            last_model_response_at = utc_now().isoformat()
-            last_model_usage = getattr(self.analysis, "last_usage", {}).copy()
-            increments = {
-                "successful_calls": 1,
-                "http_requests": last_model_usage.get("request_count", 1),
-                "retry_count": last_model_usage.get("retry_count", 0),
-                "input_tokens": last_model_usage.get(
-                    "input_tokens",
-                    last_model_usage.get("prompt_tokens", 0),
-                ),
-                "output_tokens": last_model_usage.get(
-                    "output_tokens",
-                    last_model_usage.get("completion_tokens", 0),
-                ),
-            }
-            for key, amount in increments.items():
-                model_stats[key] = int(model_stats.get(key, 0)) + amount
-            detail = {
-                **(artifacts.get("analysis_progress") or {}),
-                "last_response_at": last_model_response_at,
-                "usage": last_model_usage,
-            }
-            artifacts["analysis_progress"] = detail
-            self.database.update_job(
-                job.id,
-                artifacts={
-                    "llm_checkpoints": checkpoints,
-                    "analysis_progress": detail,
-                    "llm_stats": model_stats,
-                },
-            )
-
-        def model_progress(phase: str, completed: int, total: int) -> None:
-            current_progress = self.database.get_job(job.id).progress
-            target = (
-                0.62 + 0.04 * completed / max(total, 1)
-                if phase == "correction"
-                else 0.70 + 0.08 * completed / max(total, 1)
-                if phase == "analysis"
-                else 0.79
-            )
-            detail = {
-                "phase": phase,
-                "completed_chunks": completed,
-                "total_chunks": total,
-                "waiting_for_resource": False,
-                "last_response_at": last_model_response_at,
-                "usage": last_model_usage,
-            }
-            artifacts["analysis_progress"] = detail
-            self.database.update_job(
-                job.id,
-                progress=max(current_progress, target),
-                artifacts={"analysis_progress": detail},
-            )
-
-        if (
-            self.config.analysis_mode == AnalysisMode.GATEWAY
-            and "transcript_corrected" not in artifacts
-        ):
+        if artifacts.get("reacquire_entry_id"):
+            self.database.get_entry(artifacts["reacquire_entry_id"])
+        if "transcript_corrected" not in artifacts:
             return self.database.update_job(
                 job.id,
                 status=JobStatus.AWAITING_AGENT_ANALYSIS,
@@ -467,77 +398,6 @@ class CaptureMixin:
                     "next_tool": "get_analysis_context",
                 },
                 unlock=True,
-            )
-
-        if "transcript_corrected" not in artifacts:
-            if isinstance(self.analysis, OpenAICompatibleProvider):
-                # The semaphore may queue this job for a while. Mark the model
-                # phase before waiting so every read surface reflects the work.
-                waiting_detail = {
-                    "phase": "correction",
-                    "completed_chunks": 0,
-                    "total_chunks": 0,
-                    "waiting_for_resource": True,
-                    "last_response_at": last_model_response_at,
-                    "usage": last_model_usage,
-                }
-                artifacts["analysis_progress"] = waiting_detail
-                self.database.update_job(
-                    job.id,
-                    status=JobStatus.ANALYZING,
-                    progress=max(self.database.get_job(job.id).progress, 0.62),
-                    artifacts={"analysis_progress": waiting_detail},
-                )
-            async with self.analysis_semaphore:
-                self.check_job_cancelled(job)
-                if isinstance(self.analysis, OpenAICompatibleProvider):
-                    artifacts["analysis_progress"]["waiting_for_resource"] = False
-                    self.database.update_job(
-                        job.id,
-                        artifacts={"analysis_progress": artifacts["analysis_progress"]},
-                    )
-                correction_kwargs = (
-                    {
-                        "checkpoints": checkpoints,
-                        "on_checkpoint": save_checkpoint,
-                        "on_progress": model_progress,
-                    }
-                    if isinstance(self.analysis, OpenAICompatibleProvider)
-                    else {}
-                )
-                corrected, llm_issues = await self.analysis.correct_transcript(
-                    transcript_raw,
-                    [self.ocr_model(item) for item in ocr_items],
-                    **correction_kwargs,
-                )
-            artifacts["transcript_corrected"] = [item.model_dump(mode="json") for item in corrected]
-            artifacts["transcript_edits"] = [
-                {
-                    "id": raw.id,
-                    "start_ms": raw.start_ms,
-                    "end_ms": raw.end_ms,
-                    "raw_text": raw.text,
-                    "corrected_text": item.text,
-                }
-                for raw, item in zip(transcript_raw, corrected, strict=True)
-                if raw.text != item.text
-            ]
-            artifacts["correction_notes"] = [
-                item.model_dump(mode="json")
-                for item in deduplicate_review_issues(
-                    [*detect_review_issues(transcript_raw), *llm_issues]
-                )
-            ]
-            artifacts["review_issues"] = []
-            self.database.update_job(
-                job.id,
-                artifacts={
-                    "transcript_corrected": artifacts["transcript_corrected"],
-                    "transcript_edits": artifacts["transcript_edits"],
-                    "correction_notes": artifacts["correction_notes"],
-                    "review_issues": artifacts["review_issues"],
-                },
-                progress=0.66,
             )
 
         corrected = [
@@ -553,7 +413,7 @@ class CaptureMixin:
                 progress=0.68,
             )
 
-        if self.config.analysis_mode == AnalysisMode.GATEWAY and "analysis" not in artifacts:
+        if "analysis" not in artifacts:
             return self.database.update_job(
                 job.id,
                 status=JobStatus.AWAITING_AGENT_ANALYSIS,
@@ -563,95 +423,9 @@ class CaptureMixin:
             )
 
         self.database.update_job(
-            job.id,
-            status=JobStatus.ANALYZING,
+            job.id, status=JobStatus.ANALYZING,
             progress=max(self.database.get_job(job.id).progress, 0.7),
-            artifacts={
-                "analysis_progress": {
-                    **(artifacts.get("analysis_progress") or {}),
-                    "phase": "analysis",
-                    "waiting_for_resource": True,
-                }
-            }
-            if isinstance(self.analysis, OpenAICompatibleProvider)
-            else None,
         )
-        if "analysis" not in artifacts:
-            if "analysis_candidate" in artifacts:
-                analysis = AnalysisResult.model_validate(artifacts["analysis_candidate"])
-            else:
-                analysis_metadata = metadata.model_dump(mode="json")
-                if metadata.image_paths:
-                    analysis_metadata["images"] = [
-                        {"image_index": index} for index in range(1, len(metadata.image_paths) + 1)
-                    ]
-                for private_path_key in ("image_paths", "thumbnail_path", "media_path"):
-                    analysis_metadata.pop(private_path_key, None)
-                context_text = "\n".join(
-                    [
-                        *[inspiration.text for inspiration in effective_inspirations],
-                        *[segment.text for segment in corrected],
-                    ]
-                )
-                analysis_metadata["existing_knowledge"] = self.indexer.find_related_claims(
-                    context_text
-                )
-                async with self.analysis_semaphore:
-                    self.check_job_cancelled(job)
-                    analysis_kwargs = (
-                        {
-                            "checkpoints": checkpoints,
-                            "on_checkpoint": save_checkpoint,
-                            "on_progress": model_progress,
-                        }
-                        if isinstance(self.analysis, OpenAICompatibleProvider)
-                        else {}
-                    )
-                    analysis = await self.analysis.analyze(
-                        corrected,
-                        [self.ocr_model(item) for item in ocr_items],
-                        effective_inspirations,
-                        analysis_metadata,
-                        **analysis_kwargs,
-                    )
-                artifacts["analysis_candidate"] = analysis.model_dump(mode="json")
-                self.database.update_job(
-                    job.id,
-                    artifacts={"analysis_candidate": artifacts["analysis_candidate"]},
-                    progress=0.8,
-                )
-            evidence_context = {**artifacts, "metadata": metadata.model_dump(mode="json")}
-            if self.config.analysis_mode == AnalysisMode.PROVIDER:
-                audit: list[dict[str, Any]] = []
-                analysis, removed = self.prune_unverified_analysis_evidence(
-                    analysis,
-                    evidence_context,
-                    audit=audit,
-                )
-                artifacts["analysis_evidence_audit"] = audit
-                if removed:
-                    artifacts["analysis_evidence_warning"] = (
-                        f"模型生成的 {removed} 条无法核实的证据或内容已移除"
-                    )
-                model_progress("evidence", 1, 1)
-            self._validate_analysis_tags(analysis, job_id=job.id)
-            self.validate_analysis_evidence(analysis, evidence_context)
-            artifacts["analysis"] = analysis.model_dump(mode="json")
-            artifacts["llm_checkpoints"] = {}
-            self.database.update_job(
-                job.id,
-                artifacts={
-                    "analysis": artifacts["analysis"],
-                    "llm_checkpoints": {},
-                    "analysis_evidence_audit": artifacts.get("analysis_evidence_audit", []),
-                    **(
-                        {"analysis_evidence_warning": artifacts["analysis_evidence_warning"]}
-                        if artifacts.get("analysis_evidence_warning")
-                        else {}
-                    ),
-                },
-                progress=0.83,
-            )
 
         now = utc_now()
         validated_analysis = AnalysisResult.model_validate(artifacts["analysis"])
@@ -728,21 +502,9 @@ class CaptureMixin:
             or artifacts.get("review_issues", []),
             "analysis": analysis_data,
             "relations": [],
-            "provider": (
-                f"agent:{artifacts.get('analysis_producer', 'gateway')}"
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else self.analysis.name
-            ),
-            "model": (
-                artifacts.get("analysis_model", "agent")
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else self.analysis.model
-            ),
-            "prompt_version": (
-                f"external:{PROMPT_VERSION}"
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else PROMPT_VERSION
-            ),
+            "provider": f"agent:{artifacts.get('analysis_producer', 'gateway')}",
+            "model": artifacts.get("analysis_model", "agent"),
+            "prompt_version": f"external:{PROMPT_VERSION}",
             "cover_path": cover_path,
             "cover_kind": metadata.thumbnail_kind or ("fallback" if cover_path else None),
             "creator": (
@@ -785,8 +547,6 @@ class CaptureMixin:
                 warnings.append(f"OCR 未完成：{artifacts['ocr_warning']}")
             if artifacts.get("transcript_skipped") == "no_audio_available":
                 warnings.append("视频无音轨，未生成逐字稿；分析仅依据画面文字和作品信息")
-            if self.config.analysis_mode != AnalysisMode.GATEWAY and not self.analysis.configured:
-                warnings.append("模型未配置，使用本地降级分析")
             if artifacts.get("analysis_evidence_warning"):
                 warnings.append(artifacts["analysis_evidence_warning"])
             status = JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED
@@ -821,11 +581,16 @@ class CaptureMixin:
             self.check_job_cancelled(job)
             # The work lock makes this re-read authoritative for a waiter.
             existing = self.database.find_entry_by_video_id(work_id)
+            if artifacts.get("reacquire_entry_id"):
+                self.database.get_entry(artifacts["reacquire_entry_id"])
             if existing:
                 for inspiration in self.capture_sharing.inspirations(job):
                     existing = self.add_inspiration_locked(existing.id, inspiration)
                 existing_data = self.database.get_entry_data(existing.id)
-                if self.image_note_files_intact(existing_data):
+                if (
+                    artifacts.get("reacquire_entry_id") != existing.id
+                    and self.image_note_files_intact(existing_data)
+                ):
                     existing = self.repair_entry_if_needed_locked(existing)
                     return self.database.update_job(
                         job.id,
@@ -838,6 +603,11 @@ class CaptureMixin:
                             "source_path": existing.source_path,
                         },
                         unlock=True,
+                    )
+                if artifacts.get("reacquire_entry_id") != existing.id:
+                    artifacts["reacquire_entry_id"] = existing.id
+                    self.database.update_job(
+                        job.id, artifacts={"reacquire_entry_id": existing.id}
                     )
         shared = self.capture_sharing.join_if_active(job.id, work_id)
         if shared is not None:
@@ -966,7 +736,9 @@ class CaptureMixin:
             artifacts["ocr"] = [item.model_dump(mode="json") for item in ocr_models]
             self.database.update_job(job.id, artifacts={"ocr": artifacts["ocr"]})
 
-        if self.config.analysis_mode == AnalysisMode.GATEWAY and "analysis" not in artifacts:
+        if artifacts.get("reacquire_entry_id"):
+            self.database.get_entry(artifacts["reacquire_entry_id"])
+        if "analysis" not in artifacts:
             return self.database.update_job(
                 job.id,
                 status=JobStatus.AWAITING_AGENT_ANALYSIS,
@@ -976,65 +748,6 @@ class CaptureMixin:
             )
 
         self.database.update_job(job.id, status=JobStatus.ANALYZING, progress=0.7)
-        if "analysis" not in artifacts:
-            analysis_metadata = metadata.model_dump(mode="json")
-            analysis_metadata["images"] = [
-                {"image_index": index} for index in range(1, len(metadata.image_paths) + 1)
-            ]
-            for private_path_key in ("image_paths", "thumbnail_path", "media_path"):
-                analysis_metadata.pop(private_path_key, None)
-            context_text = "\n".join(
-                [
-                    *[item.text for item in effective_inspirations],
-                    metadata.post_text or "",
-                    *[item.text for item in ocr_models],
-                ]
-            )
-            analysis_metadata["existing_knowledge"] = self.indexer.find_related_claims(context_text)
-            checkpoints = artifacts.setdefault("llm_checkpoints", {})
-
-            def save_checkpoint(_fingerprint: str, _value: dict[str, Any]) -> None:
-                self.database.update_job(job.id, artifacts={"llm_checkpoints": checkpoints})
-
-            def model_progress(phase: str, completed: int, total: int) -> None:
-                current = self.database.get_job(job.id)
-                self.database.update_job(
-                    job.id,
-                    progress=max(current.progress, 0.70 + 0.1 * completed / max(total, 1)),
-                    artifacts={
-                        "analysis_progress": {
-                            "phase": phase,
-                            "completed_chunks": completed,
-                            "total_chunks": total,
-                            "waiting_for_resource": False,
-                        }
-                    },
-                )
-
-            async with self.analysis_semaphore:
-                self.check_job_cancelled(job)
-                kwargs = (
-                    {
-                        "checkpoints": checkpoints,
-                        "on_checkpoint": save_checkpoint,
-                        "on_progress": model_progress,
-                    }
-                    if isinstance(self.analysis, OpenAICompatibleProvider)
-                    else {}
-                )
-                analysis = await self.analysis.analyze(
-                    [], ocr_models, effective_inspirations, analysis_metadata, **kwargs
-                )
-            self._validate_analysis_tags(analysis, job_id=job.id)
-            self.validate_analysis_evidence(
-                analysis,
-                {**artifacts, "metadata": metadata.model_dump(mode="json")},
-            )
-            artifacts["analysis"] = analysis.model_dump(mode="json")
-            self.database.update_job(
-                job.id, artifacts={"analysis": artifacts["analysis"]}, progress=0.83
-            )
-
         now = utc_now()
         validated_analysis = AnalysisResult.model_validate(artifacts["analysis"])
         self._validate_analysis_tags(validated_analysis, job_id=job.id)
@@ -1107,21 +820,9 @@ class CaptureMixin:
             or artifacts.get("review_issues", []),
             "analysis": analysis_data,
             "relations": [],
-            "provider": (
-                f"agent:{artifacts.get('analysis_producer', 'gateway')}"
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else self.analysis.name
-            ),
-            "model": (
-                artifacts.get("analysis_model", "agent")
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else self.analysis.model
-            ),
-            "prompt_version": (
-                f"external:{PROMPT_VERSION}"
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else PROMPT_VERSION
-            ),
+            "provider": f"agent:{artifacts.get('analysis_producer', 'gateway')}",
+            "model": artifacts.get("analysis_model", "agent"),
+            "prompt_version": f"external:{PROMPT_VERSION}",
             "cover_path": relative_images[0],
             "cover_kind": "image_note_first_image",
             "creator": (
@@ -1158,14 +859,11 @@ class CaptureMixin:
             warnings: list[str] = []
             if artifacts.get("ocr_warning"):
                 warnings.append(f"OCR 未完成：{artifacts['ocr_warning']}")
-            if self.config.analysis_mode != AnalysisMode.GATEWAY and not self.analysis.configured:
-                warnings.append("模型未配置，使用本地降级分析")
             status = JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED
             return self.database.update_job(
                 job.id,
                 status=status,
                 progress=1,
-                artifacts={"llm_checkpoints": {}},
                 result={
                     "entry_id": entry.id,
                     "source_kind": SourceKind.IMAGE_NOTE.value,

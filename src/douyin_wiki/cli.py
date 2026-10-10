@@ -12,9 +12,7 @@ from .auth_guidance import SubprocessAuthGuidanceLauncher
 from .config import (
     AppConfig,
     default_config_path,
-    llm_api_key_required,
     load_config,
-    normalize_llm_base_url,
 )
 from .errors import DouyinWikiError
 from .gateway_protocol import compact_job_payload, validate_gateway_protocol
@@ -34,7 +32,6 @@ from .models import (
     SourceKind,
     TranscriptCorrection,
 )
-from .secrets import store_secret
 from .service import DouyinWikiService
 from .setup import (
     LaunchAgentInstaller,
@@ -234,75 +231,25 @@ def init_command(
 
 @app.command("configure-model")
 def configure_model(
-    model: Annotated[str, typer.Option(prompt=True, help="模型名称")],
+    model: Annotated[str | None, typer.Option(help="原模型名称")] = None,
     base_url: Annotated[str | None, typer.Option(help="OpenAI-compatible base URL")] = None,
     config_path: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
-    target = config_path or default_config_path()
-    config = load_config(target)
-    try:
-        resolved_base_url = normalize_llm_base_url(base_url or config.llm.base_url)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--base-url") from exc
-    api_key: str | None = None
-    if llm_api_key_required(resolved_base_url):
-        api_key = typer.prompt(
-            "API key",
-            hide_input=True,
-            confirmation_prompt=True,
-        )
-    llm = config.llm.model_copy(
-        update={
-            "enabled": True,
-            "model": model,
-            "base_url": resolved_base_url,
-        }
-    )
-    config = config.model_copy(update={"llm": llm, "analysis_mode": AnalysisMode.PROVIDER})
-    if target.exists():
-        update_config_values(
-            target,
-            {
-                None: {"analysis_mode": AnalysisMode.PROVIDER.value},
-                "llm": {
-                    "enabled": True,
-                    "model": config.llm.model,
-                    "base_url": config.llm.base_url,
-                },
-            },
-        )
-    else:
-        write_config(config, target, overwrite=True)
-    if api_key:
-        store_secret(config.llm.api_key_env, api_key)
-    installer = LaunchAgentInstaller(target)
-    worker_plist = installer.launch_agents / f"{installer.WORKER_LABEL}.plist"
-    restarted = False
-    if worker_plist.exists():
-        installer.install()
-        restarted = True
-    _print(
-        {
-            "status": "configured",
-            "model": config.llm.model,
-            "base_url": config.llm.base_url,
-            "analysis_mode": config.analysis_mode.value,
-            "secret": (
-                f"macOS Keychain:{config.llm.api_key_env}" if api_key else "本机接口无需密钥"
-            ),
-            "worker_restarted": restarted,
-        }
-    )
+    typer.echo("共用模型配置已停用；校正和分析由 Gateway Agent 完成。")
+    raise typer.Exit(code=2)
 
 
 @app.command("configure-analysis-mode")
 def configure_analysis_mode(
     mode: Annotated[
-        AnalysisMode,
-        typer.Argument(help="gateway（推荐）、provider 或 local"),
-    ] = AnalysisMode.GATEWAY,
+        str,
+        typer.Argument(help="gateway"),
+    ] = "gateway",
     config_path: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
+    if mode != "gateway":
+        raise typer.BadParameter("精简版只支持 gateway 分析模式", param_hint="mode")
+    mode = AnalysisMode.GATEWAY
     target = config_path or default_config_path()
     config = load_config(target).model_copy(update={"analysis_mode": mode})
     if target.exists():
@@ -320,11 +267,7 @@ def configure_analysis_mode(
             "status": "configured",
             "analysis_mode": mode.value,
             "worker_restarted": restarted,
-            "note": (
-                "校正和分析由 Gateway Agent 完成"
-                if mode == AnalysisMode.GATEWAY
-                else "后台 Worker 将直接完成校正和分析"
-            ),
+            "note": "校正和分析由 Gateway Agent 完成",
         }
     )
 

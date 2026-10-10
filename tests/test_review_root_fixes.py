@@ -10,6 +10,7 @@ from douyin_wiki.errors import JobLeaseLostError
 from douyin_wiki.models import JobStatus
 from douyin_wiki.setup import update_config_values
 from douyin_wiki.time_utils import utc_now
+from tests.support.gateway import complete_gateway_job
 from tests.test_creator import FakeCreatorAdapter, inventory_result
 
 
@@ -163,6 +164,8 @@ async def test_favorite_preserves_existing_projections_when_embedding_model_is_u
     service.embeddings.provider_name = "sentence-transformers:review-model"
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     before_chunks = service.database.fetch_chunks(entry_ids=[entry_id])
     before_relations = service.database.get_relations(entry_id)

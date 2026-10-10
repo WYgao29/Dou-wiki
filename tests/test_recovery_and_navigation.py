@@ -12,12 +12,15 @@ from douyin_wiki.webapp.catalog import LibraryCatalog
 from douyin_wiki.webapp.rendering import render_article
 from douyin_wiki.worker import Worker
 from tests.conftest import FakeDownloader
+from tests.support.gateway import complete_gateway_job
 
 
 @pytest.mark.asyncio
 async def test_media_restore_preserves_new_analysis_and_inspiration(service) -> None:
     service.capture_douyin("https://www.douyin.com/video/7672717300746907078")
     captured = await Worker(service).run_once()
+    if captured.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        captured = await complete_gateway_job(service, captured.id)
     entry_id = captured.result["entry_id"]
     service.database.mark_media_removed(entry_id)
     restore = service.set_entry_favorite(entry_id, True)["restore_job"]
@@ -60,6 +63,8 @@ async def test_media_restore_preserves_new_analysis_and_inspiration(service) -> 
 async def test_media_restore_lost_lease_does_not_publish(service, monkeypatch) -> None:
     service.capture_douyin("https://www.douyin.com/video/7672717300746907078")
     captured = await Worker(service).run_once()
+    if captured.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        captured = await complete_gateway_job(service, captured.id)
     entry_id = captured.result["entry_id"]
     service.database.mark_media_removed(entry_id)
     restore = service.set_entry_favorite(entry_id, True)["restore_job"]
@@ -170,6 +175,8 @@ def test_creator_parent_rejects_stale_child_snapshot(service, monkeypatch) -> No
 async def test_wikilink_navigation_keeps_unsafe_paths_blocked(service) -> None:
     service.capture_douyin("https://www.douyin.com/video/7672717300746907078")
     captured = await Worker(service).run_once()
+    if captured.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        captured = await complete_gateway_job(service, captured.id)
     entry = service.database.get_entry(captured.result["entry_id"])
     catalog = LibraryCatalog(service.config.vault_path, service.database)
     catalog.refresh()

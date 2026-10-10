@@ -4,10 +4,8 @@ import logging
 import os
 import re
 import tomllib
-from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -38,47 +36,8 @@ def default_config_path() -> Path:
     return Path.home() / "Library" / "Application Support" / "douyin-wiki" / "config.toml"
 
 
-def normalize_llm_base_url(value: str) -> str:
-    candidate = value.strip()
-    parsed = urlsplit(candidate)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("模型接口必须是有效的 HTTP(S) URL")
-    if parsed.username is not None or parsed.password is not None or "#" in candidate:
-        raise ValueError("模型接口不能包含凭据或 URL 片段")
-    loopback = parsed.hostname.lower() == "localhost"
-    if not loopback:
-        try:
-            loopback = ip_address(parsed.hostname).is_loopback
-        except ValueError:
-            loopback = False
-    if parsed.scheme == "http" and not loopback:
-        raise ValueError("非本机模型接口必须使用 HTTPS")
-    return candidate.rstrip("/")
 
 
-class LLMSettings(BaseModel):
-    model_config = ConfigDict(hide_input_in_errors=True)
-
-    enabled: bool = True
-    base_url: str = "https://api.openai.com/v1"
-    model: str = ""
-    api_key_env: str = "DOUYIN_WIKI_LLM_API_KEY"
-    timeout_seconds: float = 120
-    max_retries: int = 2
-    # Preserve whatever the user configured when rendering/saving config.toml.
-    # oMLX local servers typically want response_format="json_schema" plus the
-    # optional thinking controls below; cloud OpenAI-compatible endpoints can
-    # keep the default json_object.
-    response_format: Literal["json_object", "json_schema"] = "json_object"
-    enable_thinking: bool | None = None
-    thinking_budget: int | None = Field(default=None, ge=0)
-    max_output_tokens: int | None = Field(default=None, ge=256, le=32768)
-    context_window_tokens: int = Field(default=65536, ge=1024)
-
-    @field_validator("base_url", mode="before")
-    @classmethod
-    def normalize_base_url(cls, value: str) -> str:
-        return normalize_llm_base_url(value)
 
 
 class EmbeddingSettings(BaseModel):
@@ -218,12 +177,18 @@ class AppConfig(BaseModel):
     vault_path: Path = Path.home() / "Documents" / "Obsidian" / "抖库"
     timezone: str = "Asia/Shanghai"
     analysis_mode: AnalysisMode = AnalysisMode.GATEWAY
-    llm: LLMSettings = Field(default_factory=LLMSettings)
     embeddings: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     media: MediaSettings = Field(default_factory=MediaSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
     auth_guidance: AuthGuidanceSettings = Field(default_factory=AuthGuidanceSettings)
     web: WebSettings = Field(default_factory=WebSettings)
+
+    @field_validator("analysis_mode", mode="before")
+    @classmethod
+    def gateway_only(cls, value: Any) -> AnalysisMode:
+        if value != AnalysisMode.GATEWAY:
+            raise ValueError("精简版只支持 gateway 分析模式")
+        return AnalysisMode.GATEWAY
 
     @property
     def state_dir(self) -> Path:
@@ -246,27 +211,8 @@ class AppConfig(BaseModel):
         return Path.home() / "Library" / "Application Support" / "douyin-wiki" / "browser-profile"
 
 
-def llm_api_key_required(base_url: str) -> bool:
-    """Return whether an OpenAI-compatible endpoint should require an API key.
-
-    Loopback endpoints are intentionally allowed without a key so local LM Studio and
-    Ollama-compatible servers work without storing or transmitting a dummy credential.
-    """
-    hostname = (urlsplit(base_url).hostname or "").lower()
-    if hostname == "localhost":
-        return False
-    try:
-        return not ip_address(hostname).is_loopback
-    except ValueError:
-        return True
 
 
-def llm_is_configured(settings: LLMSettings, api_key: str) -> bool:
-    return bool(
-        settings.enabled
-        and settings.model
-        and (api_key or not llm_api_key_required(settings.base_url))
-    )
 
 
 def _merge_dict(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
@@ -301,20 +247,6 @@ def _toml_string(value: object) -> str:
 
 def render_default_config(config: AppConfig | None = None) -> str:
     cfg = config or AppConfig()
-    llm_extras = "".join(
-        [
-            f"enable_thinking = {str(cfg.llm.enable_thinking).lower()}\n"
-            if cfg.llm.enable_thinking is not None
-            else "",
-            f"thinking_budget = {cfg.llm.thinking_budget}\n"
-            if cfg.llm.thinking_budget is not None
-            else "",
-            f"max_output_tokens = {cfg.llm.max_output_tokens}\n"
-            if cfg.llm.max_output_tokens is not None
-            else "",
-            f"context_window_tokens = {cfg.llm.context_window_tokens}\n",
-        ]
-    )
     profile = (
         f"\nbrowser_profile = {_toml_string(cfg.media.browser_profile)}"
         if cfg.media.browser_profile
@@ -323,16 +255,6 @@ def render_default_config(config: AppConfig | None = None) -> str:
     return f"""vault_path = {_toml_string(cfg.vault_path)}
 timezone = {_toml_string(cfg.timezone)}
 analysis_mode = {_toml_string(cfg.analysis_mode.value)}
-
-[llm]
-enabled = {str(cfg.llm.enabled).lower()}
-base_url = {_toml_string(cfg.llm.base_url)}
-model = {_toml_string(cfg.llm.model)}
-api_key_env = {_toml_string(cfg.llm.api_key_env)}
-timeout_seconds = {cfg.llm.timeout_seconds}
-max_retries = {cfg.llm.max_retries}
-response_format = {_toml_string(cfg.llm.response_format)}
-{llm_extras}
 
 [embeddings]
 provider = {_toml_string(cfg.embeddings.provider)}

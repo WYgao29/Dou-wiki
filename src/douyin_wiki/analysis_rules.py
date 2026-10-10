@@ -1,4 +1,6 @@
-"""Shared content-tag instructions for gateway and provider analyses."""
+"""Shared content-tag instructions for Gateway analyses."""
+
+PROMPT_VERSION = "v2.4-content-tags"
 
 MAX_ANALYSIS_TAGS = 3
 

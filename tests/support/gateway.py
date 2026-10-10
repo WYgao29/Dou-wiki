@@ -7,20 +7,22 @@ from typing import Any, Literal
 
 from douyin_wiki import mcp_server
 from douyin_wiki.adapters.embeddings import EmbeddingService
-from douyin_wiki.config import AppConfig, EmbeddingSettings, LLMSettings
+from douyin_wiki.config import AppConfig, EmbeddingSettings
+from douyin_wiki.gateway_protocol import CompactAnalysis
 from douyin_wiki.models import (
     AnalysisMode,
+    AnalysisResult,
     CaptureRequest,
     GatewayContext,
     InspirationInput,
     JobRecord,
     JobStatus,
+    TranscriptCorrection,
     TranscriptSegment,
 )
 from douyin_wiki.service import DouyinWikiService
 from douyin_wiki.worker import Worker
 from tests.conftest import (
-    FakeAnalysisProvider,
     FakeDownloader,
     FakeMediaProcessor,
     FakeOCR,
@@ -28,6 +30,105 @@ from tests.conftest import (
     FakeResolver,
     FakeTranscriber,
 )
+
+
+def gateway_analysis(job: JobRecord) -> dict[str, Any]:
+    """Create offline analysis input from the job's actual captured evidence."""
+    artifacts = job.artifacts
+    if artifacts.get("metadata", {}).get("source_kind") == "image_note":
+        observations = artifacts.get("ocr", [])
+        second = next((row for row in observations if row.get("image_index") == 2), None)
+        second = second or next((row for row in observations if row.get("text")), None)
+        return {
+            "title": "本地模型量化怎么选",
+            "one_liner": "按显存、速度和质量需求在 FP16、Q8、Q4 之间选择。",
+            "relevance_to_inspiration": "与本地模型部署灵感直接相关。",
+            "takeaways": ["FP16 质量高", "Q8 更均衡", "Q4 更省显存"],
+            "content_type": "explanation",
+            "content_card": {
+                "kind": "explanation", "question": "量化格式怎么选",
+                "concepts": ["FP16", "Q8", "Q4"],
+                "mechanism": ["位宽越低通常越省显存"], "examples": [],
+            },
+            "knowledge_atoms": [{
+                "id": "format-choice", "statement": "Q4 更适合显存紧张的本地部署",
+                "atom_type": "recommendation", "provenance": "image_ocr",
+                "image_index": second["image_index"], "quote": second["text"],
+            }] if second else [],
+            "tags": ["本地模型", "量化"],
+        }
+    transcript = artifacts.get("transcript_corrected") or artifacts.get("transcript_raw", [])
+    evidence = next((row for row in reversed(transcript) if row.get("text")), None)
+    observations = artifacts.get("ocr", [])
+    ocr = next((row for row in observations if row.get("text")), None)
+    source_quote = evidence["text"].rstrip("。") if evidence else ocr["text"] if ocr else ""
+    atom = {
+        "id": "claim-1", "statement": "高质量信息源应提供一手证据",
+        "atom_type": "fact", "quote": source_quote,
+        "provenance": "audio" if evidence else "ocr",
+        "timestamp_ms": (
+            evidence["start_ms"] if evidence else ocr.get("timestamp_ms", 0) if ocr else 0
+        ),
+    }
+    payload = {
+        "title": "离职后如何筛选财经媒体",
+        "summary": "减少低价值财经媒体，优先保留能够提供一手证据的信息源。",
+        "core_points": ["信息源质量比数量重要"],
+        "evidence": ["作者说明自己主动取关大量财经媒体"],
+        "steps": ["识别信息源", "检查是否提供一手证据"],
+        "applicable_scenarios": [item.text for item in job.request.inspirations],
+        "risks": ["这是作者个人经验，不代表所有场景"],
+        "actions": ["整理当前关注的信息源"], "tags": ["财经", "信息筛选"],
+        "concepts": ["信息源筛选"], "entities": [{"name": "Nee霓公子", "kind": "creator"}],
+        "knowledge_atoms": [atom] if source_quote else [],
+        "reminders": [{
+            "id": "reminder-1", "title": "检查财经信息源", "due_at": None,
+            "reason": "视频提出了可执行的整理动作", "source_quote": source_quote,
+            "confidence": 0.7, "needs_clarification": True,
+        }] if source_quote else [],
+        "ai_judgment": "值得保存，适合用于建立个人信息源筛选标准。",
+    }
+    normalized = AnalysisResult.model_validate(payload).model_dump(mode="json")
+    return {key: value for key, value in normalized.items() if key in CompactAnalysis.model_fields}
+
+
+
+async def complete_gateway_job(
+    service: DouyinWikiService, job_id: str, *,
+    analysis: dict[str, Any] | None = None, gateway_protocol: Literal[1, 2] = 1,
+) -> JobRecord:
+    """Submit only this waiting job and let the real Worker publish its result."""
+    job = service.database.get_job(job_id)
+    assert job.status == JobStatus.AWAITING_AGENT_ANALYSIS, (job.id, job.status, job.result)
+    if job.result.get("phase") == "transcript_correction":
+        context = service.get_analysis_context(job_id, gateway_protocol=gateway_protocol)
+        raw = job.artifacts.get("transcript_raw", [])
+        corrections = [] if gateway_protocol == 2 else [
+            TranscriptCorrection(id=row["id"], text=row["text"]) for row in raw
+        ]
+        service.submit_transcript_correction(
+            job_id, corrections, producer="test-agent", gateway_protocol=gateway_protocol,
+            context_revision=context.get("context_revision"),
+        )
+    job = service.database.get_job(job_id)
+    assert job.result.get("phase") == "analysis", job.result
+    context = service.get_analysis_context(job_id, gateway_protocol=gateway_protocol)
+    service.submit_gateway_analysis(
+        job_id, analysis if analysis is not None else gateway_analysis(job),
+        producer="test-agent", gateway_protocol=gateway_protocol,
+        context_revision=context.get("context_revision"),
+    )
+    worker = Worker(service)
+    for _ in range(max(16, len(service.database.list_jobs(limit=None)) * 3)):
+        target = service.database.get_job(job_id)
+        if target.status in {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}:
+            return target
+        assert target.status not in {
+            JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.NEEDS_AUTH, JobStatus.NEEDS_REVIEW,
+        }, (target.id, target.status, target.error_message, target.result)
+        processed = await worker.run_once()
+        assert processed is not None, (target.id, target.status, target.result)
+    raise AssertionError(f"Gateway 任务未在有限步数内完成：{service.database.get_job(job_id)}")
 
 
 def make_gateway_job(
@@ -76,7 +177,6 @@ def make_video_gateway_service(tmp_path: Path) -> DouyinWikiService:
     config = AppConfig(
         vault_path=tmp_path / "vault",
         analysis_mode=AnalysisMode.GATEWAY,
-        llm=LLMSettings(enabled=False),
         embeddings=EmbeddingSettings(provider="hash", fallback_dimensions=128),
     )
     service = DouyinWikiService(
@@ -86,7 +186,6 @@ def make_video_gateway_service(tmp_path: Path) -> DouyinWikiService:
         media=FakeMediaProcessor(),
         transcriber=FakeTranscriber(),
         ocr=FakeOCR(),
-        analysis=FakeAnalysisProvider(),
         embeddings=EmbeddingService(config.embeddings),
         reminders=FakeReminderAdapter(),
     )

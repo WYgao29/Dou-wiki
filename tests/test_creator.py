@@ -17,13 +17,8 @@ from douyin_wiki.models import (
     SourceKind,
 )
 from douyin_wiki.service import DouyinWikiService
-from tests.conftest import (
-    FakeAnalysisProvider,
-    FakeDownloader,
-    FakeMediaProcessor,
-    FakeOCR,
-    FakeTranscriber,
-)
+from tests.conftest import FakeDownloader, FakeMediaProcessor, FakeOCR, FakeTranscriber
+from tests.support.gateway import complete_gateway_job
 
 
 class DirectResolver:
@@ -107,7 +102,6 @@ def creator_service(config, fake_reminders):
         media=FakeMediaProcessor(),
         transcriber=FakeTranscriber(),
         ocr=FakeOCR(),
-        analysis=FakeAnalysisProvider(),
         embeddings=EmbeddingService(config.embeddings),
         reminders=fake_reminders,
     )
@@ -205,6 +199,8 @@ async def test_creator_inventory_selection_and_isolated_vault(creator_service) -
 
     child = service.database.claim_next_job()
     completed = await service.process_claimed_job(child)
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.status == JobStatus.COMPLETED
     parent = service.get_job(job.id)
     assert parent.status == JobStatus.COMPLETED
@@ -277,6 +273,8 @@ async def test_rebuild_reports_invalid_creator_sidecar_without_clearing_database
     service.confirm_creator_import(job.id)
     child = service.database.claim_next_job()
     completed = await service.process_claimed_job(child)
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
 
     creator = service.list_creators()[0]
     creator_path = service.config.vault_path / creator["folder_path"] / ".data" / "creator.md"
@@ -403,6 +401,8 @@ async def test_direct_capture_of_known_creator_uses_creator_folder(creator_servi
     work_id = "7677999999999999999"
     service.capture_douyin(f"https://www.douyin.com/video/{work_id}")
     completed = await service.process_claimed_job(service.database.claim_next_job())
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
 
     assert completed.status == JobStatus.COMPLETED
     entry = service.database.get_entry(completed.result["entry_id"])

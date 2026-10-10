@@ -6,11 +6,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from .adapters.llm import (
-    PROMPT_VERSION,
-    OpenAICompatibleProvider,
-)
-from .analysis_rules import CONTENT_TAG_RULES, MAX_ANALYSIS_TAGS
+from .analysis_rules import CONTENT_TAG_RULES, MAX_ANALYSIS_TAGS, PROMPT_VERSION
 from .errors import (
     JobStateError,
 )
@@ -25,7 +21,6 @@ from .gateway_protocol import (
 )
 from .gateway_sources import build_source_catalog, expand_source_references
 from .models import (
-    AnalysisMode,
     AnalysisResult,
     EntryRecord,
     GatewayContext,
@@ -53,7 +48,6 @@ class AnalysisMixin:
                 # Do not replay an invalid analysis or its model checkpoints on retry.
                 self.database.update_job(
                     job_id,
-                    artifacts={"llm_checkpoints": {}},
                     remove_artifacts={"analysis", "analysis_candidate"},
                 )
             raise JobStateError(
@@ -85,8 +79,6 @@ class AnalysisMixin:
             ]
         )
         if protocol == 2:
-            if self.config.analysis_mode != AnalysisMode.GATEWAY:
-                raise JobStateError("紧凑协议仅用于 Gateway 分析模式")
             phase = gateway_phase(job)
             if phase not in {"transcript_correction", "analysis"}:
                 raise JobStateError("当前阶段不提供紧凑分析上下文", details={"phase": phase})
@@ -175,8 +167,6 @@ class AnalysisMixin:
         ):
             raise JobStateError("当前任务已进入分析阶段，不可再次提交逐字稿校正")
         if protocol == 2:
-            if self.config.analysis_mode != AnalysisMode.GATEWAY:
-                raise JobStateError("紧凑协议仅用于 Gateway 分析模式")
             if gateway_phase(job) != "transcript_correction":
                 raise JobStateError("当前阶段不可提交逐字稿校正")
             require_context_revision(job, context_revision)
@@ -267,8 +257,6 @@ class AnalysisMixin:
         if self.database.get_review_issues(job_id, open_only=True):
             raise JobStateError("逐字稿仍有未解决疑点")
         if protocol == 2:
-            if self.config.analysis_mode != AnalysisMode.GATEWAY:
-                raise JobStateError("紧凑协议仅用于 Gateway 分析模式")
             if gateway_phase(job) != "analysis":
                 raise JobStateError("请读取当前分析阶段上下文")
             require_context_revision(job, context_revision)
@@ -455,12 +443,7 @@ class AnalysisMixin:
             )
 
         artifacts = dict(job.artifacts)
-        segments = [
-            TranscriptSegment.model_validate(item)
-            for item in artifacts.get("transcript_corrected", [])
-        ]
-        ocr_items = [self.ocr_model(item) for item in artifacts.get("ocr", [])]
-        if self.config.analysis_mode == AnalysisMode.GATEWAY and "analysis" not in artifacts:
+        if "analysis" not in artifacts:
             return self.database.update_job(
                 job.id,
                 status=JobStatus.AWAITING_AGENT_ANALYSIS,
@@ -470,92 +453,9 @@ class AnalysisMixin:
             )
 
         self.database.update_job(job.id, status=JobStatus.ANALYZING, progress=0.72)
-        if "analysis" not in artifacts:
-            metadata = dict(artifacts.get("metadata", {}))
-            metadata.pop("existing_tags", None)
-            context_text = "\n".join(
-                [
-                    *[item.text for item in entry.inspirations],
-                    *[item.text for item in segments],
-                    str(metadata.get("post_text") or ""),
-                    *[item.text for item in ocr_items],
-                ]
-            )
-            metadata["existing_knowledge"] = self.indexer.find_related_claims(context_text)
-            checkpoints = artifacts.setdefault("llm_checkpoints", {})
-
-            def save_checkpoint(_fingerprint: str, _value: dict[str, Any]) -> None:
-                self.database.update_job(job.id, artifacts={"llm_checkpoints": checkpoints})
-
-            def model_progress(phase: str, completed: int, total: int) -> None:
-                current = self.database.get_job(job.id)
-                self.database.update_job(
-                    job.id,
-                    progress=max(current.progress, 0.72 + 0.1 * completed / max(total, 1)),
-                    artifacts={
-                        "analysis_progress": {
-                            "phase": phase,
-                            "completed_chunks": completed,
-                            "total_chunks": total,
-                            "waiting_for_resource": False,
-                        }
-                    },
-                )
-
-            async with self.analysis_semaphore:
-                self.check_job_cancelled(job)
-                kwargs = (
-                    {
-                        "checkpoints": checkpoints,
-                        "on_checkpoint": save_checkpoint,
-                        "on_progress": model_progress,
-                    }
-                    if isinstance(self.analysis, OpenAICompatibleProvider)
-                    else {}
-                )
-                result = await self.analysis.analyze(
-                    segments, ocr_items, entry.inspirations, metadata, **kwargs
-                )
-            artifacts["analysis"] = result.model_dump(mode="json")
-
-        try:
-            validated = AnalysisResult.model_validate(artifacts["analysis"])
-            self._validate_analysis_tags(validated, job_id=job.id)
-            evidence_context = {**current_data, **artifacts}
-            if self.config.analysis_mode == AnalysisMode.PROVIDER:
-                audit: list[dict[str, Any]] = []
-                validated, removed = self.prune_unverified_analysis_evidence(
-                    validated, evidence_context, audit=audit
-                )
-                artifacts["analysis_evidence_audit"] = audit
-                if removed:
-                    artifacts["analysis_evidence_warning"] = (
-                        f"模型生成的 {removed} 条无法核实的证据或内容已移除"
-                    )
-            self.validate_analysis_evidence(validated, evidence_context)
-        except (ValueError, JobStateError):
-            if self.config.analysis_mode == AnalysisMode.PROVIDER:
-                self.database.update_job(
-                    job.id,
-                    artifacts={"llm_checkpoints": {}},
-                    remove_artifacts={"analysis", "analysis_candidate"},
-                )
-            raise
-        artifacts["analysis"] = validated.model_dump(mode="json")
-        self.database.update_job(
-            job.id,
-            artifacts={
-                "analysis": artifacts["analysis"],
-                "llm_checkpoints": {},
-                "analysis_evidence_audit": artifacts.get("analysis_evidence_audit", []),
-                **(
-                    {"analysis_evidence_warning": artifacts["analysis_evidence_warning"]}
-                    if artifacts.get("analysis_evidence_warning")
-                    else {}
-                ),
-            },
-            progress=0.84,
-        )
+        validated = AnalysisResult.model_validate(artifacts["analysis"])
+        self._validate_analysis_tags(validated, job_id=job.id)
+        self.validate_analysis_evidence(validated, {**current_data, **artifacts})
         normalized = validated.model_dump(mode="json")
         normalized["contradictions"] = self.normalize_contradictions(
             normalized.get("contradictions", []), entry.id
@@ -563,28 +463,16 @@ class AnalysisMixin:
         validated = AnalysisResult.model_validate(normalized)
         with self.vault.entry_operations_locked():
             self.check_job_cancelled(job)
-            # The model call intentionally happens before this lock. Reload both
+            # Agent analysis arrives before this lock. Reload both
             # projections so concurrent user mutations are merged into the
             # final analysis write instead of being overwritten by the snapshot
             # captured before analysis started.
             latest_entry = self.database.get_entry(entry_id)
             latest_data = self.database.get_entry_data(entry_id)
             latest_data["analysis"] = validated.model_dump(mode="json")
-            latest_data["provider"] = (
-                f"agent:{artifacts.get('analysis_producer', 'gateway')}"
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else self.analysis.name
-            )
-            latest_data["model"] = (
-                artifacts.get("analysis_model", "agent")
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else self.analysis.model
-            )
-            latest_data["prompt_version"] = (
-                f"external:{PROMPT_VERSION}"
-                if self.config.analysis_mode == AnalysisMode.GATEWAY
-                else PROMPT_VERSION
-            )
+            latest_data["provider"] = f"agent:{artifacts.get('analysis_producer', 'gateway')}"
+            latest_data["model"] = artifacts.get("analysis_model", "agent")
+            latest_data["prompt_version"] = f"external:{PROMPT_VERSION}"
             updated = latest_entry.model_copy(
                 update={
                     "title": safe_filename(validated.title),
@@ -615,7 +503,6 @@ class AnalysisMixin:
                 job.id,
                 status=JobStatus.COMPLETED_WITH_WARNINGS if warnings else JobStatus.COMPLETED,
                 progress=1,
-                artifacts={"llm_checkpoints": {}},
                 result={
                     "entry_id": updated.id,
                     "source_path": updated.source_path,

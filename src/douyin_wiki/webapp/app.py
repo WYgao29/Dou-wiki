@@ -22,7 +22,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from watchfiles import awatch
 
-from ..adapters.llm import FallbackAnalysisProvider, OpenAICompatibleProvider
 from ..adapters.share import extract_douyin_url
 from ..config import (
     AppConfig,
@@ -58,21 +57,7 @@ ANALYSIS_MODE_INFO = {
         ),
         "web_can_complete": False,
     },
-    "provider": {
-        "label": "后台模型接口",
-        "web_copy": "后台模型接口自动整理",
-        "detail": (
-            "导入后由 Worker 使用「设置 › 共用模型」的同一套接口自动校正和分析，"
-            "可能消耗 Token。没有第二套地址或密钥。"
-        ),
-        "web_can_complete": True,
-    },
-    "local": {
-        "label": "本地模式",
-        "web_copy": "本地模式，不调用外部模型",
-        "detail": "不调用外部模型，使用本地降级整理。适合无网络或不想消耗 Token 的场景。",
-        "web_can_complete": True,
-    },
+
 }
 
 
@@ -179,7 +164,7 @@ class SetFavoriteRequest(BaseModel):
 
 class AnalysisModeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    mode: AnalysisMode
+    mode: Literal["gateway"]
 
 
 _change_origin: ContextVar[str | None] = ContextVar("change_origin", default=None)
@@ -1019,27 +1004,23 @@ def create_app(
             current_config = (
                 load_config(config_path_value) if config_path_value.exists() else app.state.config
             )
-            updated = current_config.model_copy(update={"analysis_mode": payload.mode})
+            updated = current_config.model_copy(update={"analysis_mode": AnalysisMode.GATEWAY})
             if config_path_value.exists():
                 await asyncio.to_thread(
                     update_config_values,
                     config_path_value,
-                    {None: {"analysis_mode": payload.mode.value}},
+                    {None: {"analysis_mode": payload.mode}},
                 )
             else:
                 await asyncio.to_thread(write_config, updated, config_path_value, overwrite=True)
             app.state.config = updated
             core.config = updated
-            if payload.mode == AnalysisMode.PROVIDER:
-                core.analysis = OpenAICompatibleProvider(updated.llm)
-            else:
-                core.analysis = FallbackAnalysisProvider()
             reload_result = operations.request_worker_reload()
-        info = ANALYSIS_MODE_INFO[payload.mode.value]
+        info = ANALYSIS_MODE_INFO[payload.mode]
         warning = None
         return {
             "status": "分析方式已保存",
-            "analysis_mode": payload.mode.value,
+            "analysis_mode": payload.mode,
             "analysis_mode_label": info["label"],
             "web_copy": info["web_copy"],
             "web_can_complete": info["web_can_complete"],

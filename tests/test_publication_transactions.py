@@ -1,12 +1,12 @@
-import json
+
 import sqlite3
 
 import pytest
 
-from douyin_wiki.adapters.llm import ModelOutputError, OpenAICompatibleProvider
 from douyin_wiki.errors import JobLeaseLostError
-from douyin_wiki.models import AnalysisResult, JobStatus, TranscriptSegment
+from douyin_wiki.models import JobStatus
 from douyin_wiki.worker import Worker
+from tests.support.gateway import complete_gateway_job
 
 
 @pytest.mark.asyncio
@@ -20,8 +20,9 @@ async def test_lost_lease_cannot_publish_entry(service, monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(service, "persist_entry_documents_and_bundle", steal)
+    await Worker(service).run_once()
     with pytest.raises(JobLeaseLostError):
-        await Worker(service).run_once()
+        await complete_gateway_job(service, job.id)
     assert service.database.list_entries() == []
     assert service.vault.load_entries() == []
 
@@ -46,48 +47,8 @@ async def test_publication_holds_database_writer_lock(service, monkeypatch):
 
     monkeypatch.setattr(service, "write_entry_documents", publish)
     done = await Worker(service).run_once()
+    if done.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        done = await complete_gateway_job(service, done.id)
     assert checked
     assert done.status == JobStatus.COMPLETED
     assert len(service.database.list_entries()) == 1
-
-
-@pytest.mark.asyncio
-async def test_reanalysis_retry_reuses_successful_chunks(service, monkeypatch):
-    service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    initial = await Worker(service).run_once()
-    job = service.reanalyze_entry(initial.result["entry_id"], force=True)
-    segments = [
-        TranscriptSegment(id=i, start_ms=i * 1000, end_ms=(i + 1) * 1000, text="字")
-        .model_dump(mode="json") for i in range(81)
-    ]
-    service.database.update_job(job.id, artifacts={"transcript_corrected": segments})
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    service.config.llm.enabled = True
-    service.config.llm.base_url = "http://127.0.0.1:8000/v1"
-    service.config.llm.model = "test"
-    provider = OpenAICompatibleProvider(service.config.llm)
-    calls = []
-    fail = True
-
-    async def respond(system, user, **kwargs):
-        payload = json.loads(user)
-        ids = [x["source_segment_id"] for x in payload.get("transcript", [])]
-        calls.append(ids)
-        if fail and 80 in ids:
-            raise ModelOutputError("forced limit")
-        return AnalysisResult(title="成功分析").model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", respond)
-    service.analysis = provider
-    first = await Worker(service).run_once()
-    assert first.status == JobStatus.FAILED
-    assert len(first.artifacts["llm_checkpoints"]) == 1
-    assert first.artifacts["analysis_progress"]["completed_chunks"] == 1
-    first_chunk = calls[0]
-    fail = False
-    service.retry_job(job.id)
-    done = await Worker(service).run_once()
-    assert done.status == JobStatus.COMPLETED
-    assert calls.count(first_chunk) == 1
-    assert done.artifacts["llm_checkpoints"] == {}
-    assert service.database.get_entry(initial.result["entry_id"]).title == "成功分析"

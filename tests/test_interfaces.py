@@ -7,17 +7,15 @@ import plistlib
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 import douyin_wiki
 from douyin_wiki import cli, mcp_server
-from douyin_wiki.errors import ExternalToolError, JobStateError
+from douyin_wiki.errors import JobStateError
 from douyin_wiki.mcp_server import mcp
 from douyin_wiki.models import AnalysisMode, GatewayContext, JobStatus
-from douyin_wiki.secrets import get_secret, store_secret
 from douyin_wiki.setup import LaunchAgentInstaller, WebLaunchAgentInstaller
 from douyin_wiki.worker import Worker
 
@@ -83,45 +81,10 @@ def test_mcp_exposes_public_tools() -> None:
     assert "submit_fact_checks" not in names
 
 
-def test_secret_prefers_environment(monkeypatch) -> None:
-    monkeypatch.setenv("DOUYIN_WIKI_TEST_KEY", "secret-value")
-    assert get_secret("DOUYIN_WIKI_TEST_KEY") == "secret-value"
 
 
-def test_store_secret_confirms_stdin_and_verifies_keychain_write(monkeypatch) -> None:
-    calls = []
-    responses = iter(
-        [
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-            SimpleNamespace(returncode=0, stdout="secret-value\n", stderr=""),
-        ]
-    )
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return next(responses)
-
-    monkeypatch.setattr("douyin_wiki.secrets.subprocess.run", fake_run)
-    store_secret("DOUYIN_WIKI_TEST_KEY", "secret-value")
-
-    assert calls[0][0][-1] == "-w"
-    assert calls[0][1]["input"] == "secret-value\nsecret-value\n"
-    assert calls[1][0][1] == "find-generic-password"
 
 
-def test_store_secret_rejects_failed_readback(monkeypatch) -> None:
-    responses = iter(
-        [
-            SimpleNamespace(returncode=0, stdout="", stderr=""),
-            SimpleNamespace(returncode=0, stdout="\n", stderr=""),
-        ]
-    )
-    monkeypatch.setattr(
-        "douyin_wiki.secrets.subprocess.run", lambda *_, **__: next(responses)
-    )
-
-    with pytest.raises(ExternalToolError, match="写入 Keychain 后校验失败"):
-        store_secret("DOUYIN_WIKI_TEST_KEY", "secret-value")
 
 
 def test_mcp_preserves_structured_douyin_wiki_error(monkeypatch) -> None:

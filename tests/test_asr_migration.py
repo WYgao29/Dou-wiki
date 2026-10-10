@@ -114,7 +114,6 @@ def test_doctor_never_probes_retired_asr_engines(tmp_path, monkeypatch):
 
     monkeypatch.setattr("importlib.util.find_spec", find)
     monkeypatch.setattr("shutil.which", which)
-    monkeypatch.setattr("douyin_wiki.setup.get_secret", lambda *args: None)
     monkeypatch.setattr(
         "douyin_wiki.setup.qwen3_health", lambda _: {"ok": False, "message": "missing cache"}
     )

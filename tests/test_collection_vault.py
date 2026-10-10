@@ -10,6 +10,7 @@ from douyin_wiki.collection_models import CollectionProfile
 from douyin_wiki.errors import JobStateError
 from douyin_wiki.models import CaptureRequest, JobStatus
 from tests.conftest import FakeResolver
+from tests.support.gateway import complete_gateway_job
 from tests.test_collection_flow import MIX, A, B, FakeCollectionAdapter, snapshot
 
 
@@ -27,6 +28,8 @@ async def import_entry(service):
     result = await service.process_claimed_job(
         service.database.create_job(CaptureRequest(share_text=f"https://www.douyin.com/video/{A}"))
     )
+    if result.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        result = await complete_gateway_job(service, result.id)
     assert result.status == JobStatus.COMPLETED
     return service.database.get_entry(result.result["entry_id"])
 

@@ -10,11 +10,6 @@ from typing import Any
 from .adapters.creator import DouyinCreatorAdapter
 from .adapters.embeddings import EmbeddingService
 from .adapters.image_note import PlaywrightImageNoteDownloader
-from .adapters.llm import (
-    AnalysisProvider,
-    FallbackAnalysisProvider,
-    OpenAICompatibleProvider,
-)
 from .adapters.media import (
     FFmpegMediaProcessor,
     YtDlpDownloader,
@@ -36,7 +31,6 @@ from .errors import (
     JobStateError,
 )
 from .models import (
-    AnalysisMode,
     AuthCheckResult,
     CaptureOptions,
     CaptureRequest,
@@ -80,7 +74,7 @@ class DouyinWikiService(
         media: FFmpegMediaProcessor | None = None,
         transcriber: Transcriber | None = None,
         ocr: OCREngine | None = None,
-        analysis: AnalysisProvider | None = None,
+        analysis: Any | None = None,
         embeddings: EmbeddingService | None = None,
         reminders: MacOSReminderAdapter | None = None,
         auth_guidance_launcher: AuthGuidanceLauncher | None = None,
@@ -116,17 +110,6 @@ class DouyinWikiService(
         self.transcriber = transcriber or SelectedTranscriber(config.media)
         script = Path(str(files("douyin_wiki").joinpath("resources/vision_ocr.swift")))
         self.ocr = ocr or SelectedOCR(config.media, script)
-        if analysis is not None:
-            self.analysis = analysis
-        elif config.analysis_mode == AnalysisMode.LOCAL:
-            self.analysis = FallbackAnalysisProvider()
-        elif config.analysis_mode == AnalysisMode.PROVIDER:
-            # Provider mode is an explicit promise to use the configured API.
-            # Keep the unconfigured provider so the job fails visibly instead
-            # of silently replacing an existing analysis with heuristic output.
-            self.analysis = OpenAICompatibleProvider(config.llm)
-        else:
-            self.analysis = FallbackAnalysisProvider()
         self.embeddings = embeddings or EmbeddingService(config.embeddings)
         self.indexer = KnowledgeIndexer(self.database, self.embeddings)
         self.searcher = KnowledgeSearch(self.database, self.embeddings)
@@ -134,7 +117,6 @@ class DouyinWikiService(
         self.auth_guidance_launcher = auth_guidance_launcher or NoopAuthGuidanceLauncher()
         self.download_semaphore = asyncio.Semaphore(config.worker.download_concurrency)
         self.media_semaphore = asyncio.Semaphore(config.worker.media_concurrency)
-        self.analysis_semaphore = asyncio.Semaphore(config.worker.analysis_concurrency)
 
     def initialize(self, *, initialize_git: bool = True) -> None:
         with self.vault.entry_operations_locked():
@@ -374,7 +356,6 @@ class DouyinWikiService(
                     "review_resolved",
                     "analysis",
                     "analysis_candidate",
-                    "llm_checkpoints",
                     "user_dismissed",
                     "cancel_requested",
                 },

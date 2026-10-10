@@ -11,13 +11,7 @@ from typer.testing import CliRunner
 import douyin_wiki.cli as cli_module
 from douyin_wiki.auth_guidance import SubprocessAuthGuidanceLauncher
 from douyin_wiki.cli import app
-from douyin_wiki.config import (
-    AppConfig,
-    LLMSettings,
-    MediaSettings,
-    load_config,
-    render_default_config,
-)
+from douyin_wiki.config import AppConfig, MediaSettings, load_config, render_default_config
 from douyin_wiki.models import AnalysisMode
 from douyin_wiki.setup import (
     VaultSetupMode,
@@ -31,6 +25,75 @@ from douyin_wiki.setup import (
 from douyin_wiki.vault import VaultWriter
 
 runner = CliRunner()
+
+
+def test_default_config_contains_no_llm_settings(tmp_path: Path) -> None:
+    config = AppConfig(vault_path=tmp_path / "vault")
+    rendered = render_default_config(config)
+    assert "[llm]" not in rendered
+    assert not hasattr(config, "llm")
+    path = tmp_path / "config.toml"
+    path.write_text(rendered)
+    assert load_config(path).analysis_mode == AnalysisMode.GATEWAY
+
+
+@pytest.mark.parametrize("mode", ["provider", "local", "unknown"])
+def test_disabled_and_unknown_analysis_modes_are_rejected(tmp_path: Path, mode: str) -> None:
+    with pytest.raises(ValueError, match="只支持 gateway"):
+        AppConfig(analysis_mode=mode)
+    path = tmp_path / "config.toml"
+    path.write_text(f'analysis_mode = "{mode}"\n')
+    with pytest.raises(ValueError, match="只支持 gateway"):
+        load_config(path)
+
+
+@pytest.mark.asyncio
+async def test_no_llm_runtime_does_not_access_keys_or_model_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    from douyin_wiki.webapp.app import create_app
+    from douyin_wiki.worker import Worker
+    from tests.support.gateway import make_video_gateway_service
+    from tests.support.web import local_client
+
+    run = subprocess.run
+
+    def guarded_run(command, *args, **kwargs):
+        assert command[0] != "security", "运行检查不应访问 Keychain"
+        return run(command, *args, **kwargs)
+
+    async def forbidden_http(*args, **kwargs):
+        pytest.fail("初始化和空队列不应调用对话模型 HTTP")
+
+    monkeypatch.delenv("DOUYIN_WIKI_LLM_API_KEY", raising=False)
+    monkeypatch.setattr(subprocess, "run", guarded_run)
+    monkeypatch.setattr(httpx.AsyncClient, "send", forbidden_http)
+    service = make_video_gateway_service(tmp_path)
+    checks = doctor(service.config)
+    assert "llm" not in checks
+    assert "api_key" not in checks
+    application = create_app(service.config, service=service, start_watcher=False)
+    with local_client(application) as client:
+        assert client.get("/api/overview").status_code == 200
+    assert await Worker(service).run_once() is None
+    assert not hasattr(service, "analysis")
+
+
+@pytest.mark.parametrize("arguments", [[], ["--model", "old-model", "--base-url", "http://localhost:8000/v1"]])
+def test_configure_model_is_disabled_without_prompt(tmp_path: Path, monkeypatch, arguments) -> None:
+    def forbidden(*args, **kwargs):
+        pytest.fail("停用命令不应读取配置、写入或交互")
+
+    for name in ("load_config", "write_config", "update_config_values"):
+        monkeypatch.setattr(cli_module, name, forbidden)
+    monkeypatch.setattr(cli_module.typer, "prompt", forbidden)
+    path = tmp_path / "absent.toml"
+    result = runner.invoke(app, ["configure-model", *arguments, "--config-path", str(path)])
+    assert result.exit_code == 2, result.output
+    assert "已停用" in result.output
+    assert not path.exists()
 
 
 def test_qwen_model_commands_use_the_current_environment_outside_the_project(
@@ -160,7 +223,6 @@ def test_config_round_trips_quoted_strings_and_is_written_atomically(tmp_path: P
     vault = tmp_path / '包含"引号的 Vault'
     config = AppConfig(
         vault_path=vault,
-        llm={"model": 'provider/model"quoted'},
         media={"browser_profile": 'Profile "Work"'},
     )
 
@@ -168,195 +230,63 @@ def test_config_round_trips_quoted_strings_and_is_written_atomically(tmp_path: P
     loaded = load_config(config_path)
 
     assert loaded.vault_path == vault
-    assert loaded.llm.model == 'provider/model"quoted'
     assert loaded.media.browser_profile == 'Profile "Work"'
     assert not list(tmp_path.glob(".config.toml.*.tmp"))
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://models.example/v1",
-        "ftp://models.example/v1",
-        "https://user:secret@models.example/v1",
-        "https://models.example/v1#fragment",
-        "https://models.example/v1#",
-    ],
-)
-def test_llm_settings_reject_unsafe_endpoints(url: str) -> None:
-    with pytest.raises(ValueError) as exc_info:
-        LLMSettings(base_url=url)
-    assert url not in str(exc_info.value)
-    assert "secret" not in str(exc_info.value)
 
 
-def test_load_config_rejects_endpoint_without_echoing_input(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.toml"
-    credential_url = "https://user:secret@models.example/v1"
-    config_path.write_text(
-        f'[llm]\nbase_url = "{credential_url}"\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        load_config(config_path)
-
-    assert credential_url not in str(exc_info.value)
-    assert "secret" not in str(exc_info.value)
 
 
-def test_cli_rejects_invalid_persistent_endpoint_without_echoing_input(
-    tmp_path: Path,
-) -> None:
-    config_path = tmp_path / "config.toml"
-    credential_url = "https://user:secret@models.example/v1"
-    config_path.write_text(
-        f'[llm]\nbase_url = "{credential_url}"\n',
-        encoding="utf-8",
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "configure-model",
-            "--model",
-            "remote-model",
-            "--config-path",
-            str(config_path),
-        ],
-    )
-
-    assert result.exit_code != 0
-    assert credential_url not in result.output
-    assert "secret" not in result.output
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://localhost:11434/v1/",
-        "http://127.0.0.1:1234/v1/",
-        "http://[::1]:1234/v1/",
-        "https://models.example/v1/",
-    ],
-)
-def test_llm_settings_normalize_safe_endpoints(url: str) -> None:
-    assert not LLMSettings(base_url=url).base_url.endswith("/")
 
 
 def test_config_patch_preserves_comments_and_unknown_keys(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         '# 用户注释\nanalysis_mode = "gateway"\ncustom_root = "keep"\n\n'
-        '[llm]\nmodel = "old" # 模型注释\ncustom_llm = 42\n',
+        '[media]\nbrowser = "chrome" # 浏览器注释\ncustom_media = 42\n',
         encoding="utf-8",
     )
 
     update_config_values(
         config_path,
-        {None: {"analysis_mode": "provider"}, "llm": {"model": "new"}},
+        {None: {"analysis_mode": "gateway"}, "media": {"browser": "edge"}},
     )
 
     content = config_path.read_text(encoding="utf-8")
     assert "# 用户注释" in content
     assert 'custom_root = "keep"' in content
-    assert "custom_llm = 42" in content
-    assert 'model = "new" # 模型注释' in content
+    assert "custom_media = 42" in content
+    assert 'browser = "edge" # 浏览器注释' in content
 
 
 def test_config_patch_ignores_section_like_text_inside_multiline_values(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        'analysis_mode = "gateway"\n\n[llm]\n'
+        'analysis_mode = "gateway"\n\n[media]\n'
         'banner = """\n[not-a-section]\n保留这段文字\n"""\n'
         'aliases = [\n  "[array-value]",\n]\n'
-        'model = """\nold\n[also-not-a-section]\n"""\n'
-        'base_url = "https://old.example/v1"\n',
+        'browser = """\nchrome\n[also-not-a-section]\n"""\n'
+        'browser_profile = "Profile Chrome"\n',
         encoding="utf-8",
     )
 
     update_config_values(
         config_path,
-        {"llm": {"model": "new", "base_url": "https://new.example/v1"}},
+        {"media": {"browser": "edge", "browser_profile": "Profile Edge"}},
     )
 
     content = config_path.read_text(encoding="utf-8")
-    assert content.count("model = ") == 1
+    assert content.count("browser = ") == 1
     assert "[not-a-section]\n保留这段文字" in content
     assert 'aliases = [\n  "[array-value]",\n]' in content
-    assert load_config(config_path).llm.model == "new"
+    assert load_config(config_path).media.browser == "edge"
 
 
-def test_configure_model_allows_loopback_endpoint_without_api_key(
-    tmp_path: Path, monkeypatch
-) -> None:
-    config_path = tmp_path / "config.toml"
-
-    class FakeInstaller:
-        WORKER_LABEL = "worker"
-
-        def __init__(self, _: Path) -> None:
-            self.launch_agents = tmp_path / "launch-agents"
-
-        def install(self):
-            raise AssertionError("worker should not be reinstalled in this test")
-
-    monkeypatch.setattr("douyin_wiki.cli.LaunchAgentInstaller", FakeInstaller)
-    monkeypatch.setattr(
-        "douyin_wiki.cli.store_secret",
-        lambda *_: (_ for _ in ()).throw(AssertionError("local endpoint must not store a key")),
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "configure-model",
-            "--model",
-            "local-model",
-            "--base-url",
-            "http://127.0.0.1:1234/v1",
-            "--config-path",
-            str(config_path),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert "本机接口无需密钥" in result.output
-    configured = load_config(config_path)
-    assert configured.analysis_mode == AnalysisMode.PROVIDER
-    assert configured.llm.model == "local-model"
 
 
-def test_configure_model_rejects_remote_http_before_storing_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(render_default_config(AppConfig()), encoding="utf-8")
-    stored: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        "douyin_wiki.cli.store_secret",
-        lambda account, value: stored.append((account, value)),
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "configure-model",
-            "--model",
-            "remote-model",
-            "--base-url",
-            "http://models.example/v1",
-            "--config-path",
-            str(config_path),
-        ],
-        input="remote-secret\nremote-secret\n",
-    )
-
-    assert result.exit_code != 0
-    assert "非本机模型接口必须使用 HTTPS" in result.output
-    assert "http://models.example/v1" not in result.output
-    assert "remote-secret" not in result.output
-    assert stored == []
 
 
 def test_configure_model_does_not_expose_api_key_option() -> None:
@@ -546,23 +476,6 @@ def test_doctor_reports_unregistered_obsidian_vault(
     assert str(vault) in checks["obsidian_vault"]["action"]
 
 
-def test_render_default_config_preserves_llm_response_format(tmp_path: Path) -> None:
-    rendered = render_default_config(
-        AppConfig(
-            llm=LLMSettings(
-                response_format="json_schema",
-                model="local-model",
-                context_window_tokens=32768,
-            )
-        )
-    )
-    assert 'response_format = "json_schema"' in rendered
-    assert "context_window_tokens = 32768" in rendered
-    path = tmp_path / "config.toml"
-    path.write_text(rendered, encoding="utf-8")
-    loaded = load_config(path)
-    assert loaded.llm.response_format == "json_schema"
-    assert loaded.llm.context_window_tokens == 32768
 
 
 def test_doctor_transcription_and_ocr_follow_media_providers(tmp_path: Path, monkeypatch) -> None:

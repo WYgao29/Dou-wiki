@@ -11,14 +11,17 @@ from threading import Event
 
 import pytest
 
-from douyin_wiki.models import InspirationInput
+from douyin_wiki.models import InspirationInput, JobStatus
 from douyin_wiki.vault import VaultWriter
 from douyin_wiki.worker import Worker
+from tests.support.gateway import complete_gateway_job
 
 
 async def _capture(service):
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     job = await Worker(service).run_once()
+    if job.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        job = await complete_gateway_job(service, job.id)
     return service.database.get_entry(job.result["entry_id"])
 
 

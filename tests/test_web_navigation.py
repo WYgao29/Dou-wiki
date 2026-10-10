@@ -166,7 +166,6 @@ def test_doctor_points_web_users_to_auth_page(tmp_path) -> None:
     message = doctor["douyin_browser_profile"]["message"]
     assert "设置 › 授权状态" in message
     assert "网页「授权状态」" not in message
-    web_llm = doctor["web_llm"]["message"] or ""
-    if web_llm:
-        assert "设置 › 共用模型" in web_llm
-        assert "模型设置" not in web_llm
+    assert "web_llm" not in doctor
+    assert "llm" not in doctor
+    assert doctor["analysis_mode"]["mode"] == "gateway"

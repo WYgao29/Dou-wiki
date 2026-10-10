@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import copy
 
 import pytest
@@ -15,6 +14,7 @@ from douyin_wiki.models import (
 )
 from douyin_wiki.vault import encode_markdown_path
 from douyin_wiki.worker import Worker
+from tests.support.gateway import complete_gateway_job
 
 
 def analysis_payload(kind: str, card: dict) -> dict:
@@ -178,6 +178,8 @@ def test_timeline_chapter_evidence_rejects_blank_quote() -> None:
 async def test_v2_adaptive_cards_are_compact(service, kind, card, label) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.submit_analysis(
         completed.result["entry_id"],
         analysis_payload(kind, card),
@@ -201,6 +203,8 @@ async def test_v2_adaptive_cards_are_compact(service, kind, card, label) -> None
 async def test_knowledge_atoms_drive_timestamped_search(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     service.submit_analysis(
         completed.result["entry_id"],
         analysis_payload("tutorial", {"goal": "完成手冲", "parameters": ["15克粉"]}),
@@ -216,6 +220,8 @@ async def test_knowledge_atoms_drive_timestamped_search(service) -> None:
 async def test_analysis_rejects_untraceable_quote_and_locator(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     payload = analysis_payload("tutorial", {"goal": "测试证据"})
     payload["knowledge_atoms"][0]["quote"] = "作品中从未出现的参数"
     payload["knowledge_atoms"][0]["timestamp_ms"] = 55000
@@ -227,6 +233,8 @@ async def test_analysis_rejects_untraceable_quote_and_locator(service) -> None:
 async def test_analysis_rejects_ungrounded_timeline_chapter(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     payload = analysis_payload("tutorial", {"goal": "测试章节证据"})
     payload["chapters"][0]["evidence"] = []
     with pytest.raises(JobStateError, match="时间轴章节 1 缺少可核验证据"):
@@ -315,6 +323,8 @@ def test_provider_repairs_video_locator_and_inference_type(service) -> None:
 async def test_reanalysis_reuses_evidence_and_is_idempotent(service, monkeypatch) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     data = service.database.get_entry_data(entry.id)
     legacy = copy.deepcopy(data)
@@ -332,6 +342,8 @@ async def test_reanalysis_reuses_evidence_and_is_idempotent(service, monkeypatch
 
     job = service.reanalyze_entry(entry.id)
     result = await Worker(service).run_once()
+    if result.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        result = await complete_gateway_job(service, result.id)
     assert result.id == job.id
     assert result.status == JobStatus.COMPLETED
     assert result.result["reused_transcript"] is True
@@ -349,92 +361,66 @@ async def test_reanalysis_reuses_evidence_and_is_idempotent(service, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_reanalysis_preserves_concurrent_user_state(service, monkeypatch) -> None:
-    service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    completed = await Worker(service).run_once()
+async def test_reanalysis_preserves_concurrent_user_state(service) -> None:
+    capture = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
+    await Worker(service).run_once()
+    completed = await complete_gateway_job(service, capture.id)
     entry = service.database.get_entry(completed.result["entry_id"])
-    data = service.database.get_entry_data(entry.id)
-    data["analysis"].pop("analysis_version", None)
-    service.database.upsert_entry(entry, data)
-
-    started = asyncio.Event()
-    release = asyncio.Event()
-    captured_inspirations: list[str] = []
-
-    async def blocking_analyze(segments, ocr, inspirations, metadata):
-        captured_inspirations.extend(item.text for item in inspirations)
-        started.set()
-        await release.wait()
-        return AnalysisResult.model_validate(
-            analysis_payload("tutorial", {"goal": "重分析后的最新结论"})
-        )
-
-    monkeypatch.setattr(service.analysis, "analyze", blocking_analyze)
-    job = service.reanalyze_entry(entry.id)
-    processing = asyncio.create_task(Worker(service).run_once())
-    await asyncio.wait_for(started.wait(), timeout=3)
-    assert captured_inspirations == []
-
+    job = service.reanalyze_entry(entry.id, force=True)
+    waiting = await Worker(service).run_once()
+    assert waiting.id == job.id and waiting.result["phase"] == "analysis"
+    context = service.get_analysis_context(job.id)
+    assert context["inspirations_verbatim"] == []
+    service.submit_gateway_analysis(
+        job.id, analysis_payload("tutorial", {"goal": "重分析后的最新结论"}),
+        producer="test-agent",
+    )
     inspiration = InspirationInput(text="重分析期间新增的灵感")
     service.add_inspiration(entry.id, inspiration)
     service.set_entry_favorite(entry.id, True)
-    release.set()
-    result = await asyncio.wait_for(processing, timeout=3)
-
-    assert result.id == job.id
-    assert result.status == JobStatus.COMPLETED
+    result = await Worker(service).run_once()
+    assert result.id == job.id and result.status == JobStatus.COMPLETED
     final_entry = service.database.get_entry(entry.id)
     final_data = service.database.get_entry_data(entry.id)
     assert final_entry.title == "tutorial 示例"
     assert final_entry.summary == "这是一条用于验证自适应视频知识卡片的简短摘要。"
     assert final_entry.tags == ["测试", "tutorial"]
     assert final_entry.inspirations == [inspiration]
-    assert final_entry.favorite is True
-    assert final_entry.retention == RetentionPolicy.KEEP
+    assert final_entry.favorite is True and final_entry.retention == RetentionPolicy.KEEP
     assert final_data["inspirations"] == [inspiration.model_dump(mode="json")]
     assert final_data["analysis"]["content_card"]["goal"] == "重分析后的最新结论"
 
 
+
 @pytest.mark.asyncio
-async def test_reanalysis_does_not_recreate_deleted_entry(service, monkeypatch) -> None:
-    service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    completed = await Worker(service).run_once()
+async def test_reanalysis_does_not_recreate_deleted_entry(service) -> None:
+    capture = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
+    await Worker(service).run_once()
+    completed = await complete_gateway_job(service, capture.id)
     entry = service.database.get_entry(completed.result["entry_id"])
-    data = service.database.get_entry_data(entry.id)
-    data["analysis"].pop("analysis_version", None)
-    service.database.upsert_entry(entry, data)
     source_path = service.config.vault_path / entry.source_path
     machine_path = service.config.vault_path / "wiki" / ".data" / "sources" / f"{entry.video_id}.md"
-
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def blocking_analyze(segments, ocr, inspirations, metadata):
-        started.set()
-        await release.wait()
-        return AnalysisResult.model_validate(
-            analysis_payload("tutorial", {"goal": "删除后不应写入"})
-        )
-
-    monkeypatch.setattr(service.analysis, "analyze", blocking_analyze)
-    job = service.reanalyze_entry(entry.id)
-    processing = asyncio.create_task(service.process_reanalysis(job))
-    await asyncio.wait_for(started.wait(), timeout=3)
+    job = service.reanalyze_entry(entry.id, force=True)
+    await Worker(service).run_once()
+    queued = service.submit_gateway_analysis(
+        job.id, analysis_payload("tutorial", {"goal": "删除后不应写入"}), producer="test-agent",
+    )
     service.trash_entry(entry.id, confirmed=True)
-    release.set()
-
     with pytest.raises(EntryNotFoundError):
-        await asyncio.wait_for(processing, timeout=3)
+        await service.process_reanalysis(queued)
     with pytest.raises(EntryNotFoundError):
         service.database.get_entry(entry.id)
     assert not source_path.exists()
     assert not machine_path.exists()
 
 
+
 @pytest.mark.asyncio
 async def test_gateway_reanalysis_starts_at_analysis_phase(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     data = service.database.get_entry_data(entry.id)
     data["analysis"].pop("analysis_version", None)
@@ -461,6 +447,8 @@ async def test_gateway_reanalysis_starts_at_analysis_phase(service) -> None:
 async def test_render_failure_keeps_previous_document_pair(service, monkeypatch) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     source = service.config.vault_path / entry.source_path
     machine = service.config.vault_path / "wiki" / ".data" / "sources" / f"{entry.video_id}.md"
@@ -497,12 +485,26 @@ async def test_failed_initial_vault_write_does_not_create_duplicate_cache_entry(
 
     monkeypatch.setattr(service.vault, "write_entry", fail_once)
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
+    paused = await Worker(service).run_once()
+    context = service.get_analysis_context(job.id, gateway_protocol=2)
+    service.submit_transcript_correction(
+        job.id, [], producer="test-agent", gateway_protocol=2,
+        context_revision=context["context_revision"],
+    )
+    context = service.get_analysis_context(job.id, gateway_protocol=2)
+    service.submit_gateway_analysis(
+        job.id, {"title": "离职后如何筛选财经媒体"}, producer="test-agent", gateway_protocol=2,
+        context_revision=context["context_revision"],
+    )
+    assert paused.result["phase"] == "transcript_correction"
     failed = await Worker(service).run_once()
     assert failed.status == JobStatus.FAILED
     assert service.database.find_entry_by_video_id("7672717300746907078") is None
 
     service.retry_job(job.id)
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.status == JobStatus.COMPLETED
     assert service.database.find_entry_by_video_id("7672717300746907078") is not None
 
@@ -511,6 +513,8 @@ async def test_failed_initial_vault_write_does_not_create_duplicate_cache_entry(
 async def test_database_can_be_rebuilt_from_machine_markdown(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     original = service.database.get_entry(entry_id)
     topic_id = service.create_topic("重建测试专题", [entry_id], goal="验证 Markdown 是长期事实源")[

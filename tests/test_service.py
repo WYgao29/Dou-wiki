@@ -8,46 +8,31 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import httpx
 import pytest
 
 from douyin_wiki.adapters.embeddings import EmbeddingService
-from douyin_wiki.adapters.llm import (
-    ModelLimitError,
-    ModelOutputError,
-    OpenAICompatibleProvider,
-    _analysis_response_schema,
-    _nearby_ocr,
-    _parse_json_content,
-    _preserve_partial_coverage,
-)
 from douyin_wiki.adapters.share import ResolvedShare
-from douyin_wiki.config import EmbeddingSettings, LLMSettings
+from douyin_wiki.config import EmbeddingSettings
 from douyin_wiki.errors import (
     CookieRequiredError,
     ExternalToolError,
     JobStateError,
-    ModelServiceError,
 )
 from douyin_wiki.models import (
     AnalysisMode,
-    AnalysisResult,
     AuthCheckResult,
     GatewayContext,
     InspirationInput,
     JobStatus,
-    OCRObservation,
     RetentionPolicy,
     TranscriptCorrection,
-    TranscriptSegment,
 )
-from douyin_wiki.operation import present_job
 from douyin_wiki.service import DouyinWikiService
 from douyin_wiki.vault import VaultWriter
 from douyin_wiki.worker import Worker
+from tests.support.gateway import complete_gateway_job
 
 from .conftest import (
-    FakeAnalysisProvider,
     FakeDownloader,
     FakeMediaProcessor,
     FakeOCR,
@@ -136,13 +121,6 @@ class BlockingDownloader(FakeDownloader):
         return await super().download(url, video_id, target_dir)
 
 
-class CountingAnalysisProvider(FakeAnalysisProvider):
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def analyze(self, segments, ocr, inspirations, metadata):
-        self.calls += 1
-        return await super().analyze(segments, ocr, inspirations, metadata)
 
 
 class GatedLockContext:
@@ -220,6 +198,8 @@ async def test_gateway_agent_handoff_completes_and_emits_routed_events(service) 
     assert queued.status == JobStatus.QUEUED
 
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.status == JobStatus.COMPLETED
     data = service.database.get_entry_data(completed.result["entry_id"])
     assert data["transcript_raw"][0]["text"] == "离职以后我取关了很多财经媒体。"
@@ -248,20 +228,13 @@ async def test_gateway_agent_handoff_completes_and_emits_routed_events(service) 
 async def test_jobs_without_gateway_route_do_not_create_delivery_events(service) -> None:
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.id == job.id
     assert completed.status == JobStatus.COMPLETED
     assert service.list_job_events() == []
 
 
-@pytest.mark.asyncio
-async def test_provider_mode_does_not_silently_fall_back_when_unconfigured(service) -> None:
-    service.analysis = OpenAICompatibleProvider(service.config.llm)
-    job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    failed = await Worker(service).run_once()
-    assert failed.id == job.id
-    assert failed.status == JobStatus.FAILED
-    assert failed.error_code == "model_not_configured"
-    assert service.database.list_entries() == []
 
 
 @pytest.mark.asyncio
@@ -269,6 +242,8 @@ async def test_ocr_failure_is_visible_as_completed_warning(service) -> None:
     service.ocr = BrokenOCR()
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.status == JobStatus.COMPLETED_WITH_WARNINGS
     assert "OCR 未完成" in completed.result["warnings"][0]
 
@@ -286,6 +261,8 @@ async def test_end_to_end_capture_writes_vault_and_searches(service) -> None:
         [inspiration],
     )
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.id == job.id
     assert completed.status == JobStatus.COMPLETED
     entry_id = completed.result["entry_id"]
@@ -332,20 +309,13 @@ async def test_video_without_audio_still_extracts_frames_without_transcribing(se
         async def transcribe(self, audio_path: Path, output_dir: Path):
             raise AssertionError("无音轨时不应调用转录")
 
-    class OcrOnlyAnalysis(FakeAnalysisProvider):
-        async def analyze(self, segments, ocr, inspirations, metadata):
-            return AnalysisResult(
-                title="财经媒体筛选",
-                one_liner="画面显示财经媒体筛选",
-                takeaways=["画面显示财经媒体筛选"],
-            )
-
     service.media = NoAudioProcessor()
     service.transcriber = UnexpectedTranscriber()
-    service.analysis = OcrOnlyAnalysis()
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
 
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
 
     assert completed.id == job.id
     assert completed.artifacts["transcript_raw"] == []
@@ -405,6 +375,8 @@ async def test_concurrent_works_capture_their_own_asr_provenance(service) -> Non
     second_run = asyncio.create_task(Worker(service).run_once())
     results = await asyncio.gather(first_run, second_run)
     assert {item.id for item in results} == {first.id, second.id}
+    assert all(item.status == JobStatus.AWAITING_AGENT_ANALYSIS for item in results)
+    results = [await complete_gateway_job(service, item.id) for item in results]
     assert all(item.status == JobStatus.COMPLETED for item in results)
     provenances = [
         service.database.get_job(item.id).artifacts["media_provenance"]["asr"]
@@ -450,36 +422,33 @@ async def test_qwen_mid_window_failure_saves_no_partial_raw_and_can_retry(servic
     assert runtime.cleared == 1
     service.retry_job(job.id)
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.status == JobStatus.COMPLETED
     assert len(completed.artifacts["transcript_raw"]) == 2
     assert [item["id"] for item in completed.artifacts["transcript_raw"]] == [0, 1]
 
 
 @pytest.mark.asyncio
-async def test_retry_with_historical_raw_skips_asr_and_keeps_provenance(service, monkeypatch):
-    historical = {"provider": "whisper", "fallback_reason": "historical"}
-    service.transcriber.provenance = historical
+async def test_retry_reuses_raw_transcript_and_keeps_provenance(service, monkeypatch):
+    from tests.support.gateway import complete_gateway_job
 
-    async def failed_correction(*_args):
-        raise ExternalToolError("correction unavailable")
-
-    original = service.analysis.correct_transcript
-    monkeypatch.setattr(service.analysis, "correct_transcript", failed_correction)
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    failed = await Worker(service).run_once()
-    assert failed.status == JobStatus.FAILED
-    assert failed.artifacts["transcript_raw"]
+    paused = await Worker(service).run_once()
+    raw = paused.artifacts["transcript_raw"]
+    provenance = paused.artifacts["media_provenance"]
+    service.database.update_job(job.id, status=JobStatus.FAILED, error_message="处理被中断")
 
     async def forbidden(*_args):
-        pytest.fail("已有历史原稿不应再次转写")
+        pytest.fail("已有原稿不应再次转写")
 
     monkeypatch.setattr(service.transcriber, "transcribe", forbidden)
-    monkeypatch.setattr(service.analysis, "correct_transcript", original)
     service.retry_job(job.id)
-    completed = await Worker(service).run_once()
-    assert completed.status == JobStatus.COMPLETED
-    assert completed.artifacts["transcript_raw"] == failed.artifacts["transcript_raw"]
-    assert completed.artifacts["media_provenance"]["asr"]["fallback_reason"] == "historical"
+    waiting = await Worker(service).run_once()
+    assert waiting.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    completed = await complete_gateway_job(service, job.id)
+    assert completed.artifacts["transcript_raw"] == raw
+    assert completed.artifacts["media_provenance"] == provenance
 
 
 @pytest.mark.asyncio
@@ -519,6 +488,8 @@ async def test_asr_prefers_retained_audio_over_video(service) -> None:
     service.media = TrackingMedia()
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
 
     assert completed.id == job.id
     assert completed.status == JobStatus.COMPLETED
@@ -549,6 +520,8 @@ async def test_asr_prefers_audio_mp4_over_other_audio_extensions(service) -> Non
     service.media = TrackingMedia()
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
 
     assert completed.status == JobStatus.COMPLETED
     assert extracted[0].name == "audio.mp4"
@@ -559,6 +532,8 @@ async def test_duplicate_video_appends_inspiration_without_redownload(service) -
     downloader = service.downloader
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/", [InspirationInput(text="灵感一")])
     first = await Worker(service).run_once()
+    if first.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        first = await complete_gateway_job(service, first.id)
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/", [InspirationInput(text="灵感二")])
     second = await Worker(service).run_once()
     assert second.result["duplicate"] is True
@@ -572,7 +547,6 @@ async def test_concurrent_first_capture_serializes_video_pipeline_and_merges_ins
     config, fake_reminders
 ) -> None:
     downloader = BlockingDownloader()
-    analysis = CountingAnalysisProvider()
     service = DouyinWikiService(
         config,
         resolver=FakeResolver(),
@@ -580,7 +554,6 @@ async def test_concurrent_first_capture_serializes_video_pipeline_and_merges_ins
         media=FakeMediaProcessor(),
         transcriber=FakeTranscriber(),
         ocr=FakeOCR(),
-        analysis=analysis,
         embeddings=EmbeddingService(config.embeddings),
         reminders=fake_reminders,
     )
@@ -607,11 +580,14 @@ async def test_concurrent_first_capture_serializes_video_pipeline_and_merges_ins
     assert downloader.entered == 1
     downloader.release.set()
     first, second = await asyncio.gather(first_task, second_task)
+    assert first.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    assert second.status == JobStatus.MONITORING
+    first = await complete_gateway_job(service, first.id)
+    second = service.get_job(second.id)
 
     assert first.status == JobStatus.COMPLETED
     assert second.status == JobStatus.COMPLETED
     assert downloader.calls == 1
-    assert analysis.calls == 1
     entry = service.database.get_entry(first.result["entry_id"])
     assert {item.text for item in entry.inspirations} == {"一", "二"}
     assert any(job.result.get("duplicate") for job in (first, second))
@@ -671,6 +647,8 @@ async def test_canceled_work_lock_waiter_does_not_leak_lock(service) -> None:
 async def test_favorite_keeps_media_and_unfavorite_restarts_retention_window(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
 
     favorited = service.set_entry_favorite(entry_id, True)
@@ -698,6 +676,8 @@ async def test_favorite_keeps_media_and_unfavorite_restarts_retention_window(ser
 async def test_favorite_restores_removed_media_without_reanalysis(service, monkeypatch) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     entry = service.database.get_entry(entry_id)
     original_analysis = copy.deepcopy(service.database.get_entry_data(entry_id)["analysis"])
@@ -716,6 +696,8 @@ async def test_favorite_restores_removed_media_without_reanalysis(service, monke
     assert favorited["entry"].retention == RetentionPolicy.KEEP
     assert favorited["restore_job"].kind == "media_restore"
     restored = await Worker(service).run_once()
+    if restored.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        restored = await complete_gateway_job(service, restored.id)
 
     assert restored.status == JobStatus.COMPLETED
     assert restored.result == {"entry_id": entry_id, "media_restored": True}
@@ -732,6 +714,8 @@ async def test_favorite_restores_removed_media_without_reanalysis(service, monke
 async def test_repeated_favorite_reuses_pending_media_restore_job(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     service.database.mark_media_removed(entry_id)
 
@@ -748,6 +732,8 @@ async def test_repeated_favorite_reuses_pending_media_restore_job(service) -> No
 async def test_unfavorite_skips_queued_media_restore(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     service.database.mark_media_removed(entry_id)
     service.set_entry_favorite(entry_id, True)
@@ -766,6 +752,8 @@ async def test_unfavorite_skips_queued_media_restore(service) -> None:
 async def test_media_restore_auth_failure_keeps_favorite_and_can_retry(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     service.database.mark_media_removed(entry_id)
     service.downloader = CookieExpiredDownloader()
@@ -788,6 +776,8 @@ async def test_image_note_favorite_is_organizational_and_does_not_queue_video_re
 ) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"]).model_copy(
         update={"media_status": "removed"}
     )
@@ -810,6 +800,8 @@ async def test_image_note_favorite_is_organizational_and_does_not_queue_video_re
 async def test_database_rebuild_preserves_favorite_state(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     favorited = service.set_entry_favorite(entry_id, True)["entry"]
     source = service.config.vault_path / favorited.source_path
@@ -832,6 +824,8 @@ async def test_database_rebuild_preserves_favorite_state(service) -> None:
 async def test_backfill_video_cover_for_legacy_entry(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     data = service.database.get_entry_data(entry.id)
     cover = service.config.vault_path / data.pop("cover_path")
@@ -848,58 +842,6 @@ async def test_backfill_video_cover_for_legacy_entry(service) -> None:
     assert "![抖音视频封面]" in source
 
 
-@pytest.mark.asyncio
-async def test_remove_external_validation_migrates_legacy_storage(service) -> None:
-    service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    completed = await Worker(service).run_once()
-    entry_id = completed.result["entry_id"]
-    entry = service.database.get_entry(entry_id)
-    data = service.database.get_entry_data(entry_id)
-    data["fact_checks"] = {"claim-1": {"verdict": "supported"}}
-    data["analysis"]["claims"][0]["verification_status"] = "verified"
-    data["analysis"]["risks"] = ["具体版本和参数仍处于外部未核验状态。"]
-    service.database.upsert_entry(entry, data)
-
-    with service.database.connect() as conn:
-        conn.execute(
-            "ALTER TABLE entries ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'pending'"
-        )
-        conn.execute(
-            """CREATE TABLE fact_checks (
-                claim_id TEXT NOT NULL,
-                entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-                data_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(entry_id, claim_id)
-            )"""
-        )
-        conn.execute(
-            "INSERT INTO fact_checks VALUES (?, ?, ?, ?)",
-            ("claim-1", entry_id, "{}", datetime.now(UTC).isoformat()),
-        )
-        conn.execute(
-            """UPDATE jobs SET status='completed_with_warnings',
-               result_json=? WHERE id=?""",
-            (
-                '{"pending_fact_checks":["claim-1"],"warnings":["关键主张尚未核验"]}',
-                completed.id,
-            ),
-        )
-
-    report = service.remove_external_validation()
-    assert report["removed_checks"] == 1
-    migrated = service.database.get_entry_data(entry_id)
-    assert "fact_checks" not in migrated
-    assert "verification_status" not in migrated["analysis"]["claims"][0]
-    assert migrated["analysis"]["risks"] == ["具体版本和参数需结合原始配方与实际冲煮进一步确认。"]
-    assert service.get_job(completed.id).status == JobStatus.COMPLETED
-    with service.database.connect() as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(entries)")}
-        table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fact_checks'"
-        ).fetchone()
-    assert "verification_status" not in columns
-    assert table is None
 
 
 @pytest.mark.asyncio
@@ -907,6 +849,8 @@ async def test_low_confidence_does_not_pause_model_correction(service) -> None:
     service.transcriber = FakeTranscriber(low_confidence=True)
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.status == JobStatus.COMPLETED
     assert completed.result["warnings"] == []
     assert service.database.get_review_issues(job.id) == []
@@ -915,17 +859,13 @@ async def test_low_confidence_does_not_pause_model_correction(service) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duration", [31 * 60, 121 * 60])
-@pytest.mark.parametrize("mode", [AnalysisMode.PROVIDER, AnalysisMode.GATEWAY, AnalysisMode.LOCAL])
-async def test_selected_long_video_continues_without_confirmation(service, duration, mode) -> None:
-    service.config.analysis_mode = mode
+async def test_selected_long_video_continues_without_confirmation(service, duration) -> None:
     service.downloader = FakeDownloader(duration=duration)
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
 
     processed = await Worker(service).run_once()
 
-    expected = (
-        JobStatus.AWAITING_AGENT_ANALYSIS if mode == AnalysisMode.GATEWAY else JobStatus.COMPLETED
-    )
+    expected = JobStatus.AWAITING_AGENT_ANALYSIS
     assert processed.id == job.id
     assert processed.status == expected
     assert processed.artifacts["metadata"]["duration_seconds"] == duration
@@ -934,28 +874,6 @@ async def test_selected_long_video_continues_without_confirmation(service, durat
     assert service.downloader.calls == 1
 
 
-@pytest.mark.asyncio
-async def test_legacy_waiting_job_can_continue_from_checkpoint(service) -> None:
-    service.config.analysis_mode = AnalysisMode.GATEWAY
-    service.downloader = FakeDownloader(duration=121 * 60)
-    job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    checkpoint = await Worker(service).run_once()
-    assert checkpoint.status == JobStatus.AWAITING_AGENT_ANALYSIS
-    service.database.update_job(
-        job.id,
-        status=JobStatus.WAITING_CONFIRMATION,
-        result={"reason": "video_too_long"},
-        unlock=True,
-    )
-
-    retried = service.approve_job(job.id)
-
-    assert retried.status == JobStatus.QUEUED
-    assert retried.artifacts["metadata"] == checkpoint.artifacts["metadata"]
-    resumed = await Worker(service).run_once()
-    assert resumed.status == JobStatus.AWAITING_AGENT_ANALYSIS
-    assert resumed.artifacts["metadata"] == checkpoint.artifacts["metadata"]
-    assert service.downloader.calls == 1
 
 
 @pytest.mark.asyncio
@@ -1037,11 +955,14 @@ async def test_check_auth_scope_image_note_does_not_probe_other_adapters(service
 async def test_duplicate_reacquires_removed_media_and_keeps_stable_page(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/", [InspirationInput(text="初始灵感")])
     first = await Worker(service).run_once()
+    if first.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        first = await complete_gateway_job(service, first.id)
     entry = service.database.get_entry(first.result["entry_id"])
     service.database.mark_media_removed(entry.id)
 
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/", [InspirationInput(text="追加灵感")])
     second = await Worker(service).run_once()
+    second = await complete_gateway_job(service, second.id)
     updated = service.database.get_entry(entry.id)
     assert second.result["reacquired"] is True
     assert service.downloader.calls == 2
@@ -1056,6 +977,8 @@ async def test_duplicate_reacquires_removed_media_and_keeps_stable_page(service)
 async def test_agent_can_submit_reanalysis_with_provenance(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     data = service.database.get_entry_data(entry_id)
     analysis = data["analysis"]
@@ -1074,6 +997,8 @@ async def test_agent_can_submit_reanalysis_with_provenance(service) -> None:
 async def test_contradiction_keeps_both_sources_and_creates_relation(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     entry = service.database.get_entry(entry_id)
     data = service.database.get_entry_data(entry_id)
@@ -1123,6 +1048,8 @@ async def test_contradiction_keeps_both_sources_and_creates_relation(service) ->
 async def test_maintenance_marks_expired_claim_stale(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     data = service.database.get_entry_data(entry.id)
     data["analysis"]["claims"][0]["valid_until"] = "2020-01-01T00:00:00+00:00"
@@ -1142,6 +1069,8 @@ async def test_maintenance_marks_expired_claim_stale(service) -> None:
 async def test_maintenance_honors_review_after_without_double_counting(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     data = service.database.get_entry_data(entry.id)
     for field in ("claims", "knowledge_atoms"):
@@ -1158,6 +1087,8 @@ async def test_maintenance_honors_review_after_without_double_counting(service) 
 async def test_confirm_reminder_requires_absolute_time(service, fake_reminders) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     with pytest.raises(JobStateError, match="confirmed=true"):
         service.confirm_reminder(
@@ -1187,6 +1118,8 @@ async def test_confirm_reminder_requires_absolute_time(service, fake_reminders) 
 async def test_two_character_chinese_search_uses_lexical_index(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     data = service.database.get_entry_data(entry.id)
     data["analysis"]["one_liner"] = "今天教你苹果手机拍照技巧"
@@ -1207,6 +1140,8 @@ async def test_two_character_chinese_search_uses_lexical_index(service) -> None:
 async def test_rebuild_reports_bad_entry_without_clearing_database(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry_id = completed.result["entry_id"]
     entry = service.database.get_entry(entry_id)
     machine = service.config.vault_path / "wiki" / ".data" / "sources" / f"{entry.video_id}.md"
@@ -1223,6 +1158,8 @@ async def test_rebuild_reports_bad_entry_without_clearing_database(service) -> N
 async def test_rebuild_rejects_entry_machine_source_path_mismatch(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     machine = service.config.vault_path / "wiki" / ".data" / "sources" / f"{entry.video_id}.md"
     source = service.config.vault_path / entry.source_path
@@ -1247,6 +1184,8 @@ async def test_rebuild_rejects_entry_machine_source_path_mismatch(service) -> No
 async def test_embedding_signature_change_rebuilds_all_cached_vectors(service) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.status == JobStatus.COMPLETED
     replacement = EmbeddingService(EmbeddingSettings(provider="hash", fallback_dimensions=32))
     service.embeddings = replacement
@@ -1263,6 +1202,8 @@ async def test_embedding_signature_change_rebuilds_all_cached_vectors(service) -
 async def test_maintenance_moves_expired_media_recoverably(service, monkeypatch, tmp_path) -> None:
     service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     entry = service.database.get_entry(completed.result["entry_id"])
     expired = entry.model_copy(update={"media_expires_at": datetime.now(UTC) - timedelta(days=1)})
     data = service.database.get_entry_data(entry.id)
@@ -1367,1317 +1308,76 @@ def test_loaded_embedding_model_failure_never_persists_fallback_vectors() -> Non
     assert embeddings.embed(["query"]) == [[0.0, 0.0, 0.0]]
 
 
-def test_provider_mode_allows_loopback_endpoint_without_api_key(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://localhost:11434/v1", model="local-model")
-    )
-
-    assert provider.configured is True
-    assert provider.api_key == ""
-
-
-def test_provider_mode_forwards_configured_loopback_api_key(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "omlx-local-key")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="local-model")
-    )
-
-    assert provider.configured is True
-    assert provider.api_key == "omlx-local-key"
-
-
-@pytest.mark.asyncio
-async def test_long_transcript_uses_bounded_compact_model_requests(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="local-model")
-    )
-    requests: list[dict] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        requests.append(json.loads(user))
-        result = {
-            "segments": [
-                {"id": item["id"], "text": item["text"]} for item in requests[-1]["segments"]
-            ],
-            "review_issues": [],
-        }
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    segments = [
-        TranscriptSegment(
-            id=index,
-            start_ms=index * 1000,
-            end_ms=(index + 1) * 1000,
-            text="这是一段字幕",
-            confidence=0.9,
-        )
-        for index in range(161)
-    ]
-    ocr = [OCRObservation(timestamp_ms=500, text="画面文字", image_path="/private/frame.jpg")]
-    corrected, _ = await provider.correct_transcript(segments, ocr)
-
-    assert len(corrected) == 161
-    assert [len(request["segments"]) for request in requests] == [80, 80, 1]
-    assert set(requests[0]["segments"][0]) == {
-        "id",
-        "start_ms",
-        "end_ms",
-        "text",
-        "context_before",
-        "context_after",
-    }
-    assert requests[1]["segments"][0]["context_before"] == segments[79].text
-    assert requests[1]["segments"][0]["context_after"] == segments[81].text
-    assert set(requests[0]["ocr"][0]) == {"timestamp_ms", "image_index", "text", "confidence"}
-    assert requests[0]["ocr"][0]["confidence"] is None
-
-
-@pytest.mark.asyncio
-async def test_correction_splits_length_failures_and_reuses_completed_checkpoints(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    checkpoints: dict = {}
-    calls: list[tuple[int, ...]] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        ids = tuple(item["id"] for item in json.loads(user)["segments"])
-        calls.append(ids)
-        if len(ids) > 2:
-            raise ModelLimitError("模型输出达到 token 上限")
-        result = {
-            "segments": [
-                {"id": item["id"], "text": item["text"]} for item in json.loads(user)["segments"]
-            ],
-            "review_issues": [],
-        }
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    segments = [
-        TranscriptSegment(id=i, start_ms=i * 1000, end_ms=(i + 1) * 1000, text="一段字幕")
-        for i in range(5)
-    ]
-    first, _ = await provider.correct_transcript(segments, [], checkpoints=checkpoints)
-    assert len(first) == 5
-    identifiers = calls[0]
-    assert identifiers == (0, 1, 2, 3, 4)
-    assert calls == [
-        identifiers,
-        identifiers[:2],
-        (0, 1, 2),
-        (0,),
-        (0, 1),
-    ]
-    assert len(checkpoints) == 3
-    calls.clear()
-    second, _ = await provider.correct_transcript(segments, [], checkpoints=checkpoints)
-    assert [item.text for item in second] == [item.text for item in first]
-    assert calls == [identifiers, (0, 1, 2)]
-    calls.clear()
-    changed = [segments[0].model_copy(update={"text": "已更新的字幕"}), *segments[1:]]
-    await provider.correct_transcript(changed, [], checkpoints=checkpoints)
-    assert calls == [identifiers, (0, 1), (0, 1, 2)]
-
-
-@pytest.mark.asyncio
-async def test_single_segment_output_limit_splits_and_maps_review_to_whole_segment(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    raw = "这是一段需要逐字校对的文本。" * 12
-    segment = TranscriptSegment(id=7, start_ms=1000, end_ms=9000, text=raw)
-    calls: list[tuple[int, str]] = []
-    review_emitted = False
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        nonlocal review_emitted
-        item = json.loads(user)["segments"][0]
-        calls.append((item["id"], item["text"]))
-        if len(item["text"]) > 80:
-            raise ModelLimitError("模型输出达到 token 上限")
-        issue = not review_emitted
-        review_emitted = True
-        updated_text = item["text"].replace("校对", "校订", 1) if issue else item["text"]
-        result = {
-            "segments": [{"id": item["id"], "text": updated_text}],
-            "review_issues": [
-                {"segment_id": item["id"], "reason": "专有名词存疑", "suggestions": ["替换词"]}
-            ]
-            if issue
-            else [],
-        }
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    corrected, issues = await provider.correct_transcript([segment], [])
-    assert len(calls) > 1
-    assert corrected[0].id == 7
-    assert (corrected[0].start_ms, corrected[0].end_ms) == (1000, 9000)
-    expected = raw.replace("校对", "校订", 1)
-    assert corrected[0].text == expected
-    assert issues == []
-
-
-@pytest.mark.asyncio
-async def test_provider_correction_state_covers_resource_wait_and_failure(
-    service, monkeypatch
-) -> None:
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    service.analysis = provider
-    service.analysis_semaphore = asyncio.Semaphore(0)
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def blocked_correction(*_args, **_kwargs):
-        entered.set()
-        await release.wait()
-        raise ModelLimitError("模型输出达到 token 上限")
-
-    monkeypatch.setattr(provider, "correct_transcript", blocked_correction)
-    job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    task = asyncio.create_task(Worker(service).run_once())
-
-    async def wait_for_waiting() -> None:
-        for _ in range(100):
-            if (service.database.get_job(job.id).artifacts.get("analysis_progress") or {}).get(
-                "waiting_for_resource"
-            ):
-                return
-            await asyncio.sleep(0.01)
-        raise AssertionError("correction resource wait did not appear")
-
-    await wait_for_waiting()
-    waiting = service.database.get_job(job.id)
-    assert waiting.status == JobStatus.ANALYZING
-    assert present_job(waiting, analysis_mode="provider")["stage_label"] == "LLM 校正"
-    assert (
-        present_job(waiting, analysis_mode="provider")["message_for_user"] == "等待模型校正资源。"
-    )
-    service.analysis_semaphore.release()
-    await asyncio.wait_for(entered.wait(), 2)
-    active = service.database.get_job(job.id)
-    assert active.artifacts["analysis_progress"]["waiting_for_resource"] is False
-    assert (
-        present_job(active, analysis_mode="provider")["message_for_user"]
-        == "后台模型正在校正逐字稿。"
-    )
-    release.set()
-    failed = await asyncio.wait_for(task, 2)
-    assert failed.status == JobStatus.FAILED
-    assert present_job(failed, analysis_mode="provider")["stage_label"] != "LLM 校正"
-
-
-@pytest.mark.asyncio
-async def test_single_segment_input_budget_presplits_and_reuses_child_checkpoint(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="test-model",
-            max_output_tokens=256,
-            context_window_tokens=4096,
-        )
-    )
-    raw = "".join(f"{index:03d}长文本句子。" for index in range(100))
-    segment = TranscriptSegment(id=3, start_ms=0, end_ms=10000, text=raw)
-    checkpoints: dict = {}
-    seen: list[tuple[str, ...]] = []
-    fail_once = True
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        nonlocal fail_once
-        items = json.loads(user)["segments"]
-        seen.append(tuple(item["text"] for item in items))
-        if len(seen) == 2 and fail_once:
-            fail_once = False
-            raise ModelServiceError("temporary")
-        result = {
-            "segments": [{"id": item["id"], "text": item["text"]} for item in items],
-            "review_issues": [],
-        }
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    with pytest.raises(ModelServiceError):
-        await provider.correct_transcript([segment], [], checkpoints=checkpoints)
-    first_success = seen[0]
-    assert checkpoints
-    seen.clear()
-    corrected, _ = await provider.correct_transcript([segment], [], checkpoints=checkpoints)
-    assert first_success not in seen
-    assert corrected[0].text == raw
-
-
-@pytest.mark.asyncio
-async def test_single_segment_dynamic_split_reuses_completed_child(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    raw = "".join(f"第{index:02d}句需要校对。" for index in range(16))
-    segment = TranscriptSegment(id=8, start_ms=200, end_ms=8200, text=raw)
-    checkpoints: dict = {}
-    seen: list[str] = []
-    failed_right = False
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        nonlocal failed_right
-        item = json.loads(user)["segments"][0]
-        value = item["text"]
-        seen.append(value)
-        if len(value) > 90:
-            raise ModelLimitError("模型输出达到 token 上限")
-        if value.startswith("第08") and not failed_right:
-            failed_right = True
-            raise ModelServiceError("temporary")
-        result = {"segments": [{"id": 0, "text": value}], "review_issues": []}
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    with pytest.raises(ModelServiceError):
-        await provider.correct_transcript([segment], [], checkpoints=checkpoints)
-    successful_child = next(
-        value for value in seen if value.startswith("第00") and len(value) <= 90
-    )
-    assert len(checkpoints) == 1
-    seen.clear()
-    corrected, _ = await provider.correct_transcript([segment], [], checkpoints=checkpoints)
-    assert successful_child not in seen
-    assert corrected[0].text == raw
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid", ["missing", "duplicate"])
-async def test_correction_recovers_incomplete_or_duplicate_piece_ids(monkeypatch, invalid) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        item = json.loads(user)["segments"][0]
-        returned = (
-            []
-            if invalid == "missing"
-            else [
-                {"id": item["id"], "text": "已校对"},
-                {"id": item["id"], "text": "重复应忽略"},
-            ]
-        )
-        result = {"segments": returned, "review_issues": []}
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    segment = TranscriptSegment(id=1, start_ms=0, end_ms=1000, text="一段字幕")
-    corrected, issues = await provider.correct_transcript([segment], [])
-    assert issues == []
-    if invalid == "missing":
-        assert corrected[0].text == "一段字幕"
-    else:
-        assert corrected[0].text == "已校对"
-
-
-@pytest.mark.asyncio
-async def test_correction_empty_input_and_minimum_piece_limit(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    assert await provider.correct_transcript([], []) == ([], [])
-    calls = 0
-
-    async def always_limited(system, user, *, response_schema, response_validator):
-        nonlocal calls
-        calls += 1
-        raise ModelLimitError("模型输出达到 token 上限")
-
-    monkeypatch.setattr(provider, "_json_call", always_limited)
-    segment = TranscriptSegment(id=1, start_ms=0, end_ms=1000, text="abcdefghijklmnopqrstuvwx")
-    with pytest.raises(ModelOutputError, match="最小文本块"):
-        await provider.correct_transcript([segment], [])
-    assert calls >= 2
-    calls = 0
-    tiny = TranscriptSegment(id=2, start_ms=0, end_ms=100, text="字")
-    with pytest.raises(ModelOutputError, match="最小文本块"):
-        await provider.correct_transcript([tiny], [])
-    assert calls == 1
-
-
-@pytest.mark.asyncio
-async def test_correction_hard_splits_short_single_segment_before_skip(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    seen: list[str] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        item = json.loads(user)["segments"][0]
-        seen.append(item["text"])
-        # Fail until hard-split reaches single characters, then succeed.
-        if len(item["text"]) > 1:
-            raise ModelLimitError("模型输出达到 token 上限")
-        result = {"segments": [{"id": 0, "text": item["text"]}], "review_issues": []}
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    # Below former min_chars*2=24 so punctuation-gated split would have given up.
-    raw = "abcdefghijkl"  # 12 chars
-    segment = TranscriptSegment(id=9, start_ms=0, end_ms=500, text=raw)
-    corrected, issues = await provider.correct_transcript([segment], [])
-    assert corrected[0].text == raw
-    assert any(len(text) == 1 for text in seen)
-    assert max(len(text) for text in seen) == len(raw)
-    assert not any("跳过该块校正" in issue.reason for issue in issues)
-
-
-@pytest.mark.asyncio
-async def test_ocr_only_analysis_covers_all_images(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    seen_indices: list[int] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        seen_indices.extend(item["image_index"] for item in payload.get("ocr", []))
-        return AnalysisResult(title="图文", one_liner="图文摘要").model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    ocr = [OCRObservation(image_index=i, text=f"图片 {i} " + "内容" * 100) for i in range(1, 31)]
-    result = await provider.analyze([], ocr, [], {"source_kind": "image_note"})
-    assert result.title == "图文"
-    assert seen_indices == list(range(1, 31))
-
-
-def test_adjacent_ocr_lines_are_deduplicated_only_in_model_input() -> None:
-    source = [
-        OCRObservation(timestamp_ms=1000, text="固定标题\n第一段"),
-        OCRObservation(timestamp_ms=11000, text="固定标题\n第二段"),
-    ]
-    chunk = [TranscriptSegment(id=1, start_ms=0, end_ms=12000, text="旁白")]
-    prepared = _nearby_ocr(chunk, source)
-    assert [item.text for item in prepared] == ["固定标题\n第一段", "第二段"]
-    assert [item.timestamp_ms for item in prepared] == [1000, 11000]
-    assert source[1].text == "固定标题\n第二段"
-
-
-@pytest.mark.asyncio
-async def test_analysis_respects_reduced_context_budget(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="test-model",
-            context_window_tokens=16000,
-            max_output_tokens=512,
-        )
-    )
-    requests: list[tuple[str, dict, dict]] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        requests.append((system, payload, response_schema))
-        return AnalysisResult(title="预算测试", one_liner="摘要").model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    segments = [
-        TranscriptSegment(id=i, start_ms=i * 1000, end_ms=(i + 1) * 1000, text="字幕" * 100)
-        for i in range(60)
-    ]
-    await provider.analyze(segments, [], [], {})
-    parts = [payload for _, payload, _ in requests if "transcript" in payload]
-    assert len(parts) > 1
-    assert max(len(payload["transcript"]) for payload in parts) <= 20
-    assert "".join(item["text"] for payload in parts for item in payload["transcript"]) == "".join(
-        segment.text for segment in segments
-    )
-    assert all(provider._fits(system, payload, schema) for system, payload, schema in requests)
-
-
-@pytest.mark.asyncio
-async def test_analysis_presplits_one_long_segment_and_preserves_coarse_citations(
-    monkeypatch,
-    service,
-) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="test-model",
-            context_window_tokens=16000,
-            max_output_tokens=256,
-        )
-    )
-    source = TranscriptSegment(id=37, start_ms=1000, end_ms=9000, text="甲乙丙丁。" * 40)
-    seen: list[dict] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        if "partial_analyses" in payload:
-            return AnalysisResult(title="汇总").model_dump(mode="json")
-        seen.append(payload)
-        piece = payload["transcript"][0]
-        quote = piece["text"][:5]
-        return AnalysisResult(
-            title="分段",
-            chapters=[
-                {
-                    "start_ms": 1000,
-                    "end_ms": 9000,
-                    "title": "原段",
-                    "summary": "原段内容",
-                    "evidence": [{"timestamp_ms": 1000, "quote": quote, "evidence_type": "audio"}],
-                }
-            ],
-            knowledge_atoms=[
-                {
-                    "id": "local",
-                    "statement": piece["text"],
-                    "timestamp_ms": 1000,
-                    "quote": quote,
-                    "provenance": "audio",
-                }
-            ],
-        ).model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    result = await provider.analyze([source], [], [], {})
-    sent = [item for request in seen for item in request["transcript"]]
-    assert len(sent) > 1
-    assert "".join(item["text"] for item in sent) == source.text
-    assert all(item["start_ms"] == 1000 and item["end_ms"] == 9000 for item in sent)
-    assert all(item["source_segment_id"] == 37 for item in sent)
-    assert all(
-        [item["id"] for item in request["transcript"]] == list(range(len(request["transcript"])))
-        for request in seen
-    )
-    assert all(item.timestamp_ms == 1000 for item in result.chapters[0].evidence)
-    assert {atom.statement for atom in result.knowledge_atoms} == {item["text"] for item in sent}
-    service.validate_analysis_evidence(
-        result,
-        {
-            "metadata": {"source_kind": "video", "duration_seconds": 10},
-            "transcript_corrected": [source.model_dump(mode="json")],
-            "ocr": [],
-        },
-    )
-
-
-@pytest.mark.asyncio
-async def test_analysis_presplits_single_segment_for_input_budget(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    source = TranscriptSegment(id=17, start_ms=200, end_ms=300, text="编号内容。" * 20)
-    requests: list[dict] = []
-
-    def tight_input_budget(system, payload, schema):
-        return sum(len(item["text"]) for item in payload.get("transcript", [])) <= 70
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        if "transcript" in payload:
-            requests.append(payload)
-        return AnalysisResult(title="测试").model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_fits", tight_input_budget)
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    await provider.analyze([source], [], [], {})
-    sent = [item for request in requests for item in request["transcript"]]
-    assert len(sent) > 1
-    assert "".join(item["text"] for item in sent) == source.text
-    assert all(len(item["text"]) <= 70 for item in sent)
-    assert all(item["source_segment_id"] == 17 for item in sent)
-
-
-@pytest.mark.asyncio
-async def test_analysis_splits_output_limit_and_reuses_child_checkpoints(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    source = TranscriptSegment(
-        id=8,
-        start_ms=0,
-        end_ms=10000,
-        text="".join(f"第{index}句话。" for index in range(20)),
-    )
-    checkpoints: dict = {}
-    seen: list[str] = []
-    progress: list[tuple[str, int, int]] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        if "partial_analyses" in payload:
-            return AnalysisResult(title="汇总").model_dump(mode="json")
-        text = payload["transcript"][0]["text"]
-        seen.append(text)
-        if len(text) > 50:
-            raise ModelLimitError("模型输出达到 token 上限")
-        return AnalysisResult(
-            title="分段",
-            knowledge_atoms=[
-                {
-                    "id": "local",
-                    "statement": text,
-                    "quote": text[:5],
-                    "timestamp_ms": 0,
-                    "provenance": "audio",
-                }
-            ],
-        ).model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    first = await provider.analyze(
-        [source],
-        [],
-        [],
-        {},
-        checkpoints=checkpoints,
-        on_progress=lambda *args: progress.append(args),
-    )
-    successful = [text for text in seen if len(text) <= 50]
-    assert "".join(successful) == source.text
-    assert "".join(atom.statement for atom in first.knowledge_atoms) == source.text
-    assert progress[0] == ("analysis", 0, 1)
-    analysis_progress = [item for item in progress if item[0] == "analysis"]
-    assert any(total > 1 for _, _, total in analysis_progress)
-    assert any(0 < completed < total for _, completed, total in analysis_progress)
-    assert analysis_progress[-1][1] == analysis_progress[-1][2]
-    assert any(len(text) > 50 for text in seen)
-    failures = [text for text in seen if len(text) > 50]
-    seen.clear()
-    second = await provider.analyze([source], [], [], {}, checkpoints=checkpoints)
-    assert second == first
-    assert seen == failures
-
-
-@pytest.mark.asyncio
-async def test_ocr_only_analysis_reports_recursive_chunk_progress(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    progress: list[tuple[str, int, int]] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        if "partial_analyses" in payload:
-            return AnalysisResult(title="汇总").model_dump(mode="json")
-        if len(payload["ocr"]) > 1:
-            raise ModelLimitError("模型输出达到 token 上限")
-        return AnalysisResult(title="单图").model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    ocr = [OCRObservation(timestamp_ms=i * 1000, text=f"画面{i}") for i in range(2)]
-    await provider.analyze([], ocr, [], {}, on_progress=lambda *args: progress.append(args))
-    analysis_progress = [item for item in progress if item[0] == "analysis"]
-    assert analysis_progress[0] == ("analysis", 0, 1)
-    # Split counts the failed parent attempt and schedules two child batches.
-    assert ("analysis", 1, 3) in analysis_progress
-    assert ("analysis", 2, 3) in analysis_progress
-    assert analysis_progress[-1] == ("analysis", 3, 3)
-
-
-@pytest.mark.asyncio
-async def test_analysis_reports_unsplittable_output_limit(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    source = TranscriptSegment(id=42, start_ms=100, end_ms=200, text="短句。" * 8)
-    calls = 0
-
-    async def always_limited(system, user, *, response_schema, response_validator):
-        nonlocal calls
-        calls += 1
-        raise ModelOutputError("模型输出达到 token 上限")
-
-    monkeypatch.setattr(provider, "_json_call", always_limited)
-    with pytest.raises(ModelOutputError, match="最小文本块"):
-        await provider.analyze([source], [], [], {})
-    assert 2 <= calls < 20
-
-    calls = 0
-    tiny = TranscriptSegment(id=7, start_ms=0, end_ms=50, text="啊")
-    with pytest.raises(ModelOutputError, match="最小文本块"):
-        await provider.analyze([tiny], [], [], {})
-    assert calls == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["context", "output", "server_json", "truncated_json"])
-async def test_model_limits_do_not_retry_identical_request(monkeypatch, failure) -> None:
-    calls = 0
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        if failure == "context":
-            return httpx.Response(400, text='{"error":"prompt too long"}')
-        if failure == "server_json":
-            return httpx.Response(500, text="Failed to extract valid JSON from output")
-        if failure == "truncated_json":
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [{"finish_reason": "stop", "message": {"content": "{"}}],
-                    "usage": {"completion_tokens": 256},
-                },
-            )
-        return httpx.Response(
-            200, json={"choices": [{"finish_reason": "length", "message": {"content": "{}"}}]}
-        )
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="test-model",
-            max_retries=2,
-            max_output_tokens=256,
-        )
-    )
-    with pytest.raises(ModelLimitError) as exc:
-        await provider._json_call("system", "user", response_schema={"type": "object"})
-    assert exc.value.code == (
-        "model_context_limit" if failure == "context" else "model_output_limit"
-    )
-    assert calls == 1
-
-
-@pytest.mark.asyncio
-async def test_model_502_has_specific_error_after_bounded_retries(monkeypatch) -> None:
-    calls = 0
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        return httpx.Response(502, text="Bad Gateway")
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="test-model",
-            max_retries=1,
-        )
-    )
-    with pytest.raises(ModelServiceError) as exc:
-        await provider._json_call("system", "user", response_schema={"type": "object"})
-    assert exc.value.code == "model_unavailable"
-    assert exc.value.details["status_code"] == 502
-    assert exc.value.details["request_count"] == 2
-    assert calls == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("failure", "expected_code"),
-    [(httpx.ConnectError, "model_connection_error"), (httpx.ReadTimeout, "model_timeout")],
-)
-async def test_model_connection_and_timeout_have_distinct_codes(
-    monkeypatch,
-    failure,
-    expected_code,
-) -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
-        raise failure("request failed")
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="test-model",
-            max_retries=0,
-        )
-    )
-    with pytest.raises(ModelServiceError) as exc:
-        await provider._json_call("system", "user", response_schema={"type": "object"})
-    assert exc.value.code == expected_code
-
-
-@pytest.mark.asyncio
-async def test_long_analysis_uses_small_model_requests(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="local-model")
-    )
-    requests: list[dict] = []
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        requests.append(payload)
-        return AnalysisResult(title="测试", one_liner="测试摘要").model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    segments = [
-        TranscriptSegment(
-            id=index,
-            start_ms=index * 1000,
-            end_ms=(index + 1) * 1000,
-            text="一段字幕",
-        )
-        for index in range(161)
-    ]
-    result = await provider.analyze(segments, [], [], {})
-
-    assert result.title == "测试"
-    assert [len(request["transcript"]) for request in requests[:-1]] == [80, 80, 1]
-    assert len(requests[-1]["partial_analyses"]) == 3
-
-
-@pytest.mark.asyncio
-async def test_many_analysis_parts_merge_hierarchically_and_checkpoint(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    calls: list[dict] = []
-    checkpoints: dict = {}
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        calls.append(payload)
-        return AnalysisResult(
-            title="测试",
-            one_liner="摘要",
-            knowledge_atoms=[
-                {
-                    "id": "inference",
-                    "statement": "推断",
-                    "provenance": "ai_inference",
-                    "quote": None,
-                }
-            ],
-        ).model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    segments = [
-        TranscriptSegment(id=i, start_ms=i * 1000, end_ms=(i + 1) * 1000, text="字幕")
-        for i in range(321)
-    ]
-    first = await provider.analyze(segments, [], [], {}, checkpoints=checkpoints)
-    assert first.title == "测试"
-    assert len([x for x in calls if "transcript" in x]) == 5
-    assert all(len(x["partial_analyses"]) <= 3 for x in calls if "partial_analyses" in x)
-    assert len(checkpoints) == len(calls)
-    calls.clear()
-    second = await provider.analyze(segments, [], [], {}, checkpoints=checkpoints)
-    assert second.title == first.title
-    assert calls == []
-
-
-def test_merge_keeps_timeline_and_claims_from_all_partials() -> None:
-    partials = [
-        AnalysisResult(
-            title="测试",
-            chapters=[
-                {
-                    "start_ms": index * 1000,
-                    "end_ms": (index + 1) * 1000,
-                    "title": f"主题 {index}",
-                    "summary": f"内容 {index}",
-                    "key_points": [f"要点 {index}"],
-                    "evidence": [{"timestamp_ms": index * 1000, "quote": f"原话 {index}"}],
-                }
-            ],
-            knowledge_atoms=[
-                {"id": "same-id", "statement": f"主张 {index}", "quote": f"原话 {index}"}
-            ],
-        ).model_dump(mode="json")
-        for index in range(22)
-    ]
-    merged = _preserve_partial_coverage(AnalysisResult(title="总览"), partials)
-    assert len(merged.chapters) == 11
-    assert merged.chapters[0].start_ms == 0
-    assert merged.chapters[-1].end_ms == 22000
-    assert all(len(chapter.evidence) == 2 for chapter in merged.chapters)
-    assert len(merged.knowledge_atoms) == 22
-    assert len({atom.id for atom in merged.knowledge_atoms}) == 22
-
-
-@pytest.mark.asyncio
-async def test_merge_rejects_citations_absent_from_partial_results(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    )
-    checkpoints: dict = {}
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        quote = "虚构引文" if "partial_analyses" in payload else "真实引文"
-        return AnalysisResult(
-            title="测试",
-            one_liner="摘要",
-            chapters=[
-                {
-                    "start_ms": 0,
-                    "title": "开始",
-                    "summary": "摘要",
-                    "evidence": [{"timestamp_ms": 0, "quote": quote, "evidence_type": "audio"}],
-                }
-            ],
-        ).model_dump(mode="json")
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    segments = [
-        TranscriptSegment(id=i, start_ms=i * 1000, end_ms=(i + 1) * 1000, text="真实引文")
-        for i in range(81)
-    ]
-    with pytest.raises(ValueError, match="汇总证据必须继承"):
-        await provider.analyze(segments, [], [], {}, checkpoints=checkpoints)
-    assert len(checkpoints) == 2
-
-
-@pytest.mark.asyncio
-async def test_transcript_correction_omits_already_resolved_and_noop_review_issues(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="local-model")
-    )
-
-    async def fake_json_call(system, user, *, response_schema, response_validator):
-        payload = json.loads(user)
-        identifiers = [item["id"] for item in payload["segments"]]
-        result = {
-            "segments": [
-                {"id": item["id"], "text": "请做一个落地页设计" if index == 0 else item["text"]}
-                for index, item in enumerate(payload["segments"])
-            ],
-            "review_issues": [
-                {"segment_id": identifiers[0], "reason": "同音字错误", "suggestions": ["落地页"]},
-                {
-                    "segment_id": identifiers[1],
-                    "reason": "口语表达不清，保留原意",
-                    "suggestions": ["再看看"],
-                },
-                {
-                    "segment_id": identifiers[2],
-                    "reason": "专有名词可能有误",
-                    "suggestions": ["Claude"],
-                },
-            ],
-        }
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", fake_json_call)
-    segments = [
-        TranscriptSegment(id=1, start_ms=0, end_ms=1000, text="请做一个落地液设计"),
-        TranscriptSegment(id=2, start_ms=1000, end_ms=2000, text="再看看"),
-        TranscriptSegment(id=3, start_ms=2000, end_ms=3000, text="Cloud"),
-    ]
-    corrected, issues = await provider.correct_transcript(segments, [])
-
-    assert corrected[0].text == "请做一个落地页设计"
-    assert issues == []
-
-
-@pytest.mark.asyncio
-async def test_provider_can_request_strict_json_schema_for_omlx(monkeypatch) -> None:
-    requests: list[httpx.Request] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": '{"segments":[],"review_issues":[]}'}}]},
-        )
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "omlx-local-key")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="Qwen3.6-35B-A3B-4bit",
-            response_format="json_schema",
-            enable_thinking=False,
-            thinking_budget=0,
-            max_output_tokens=4096,
-        )
-    )
-
-    schema = _analysis_response_schema()
-    result = await provider._json_call("analyze work", "input", response_schema=schema)
-
-    assert result == {"segments": [], "review_issues": []}
-    assert requests[0].headers["authorization"] == "Bearer omlx-local-key"
-    body = json.loads(requests[0].content)
-    assert body["response_format"]["type"] == "json_schema"
-    assert body["response_format"]["json_schema"]["strict"] is True
-    assert body["response_format"]["json_schema"]["schema"] == schema
-    assert body["enable_thinking"] is False
-    assert body["thinking_budget"] == 0
-    assert body["max_tokens"] == 4096
-
-
-def test_provider_rejects_json_array_when_object_is_required() -> None:
-    with pytest.raises(ValueError, match="JSON 对象"):
-        _parse_json_content("[]")
-
-
-def test_analysis_response_schema_is_openai_strict_compatible() -> None:
-    schema = _analysis_response_schema()
-    assert schema.get("type") == "object"
-    assert schema.get("additionalProperties") is False
-    assert set(schema.get("required") or []) == set(schema.get("properties") or {})
-    assert "content_card" in schema["properties"]
-    assert "takeaways" in schema["properties"]
-    assert "$defs" not in schema
-    assert "$ref" not in json.dumps(schema)
-
-    forbidden = {
-        "const",
-        "default",
-        "discriminator",
-        "title",
-        "$defs",
-        "definitions",
-        "maxLength",
-        "minLength",
-        "maxItems",
-        "minItems",
-        "pattern",
-        "format",
-        "minimum",
-        "maximum",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
-        "multipleOf",
-        "uniqueItems",
-    }
-    content_card = schema["properties"]["content_card"]
-    assert "anyOf" in content_card
-    assert len(content_card["anyOf"]) >= 2
-    assert "discriminator" not in content_card
-
-    def walk(node: object, *, under_properties: bool = False) -> None:
-        if isinstance(node, dict):
-            assert "$ref" not in node
-            # Property names may literally be "title"; only forbid schema keywords.
-            if not under_properties:
-                for key in forbidden:
-                    assert key not in node, key
-            if "properties" in node:
-                assert set(node.get("required") or []) == set(node["properties"])
-                assert node.get("additionalProperties") is False
-            if "anyOf" in node:
-                variants = node["anyOf"]
-                assert not (
-                    len(variants) == 2
-                    and any(
-                        isinstance(value, dict) and value.get("type") == "null"
-                        for value in variants
-                    )
-                ), "nullable anyOf-of-2 must be collapsed to type:[T,null]"
-            for key, value in node.items():
-                walk(value, under_properties=(key == "properties"))
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(schema)
-    # Discriminator kind fields become enum, not const.
-    kinds = [
-        variant["properties"]["kind"]
-        for variant in content_card["anyOf"]
-        if isinstance(variant, dict) and "properties" in variant
-    ]
-    assert kinds and all("const" not in kind for kind in kinds)
-    assert {"tutorial", "explanation", "other"} <= {
-        (kind.get("enum") or [None])[0] for kind in kinds
-    }
-
-
-@pytest.mark.asyncio
-async def test_json_schema_400_falls_back_to_json_object(monkeypatch) -> None:
-    requests: list[dict] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        requests.append(body)
-        if len(requests) == 1:
-            return httpx.Response(
-                400,
-                text='{"error":{"message":"Invalid parameter: response_format schema"}}',
-            )
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": '{"segments":[],"review_issues":[]}'}}]},
-        )
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "omlx-local-key")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="Qwen3.6-35B-A3B-4bit",
-            response_format="json_schema",
-        )
-    )
-
-    result = await provider._json_call(
-        "analyze work", "input", response_schema=_analysis_response_schema()
-    )
-
-    assert result == {"segments": [], "review_issues": []}
-    assert len(requests) == 2
-    assert requests[0]["response_format"]["type"] == "json_schema"
-    assert requests[0]["response_format"]["json_schema"]["strict"] is True
-    assert requests[1]["response_format"] == {"type": "json_object"}
-
-
-@pytest.mark.asyncio
-async def test_json_schema_400_falls_back_without_response_format_substring(
-    monkeypatch,
-) -> None:
-    """Backends may reject strict schema without mentioning response_format."""
-    requests: list[dict] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        requests.append(body)
-        if len(requests) == 1:
-            return httpx.Response(
-                400,
-                text='{"error":{"message":"strict mode does not support this keyword"}}',
-            )
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": '{"segments":[],"review_issues":[]}'}}]},
-        )
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "omlx-local-key")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="Qwen3.6-35B-A3B-4bit",
-            response_format="json_schema",
-        )
-    )
-
-    result = await provider._json_call(
-        "analyze work", "input", response_schema=_analysis_response_schema()
-    )
-
-    assert result == {"segments": [], "review_issues": []}
-    assert len(requests) == 2
-    assert requests[1]["response_format"] == {"type": "json_object"}
-
-
-@pytest.mark.asyncio
-async def test_json_schema_fallback_can_remove_unsupported_response_format(monkeypatch) -> None:
-    requests: list[dict] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        requests.append(body)
-        if len(requests) < 3:
-            return httpx.Response(400, text="unsupported response_format")
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": '{"ok":true}'}}]},
-        )
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "local-key")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="test-model",
-            response_format="json_schema",
-            max_retries=0,
-        )
-    )
-    result = await provider._json_call(
-        "system", "user", response_schema=_analysis_response_schema()
-    )
-    assert result == {"ok": True}
-    assert [body.get("response_format", {}).get("type") for body in requests] == [
-        "json_schema",
-        "json_object",
-        None,
-    ]
-
-
-@pytest.mark.asyncio
-async def test_invalid_analysis_result_is_repaired_within_model_retry(monkeypatch) -> None:
-    requests: list[dict] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        requests.append(body)
-        result = {
-            "analysis_version": 2,
-            "title": "测试作品",
-            "one_liner": "字" * (121 if len(requests) == 1 else 20),
-        }
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": json.dumps(result)}}]},
-        )
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "local-key")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model", max_retries=1)
-    )
-    result = await provider._json_call(
-        "system",
-        "user",
-        response_schema=_analysis_response_schema(),
-        response_validator=AnalysisResult.model_validate,
-    )
-    assert len(result["one_liner"]) == 20
-    assert len(requests) == 2
-    assert len(requests[1]["messages"]) == 3
-    assert requests[1]["messages"][-1]["role"] == "user"
-    assert "校验错误" in requests[1]["messages"][-1]["content"]
-
-
-@pytest.mark.asyncio
-async def test_json_schema_non_schema_400_does_not_fallback(monkeypatch) -> None:
-    """Unrelated 400s (e.g. bad max_tokens) must not silently degrade format."""
-    requests: list[dict] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        requests.append(body)
-        return httpx.Response(
-            400,
-            text='{"error":{"message":"max_tokens is too large for this model"}}',
-        )
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "omlx-local-key")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="Qwen3.6-35B-A3B-4bit",
-            response_format="json_schema",
-            max_retries=0,
-        )
-    )
-
-    with pytest.raises(ExternalToolError):
-        await provider._json_call(
-            "analyze work", "input", response_schema=_analysis_response_schema()
-        )
-
-    assert len(requests) == 1
-    assert requests[0]["response_format"]["type"] == "json_schema"
-
-
-@pytest.mark.asyncio
-async def test_json_schema_empty_400_does_not_fallback(monkeypatch) -> None:
-    """Blank 400 bodies are too ambiguous to treat as schema rejection."""
-    requests: list[dict] = []
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        requests.append(body)
-        return httpx.Response(400, text="")
-
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.llm.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "omlx-local-key")
-    provider = OpenAICompatibleProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="Qwen3.6-35B-A3B-4bit",
-            response_format="json_schema",
-            max_retries=0,
-        )
-    )
-
-    with pytest.raises(ExternalToolError):
-        await provider._json_call(
-            "analyze work", "input", response_schema=_analysis_response_schema()
-        )
-
-    assert len(requests) == 1
-    assert requests[0]["response_format"]["type"] == "json_schema"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_vault_rejects_internal_symlinks_on_write_and_scan(tmp_path: Path) -> None:

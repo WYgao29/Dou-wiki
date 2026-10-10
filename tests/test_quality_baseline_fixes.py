@@ -23,6 +23,7 @@ from douyin_wiki.models import (
 from douyin_wiki.time_utils import utc_now
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.worker import Worker
+from tests.support.gateway import complete_gateway_job
 from tests.support.web import _web_fixture, local_client
 from tests.test_creator import DirectResolver
 from tests.test_image_note import make_service
@@ -32,6 +33,8 @@ async def capture(service, work_id="7672717300746907078"):
     service.resolver = DirectResolver()
     service.capture_douyin(f"https://www.douyin.com/video/{work_id}")
     result = await Worker(service).run_once()
+    if result.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        result = await complete_gateway_job(service, result.id)
     assert result.status == JobStatus.COMPLETED, result.error_message
     return service.database.get_entry(result.result["entry_id"])
 
@@ -114,6 +117,8 @@ async def test_image_reacquisition_preserves_concurrent_inspiration_and_favorite
     service = make_service(tmp_path)
     service.capture_douyin("https://v.douyin.com/oH4K0gee_Ok/")
     first = await Worker(service).run_once()
+    if first.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        first = await complete_gateway_job(service, first.id)
     entry = service.database.get_entry(first.result["entry_id"])
     data = service.database.get_entry_data(entry.id)
     (service.config.vault_path / data["metadata"]["image_paths"][1]).unlink()
@@ -127,6 +132,8 @@ async def test_image_reacquisition_preserves_concurrent_inspiration_and_favorite
     monkeypatch.setattr(service.image_note_downloader, "download", download)
     service.capture_douyin("https://v.douyin.com/oH4K0gee_Ok/")
     result = await Worker(service).run_once()
+    if result.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        result = await complete_gateway_job(service, result.id)
     assert result.status == JobStatus.COMPLETED
     current = service.database.get_entry(entry.id)
     assert current.favorite and current.retention == RetentionPolicy.KEEP

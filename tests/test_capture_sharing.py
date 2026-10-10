@@ -18,10 +18,13 @@ from douyin_wiki.models import (
 from douyin_wiki.service import DouyinWikiService
 from douyin_wiki.worker import Worker
 from tests.conftest import FakeResolver
+from tests.support.gateway import complete_gateway_job
 from tests.test_collection_flow import A, ready
 
 SHORT = "https://v.douyin.com/unresolved/"
 URL = f"https://www.douyin.com/video/{A}"
+
+
 
 
 async def confirmed_collection(service):
@@ -78,6 +81,8 @@ async def finish_gateway(service, job_id):
         producer="test",
     )
     result = await Worker(service).run_once()
+    if result.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        result = await complete_gateway_job(service, result.id)
     assert result.id == job_id and result.status == JobStatus.COMPLETED
     return result
 
@@ -328,7 +333,7 @@ async def test_shared_capture_survives_service_restart(service):
     restarted = DouyinWikiService(
         service.config, resolver=service.resolver, downloader=service.downloader,
         media=service.media, transcriber=service.transcriber, ocr=service.ocr,
-        analysis=service.analysis, embeddings=service.embeddings, reminders=service.reminders,
+        embeddings=service.embeddings, reminders=service.reminders,
     )
     restarted.initialize(initialize_git=False)
     assert restarted.get_job(duplicate.id).status == JobStatus.MONITORING
@@ -385,6 +390,8 @@ async def test_intact_entry_reuse_precedes_active_task_option_conflict(service):
     waiting = service.capture_douyin(URL, options=CaptureOptions(retention=RetentionPolicy.KEEP))
     duplicate = service.capture_douyin(URL, inspirations=[InspirationInput(text="补充灵感")])
     result = await service.process_claimed_job(duplicate)
+    if result.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        result = await complete_gateway_job(service, result.id)
     assert result.status == JobStatus.COMPLETED and result.result["entry_id"] == entry.id
     assert service.downloader.calls == 1
     assert service.get_job(waiting.id).status == JobStatus.QUEUED

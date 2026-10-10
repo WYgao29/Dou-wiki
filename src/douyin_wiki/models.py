@@ -16,8 +16,6 @@ class RetentionPolicy(StrEnum):
 
 class AnalysisMode(StrEnum):
     GATEWAY = "gateway"
-    PROVIDER = "provider"
-    LOCAL = "local"
 
 
 class SourceKind(StrEnum):
@@ -494,7 +492,7 @@ class AnalysisResultV2(BaseModel):
     entities: list[Entity] = Field(default_factory=list)
     contradictions: list[ContradictionRecord] = Field(default_factory=list)
 
-    # Kept in the wire/storage model so v1 Agents and old Vault entries remain readable.
+    # Kept in the wire/storage model so existing protocol 1 Agents can submit their current fields.
     summary: str = ""
     core_points: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)

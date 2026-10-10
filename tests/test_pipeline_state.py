@@ -1,12 +1,10 @@
 import threading
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from douyin_wiki.adapters.llm import ModelOutputError, OpenAICompatibleProvider
 from douyin_wiki.errors import JobStateError
-from douyin_wiki.models import AnalysisMode, JobStatus, TranscriptCorrection, TranscriptSegment
+from douyin_wiki.models import AnalysisMode, JobStatus, TranscriptCorrection
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.worker import Worker
 
@@ -53,34 +51,6 @@ def test_delayed_retry_does_not_clear_active_claim(service, monkeypatch):
         assert owner == "active-worker"
 
 
-@pytest.mark.asyncio
-async def test_analysis_limit_fails_without_publishing(service, monkeypatch):
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    service.config.llm.enabled = True
-    service.config.llm.base_url = "http://127.0.0.1:8000/v1"
-    service.config.llm.model = "test"
-    provider = OpenAICompatibleProvider(service.config.llm)
-
-    async def transcribe(*args):
-        return [TranscriptSegment(id=0, start_ms=0, end_ms=1000, text="字")]
-
-    async def correct(segments, *args, **kwargs):
-        return segments, []
-
-    async def limited(*args, **kwargs):
-        raise ModelOutputError("forced limit")
-
-    monkeypatch.setattr(provider, "correct_transcript", correct)
-    monkeypatch.setattr(provider, "_analysis_call", limited)
-    service.analysis = provider
-    service.transcriber = SimpleNamespace(transcribe=transcribe)
-    service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    done = await Worker(service).run_once()
-    assert done.status == JobStatus.FAILED
-    assert done.error_code == "model_output_limit"
-    assert "entry_id" not in done.result
-    assert "analysis" not in done.artifacts
-    assert service.vault.load_entries() == []
 
 
 def test_model_save_is_disabled_without_requesting_reload(service, tmp_path):

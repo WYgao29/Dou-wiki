@@ -6,10 +6,13 @@ import pytest
 
 from douyin_wiki.errors import BrowserAuthRequiredError, JobStateError
 from douyin_wiki.models import CaptureRequest, GatewayContext, JobStatus
+from tests.support.gateway import complete_gateway_job
 
 A = "7000000000000000001"
 B = "7000000000000000002"
 C = "7000000000000000003"
+
+
 
 
 def snapshot(*, complete=True, account="test-account", kinds=None):
@@ -225,6 +228,8 @@ async def test_completed_capture_is_skipped_on_rescan_without_changing_user_stat
     service.favorites.select(parent.id, selected=True)
     service.favorites.confirm(parent.id)
     result = await worker.run_once()
+    if result.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        result = await complete_gateway_job(service, result.id)
     assert result.status in {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}
     assert service.favorites.get(parent.id)["summary"]["completed"] == 1
     entry_id = result.result["entry_id"]

@@ -18,28 +18,26 @@ from douyin_wiki.adapters.image_note import (
     _page_auth_blocked,
     _usable_auth_cookies,
 )
-from douyin_wiki.adapters.llm import AnalysisProvider
 from douyin_wiki.adapters.media_models import SelectedOCR
 from douyin_wiki.adapters.share import ResolvedShare
-from douyin_wiki.config import AppConfig, EmbeddingSettings, LLMSettings
+from douyin_wiki.config import AppConfig, EmbeddingSettings
 from douyin_wiki.errors import BrowserAuthRequiredError, LivePhotoUnsupportedError
 from douyin_wiki.mcp_server import mcp
 from douyin_wiki.models import (
     AnalysisMode,
-    AnalysisResult,
     InspirationInput,
     JobStatus,
-    KnowledgeAtom,
     OCRObservation,
-    ReviewIssue,
     SourceKind,
-    TranscriptSegment,
     VideoMetadata,
 )
 from douyin_wiki.service import DouyinWikiService
 from douyin_wiki.worker import Worker
+from tests.support.gateway import complete_gateway_job
 
 WORK_ID = "7674987897195870714"
+
+
 
 
 def test_aweme_detail_must_match_requested_work() -> None:
@@ -147,85 +145,20 @@ class VideoOnlyAdapterMustNotRun:
         raise AssertionError(f"image-note flow invoked video adapter: {name}")
 
 
-class NoteAnalysis(AnalysisProvider):
-    configured = True
-    name = "fake-note"
-    model = "fake-note-model"
-
-    async def correct_transcript(
-        self, segments: list[TranscriptSegment], ocr: list[OCRObservation]
-    ) -> tuple[list[TranscriptSegment], list[ReviewIssue]]:
-        raise AssertionError("image-note flow must not correct a transcript")
-
-    async def analyze(
-        self,
-        segments: list[TranscriptSegment],
-        ocr: list[OCRObservation],
-        inspirations: list[InspirationInput],
-        metadata: dict,
-    ) -> AnalysisResult:
-        assert segments == []
-        assert metadata["source_kind"] == "image_note"
-        assert "image_paths" not in metadata and "thumbnail_path" not in metadata
-        assert metadata["images"] == [
-            {"image_index": 1},
-            {"image_index": 2},
-            {"image_index": 3},
-        ]
-        second_page = next(item.text for item in ocr if item.image_index == 2)
-        return AnalysisResult(
-            title="本地模型量化怎么选",
-            one_liner="按显存、速度和质量需求在 FP16、Q8、Q4 之间选择。",
-            relevance_to_inspiration="与本地模型部署灵感直接相关。",
-            takeaways=["FP16 质量高", "Q8 更均衡", "Q4 更省显存"],
-            content_type="explanation",
-            content_card={
-                "kind": "explanation",
-                "question": "量化格式怎么选",
-                "concepts": ["FP16", "Q8", "Q4"],
-                "mechanism": ["位宽越低通常越省显存"],
-                "examples": [],
-            },
-            knowledge_atoms=[
-                KnowledgeAtom(
-                    id="format-choice",
-                    statement="Q4 更适合显存紧张的本地部署",
-                    atom_type="recommendation",
-                    provenance="image_ocr",
-                    image_index=2,
-                    quote=second_page,
-                )
-            ],
-            tags=["本地模型", "量化"],
-        )
 
 
-class CountingNoteAnalysis(NoteAnalysis):
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def analyze(
-        self,
-        segments: list[TranscriptSegment],
-        ocr: list[OCRObservation],
-        inspirations: list[InspirationInput],
-        metadata: dict,
-    ) -> AnalysisResult:
-        self.calls += 1
-        return await super().analyze(segments, ocr, inspirations, metadata)
 
 
 def make_service(
     tmp_path: Path,
     *,
-    mode: AnalysisMode = AnalysisMode.PROVIDER,
+    mode: AnalysisMode = AnalysisMode.GATEWAY,
     note_downloader: NoteDownloader | None = None,
     ocr: NoteOCR | None = None,
 ) -> DouyinWikiService:
     config = AppConfig(
         vault_path=tmp_path / "vault",
         analysis_mode=mode,
-        llm=LLMSettings(enabled=False),
         embeddings=EmbeddingSettings(provider="hash", fallback_dimensions=64),
     )
     service = DouyinWikiService(
@@ -236,7 +169,6 @@ def make_service(
         media=VideoOnlyAdapterMustNotRun(),
         transcriber=VideoOnlyAdapterMustNotRun(),
         ocr=ocr or NoteOCR(),
-        analysis=NoteAnalysis(),
         embeddings=EmbeddingService(config.embeddings),
     )
     service.initialize(initialize_git=False)
@@ -253,6 +185,8 @@ async def test_image_note_pipeline_skips_video_tools_and_writes_ordered_images(
         [InspirationInput(text="本地模型量化选择")],
     )
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
 
     assert completed.status == JobStatus.COMPLETED
     entry = service.database.get_entry(completed.result["entry_id"])
@@ -295,6 +229,8 @@ async def test_image_note_rapidocr_keeps_image_indexes_and_provenance(tmp_path: 
     service.capture_douyin("https://v.douyin.com/oH4K0gee_Ok/")
 
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
 
     assert completed.status == JobStatus.COMPLETED
     assert completed.result["media_provenance"]["ocr"]["provider"] == "rapidocr"
@@ -340,15 +276,22 @@ async def test_image_note_gateway_skips_transcript_correction(
         }, "producer": "test-agent"},
     )
     completed = await Worker(service).run_once()
+    if completed.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        completed = await complete_gateway_job(service, completed.id)
     assert completed.status == JobStatus.COMPLETED
 
 
 @pytest.mark.asyncio
-async def test_duplicate_note_reuses_images_but_reacquires_missing_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("gateway_protocol", [1, 2])
+async def test_duplicate_note_reuses_images_but_reacquires_missing_file(
+    tmp_path: Path, gateway_protocol
+) -> None:
     downloader = NoteDownloader()
     service = make_service(tmp_path, note_downloader=downloader)
     service.capture_douyin("https://v.douyin.com/oH4K0gee_Ok/", [InspirationInput(text="灵感一")])
     first = await Worker(service).run_once()
+    if first.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        first = await complete_gateway_job(service, first.id, gateway_protocol=gateway_protocol)
     assert first.status == JobStatus.COMPLETED
 
     service.capture_douyin("https://v.douyin.com/oH4K0gee_Ok/", [InspirationInput(text="灵感二")])
@@ -361,6 +304,16 @@ async def test_duplicate_note_reuses_images_but_reacquires_missing_file(tmp_path
     (service.config.vault_path / data["metadata"]["image_paths"][1]).unlink()
     service.capture_douyin("https://v.douyin.com/oH4K0gee_Ok/")
     reacquired = await Worker(service).run_once()
+    assert reacquired.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    service = DouyinWikiService(
+        service.config, resolver=service.resolver, image_note_downloader=downloader,
+        media=service.media, transcriber=service.transcriber, ocr=service.ocr,
+        embeddings=service.embeddings,
+    )
+    service.initialize(initialize_git=False)
+    reacquired = await complete_gateway_job(
+        service, reacquired.id, gateway_protocol=gateway_protocol
+    )
     assert reacquired.result["reacquired"] is True
     assert downloader.calls == 2
     assert [item.text for item in service.database.get_entry(entry.id).inspirations] == [
@@ -375,8 +328,6 @@ async def test_concurrent_first_capture_serializes_image_note_pipeline_and_merge
 ) -> None:
     downloader = BlockingNoteDownloader()
     service = make_service(tmp_path, note_downloader=downloader)
-    analysis = CountingNoteAnalysis()
-    service.analysis = analysis
     first_job = service.capture_douyin(
         "https://v.douyin.com/oH4K0gee_Ok/", [InspirationInput(text="一")]
     )
@@ -399,11 +350,14 @@ async def test_concurrent_first_capture_serializes_image_note_pipeline_and_merge
     assert downloader.entered == 1
     downloader.release.set()
     first, second = await asyncio.gather(first_task, second_task)
+    assert first.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    assert second.status == JobStatus.MONITORING
+    first = await complete_gateway_job(service, first.id)
+    second = service.get_job(second.id)
 
     assert first.status == JobStatus.COMPLETED
     assert second.status == JobStatus.COMPLETED
     assert downloader.calls == 1
-    assert analysis.calls == 1
     entry = service.database.get_entry(first.result["entry_id"])
     assert {item.text for item in entry.inspirations} == {"一", "二"}
     assert any(job.result.get("duplicate") for job in (first, second))
@@ -422,11 +376,13 @@ async def test_image_note_auth_and_low_confidence_review(tmp_path: Path) -> None
     assert launcher.calls == [("image_note", job.id, JobStatus.NEEDS_AUTH)]
     auth_downloader.auth_error = False
     assert service.retry_job(job.id).status == JobStatus.QUEUED
-    assert (await Worker(service).run_once()).status == JobStatus.COMPLETED
+    resumed = await Worker(service).run_once()
+    assert (await complete_gateway_job(service, resumed.id)).status == JobStatus.COMPLETED
 
     review_service = make_service(tmp_path / "review", ocr=NoteOCR(low_confidence=True))
     review_job = review_service.capture_douyin("https://v.douyin.com/oH4K0gee_Ok/")
     review = await Worker(review_service).run_once()
+    review = await complete_gateway_job(review_service, review.id)
     assert review.status == JobStatus.COMPLETED
     assert review_service.database.get_review_issues(review_job.id) == []
     assert review.artifacts["ocr_quality_notes"][0]["image_index"] == 2

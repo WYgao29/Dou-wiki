@@ -1,60 +1,28 @@
-import json
 
 import pytest
 
-from douyin_wiki.adapters.llm import OpenAICompatibleProvider
-from douyin_wiki.config import LLMSettings
-from douyin_wiki.models import AnalysisMode, JobStatus, ReviewIssue, TranscriptSegment
+from douyin_wiki.models import AnalysisMode, JobStatus, ReviewIssue
 from douyin_wiki.operation import next_action_for, retryable
 from douyin_wiki.worker import Worker
 
 
 @pytest.mark.asyncio
-async def test_split_correction_receives_bounded_adjacent_context(monkeypatch):
-    provider = OpenAICompatibleProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test", max_output_tokens=256)
-    )
-    source = "".join(f"这是第{index}句的完整内容。" for index in range(30))
-    offset = 0
+async def test_correction_edits_survive_vault_roundtrip(service):
+    from douyin_wiki.models import TranscriptCorrection
+    from tests.support.gateway import complete_gateway_job
 
-    async def respond(system, user, *, response_schema, response_validator):
-        nonlocal offset
-        assert response_schema["required"] == ["segments"]
-        payload = json.loads(user)
-        for piece in payload["segments"]:
-            assert piece["context_before"] == source[:offset][-40:]
-            offset += len(piece["text"])
-            assert piece["context_after"] == source[offset:][:40]
-        result = {"segments": [{"id": p["id"], "text": p["text"]}
-                               for p in payload["segments"]]}
-        response_validator(result)
-        return result
-
-    monkeypatch.setattr(provider, "_json_call", respond)
-    corrected, issues = await provider.correct_transcript(
-        [TranscriptSegment(id=9, start_ms=0, end_ms=10000, text=source)], []
-    )
-    assert offset == len(source)
-    assert corrected[0].text == source
-    assert issues == []
-
-
-@pytest.mark.asyncio
-async def test_correction_edits_survive_vault_roundtrip(service, monkeypatch):
-    calls = 0
-
-    async def correct(segments, ocr):
-        nonlocal calls
-        calls += 1
-        return [s.model_copy(update={"text": s.text.replace("离职以后", "离职之后")})
-                for s in segments], []
-
-    monkeypatch.setattr(service.analysis, "correct_transcript", correct)
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
-    completed = await Worker(service).run_once()
+    paused = await Worker(service).run_once()
+    assert paused.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    service.submit_transcript_correction(
+        job.id,
+        [TranscriptCorrection(id=row["id"], text=row["text"].replace("离职以后", "离职之后"))
+         for row in paused.artifacts["transcript_raw"]],
+        producer="test-agent",
+    )
+    completed = await complete_gateway_job(service, job.id)
     assert completed.status == JobStatus.COMPLETED
     assert completed.result["warnings"] == []
-    assert calls == 1
     data = service.database.get_entry_data(completed.result["entry_id"])
     assert data["transcript_edits"]
     entry, restored = service.vault.load_entries()[0]
@@ -76,7 +44,7 @@ async def test_legacy_review_explicit_retry_archives_and_recorrects(service):
     old = service.database.update_job(
         job.id, status=JobStatus.NEEDS_REVIEW,
         artifacts={"transcript_corrected": [{"id": 0, "text": "错误旧稿"}],
-                   "analysis": {"title": "旧分析"}, "llm_checkpoints": {"old": {}}},
+                   "analysis": {"title": "旧分析"}},
     )
     assert retryable(old)
     assert next_action_for(old, analysis_mode="gateway")["code"] == "retry"
@@ -86,7 +54,7 @@ async def test_legacy_review_explicit_retry_archives_and_recorrects(service):
     archive = queued.artifacts["previous_review_attempts"][0]
     assert archive["review_issues"][0]["id"] == "old-0"
     assert archive["transcript_corrected"][0]["text"] == "错误旧稿"
-    for key in ("transcript_corrected", "analysis", "llm_checkpoints"):
+    for key in ("transcript_corrected", "analysis"):
         assert key not in queued.artifacts
     waiting = await Worker(service).run_once()
     assert waiting.status == JobStatus.AWAITING_AGENT_ANALYSIS

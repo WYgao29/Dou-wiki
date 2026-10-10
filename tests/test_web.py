@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,18 +34,8 @@ RETIRED_MODEL_ENDPOINTS = [
 
 @pytest.mark.parametrize(("method", "path"), RETIRED_MODEL_ENDPOINTS)
 @pytest.mark.parametrize("payload", [None, {}, {"kind": "overview", "content": "旧请求"}])
-def test_retired_model_features_have_no_side_effects(tmp_path, monkeypatch, method, path, payload):
-    from types import SimpleNamespace
-
-    from douyin_wiki.webapp import app as app_module
-
+def test_retired_model_features_have_no_side_effects(tmp_path, method, path, payload):
     config, service = _web_fixture(tmp_path)
-    # Keep the old server offline while measuring its HTTP behavior before removal.
-    monkeypatch.setattr(
-        app_module, "OpenAICompatibleChatProvider",
-        lambda *_: SimpleNamespace(model="", configured=False), raising=False,
-    )
-    monkeypatch.setattr(app_module, "get_secret", lambda *_: None, raising=False)
     before_jobs = {job.id for job in service.database.list_jobs()}
     with service.database.connect() as conn:
         before_notes = {row[0] for row in conn.execute("SELECT id FROM topic_artifacts")}
@@ -67,9 +58,16 @@ def test_retired_model_features_do_not_read_keys_or_construct_providers(tmp_path
     def forbidden(*args, **kwargs):
         raise AssertionError("停用入口不应访问密钥、创建对话模型或连接模型")
 
-    monkeypatch.setattr(app_module, "OpenAICompatibleChatProvider", forbidden, raising=False)
-    monkeypatch.setattr(app_module, "get_secret", forbidden, raising=False)
-    monkeypatch.setattr(app_module, "store_secret", forbidden, raising=False)
+    original_run = subprocess.run
+
+    def guarded_run(command, *args, **kwargs):
+        assert Path(command[0]).name != "security", "停用入口不应访问 Keychain"
+        return original_run(command, *args, **kwargs)
+
+    assert not hasattr(app_module, "OpenAICompatibleChatProvider")
+    assert not hasattr(app_module, "get_secret")
+    assert not hasattr(app_module, "store_secret")
+    monkeypatch.setattr(subprocess, "run", guarded_run)
     monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
     with local_client(create_app(config, service=service, start_watcher=False)) as client:
         for method, path in RETIRED_MODEL_ENDPOINTS:

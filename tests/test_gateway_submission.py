@@ -29,6 +29,29 @@ from tests.support.gateway import (
 from tests.test_image_note import make_service as make_note_service
 
 
+def test_fresh_gateway_accepts_existing_protocol_one_analysis_fields(service):
+    job = make_gateway_job(service, phase="analysis")
+    submitted = service.submit_gateway_analysis(
+        job.id,
+        {
+            "title": "已有 Agent 的分析",
+            "summary": "保留现行协议输入",
+            "core_points": ["原有结论"],
+            "claims": [{
+                "id": "claim-1", "text": "第二段内容",
+                "source_quote": "原始第二段。", "start_ms": 5000,
+            }],
+        },
+        producer="protocol-one-agent",
+        gateway_protocol=1,
+    )
+    analysis = submitted.artifacts["analysis"]
+    assert submitted.id == job.id and submitted.status == JobStatus.QUEUED
+    assert analysis["one_liner"] == "保留现行协议输入"
+    assert analysis["takeaways"][0] == "原有结论"
+    assert analysis["knowledge_atoms"][0]["quote"] == "原始第二段。"
+
+
 def test_patch_preserves_unsubmitted_segments_and_raw_artifacts(service):
     job = make_gateway_job(service)
     raw = deepcopy(job.artifacts["transcript_raw"])
@@ -196,18 +219,8 @@ def test_patch_replay_and_image_note_correction_are_rejected(service):
     assert service.database.get_job(note.id) == note
 
 
-def test_patch_checks_mode_and_explicit_phase(service):
+def test_patch_checks_explicit_phase(service):
     job = make_gateway_job(service)
-    service.config.analysis_mode = AnalysisMode.PROVIDER
-    with pytest.raises(JobStateError):
-        service.submit_transcript_correction(
-            job.id,
-            [],
-            producer="test-agent",
-            gateway_protocol=2,
-            context_revision=context_revision(job),
-        )
-    service.config.analysis_mode = AnalysisMode.GATEWAY
     job = service.database.update_job(job.id, result={"phase": "analysis"})
     with pytest.raises(JobStateError):
         service.submit_transcript_correction(

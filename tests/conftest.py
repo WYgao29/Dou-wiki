@@ -6,18 +6,12 @@ from pathlib import Path
 import pytest
 
 from douyin_wiki.adapters.embeddings import EmbeddingService
-from douyin_wiki.adapters.llm import AnalysisProvider
 from douyin_wiki.adapters.share import ResolvedShare
-from douyin_wiki.config import AppConfig, EmbeddingSettings, LLMSettings, MediaSettings
+from douyin_wiki.config import AppConfig, EmbeddingSettings, MediaSettings
 from douyin_wiki.models import (
     AnalysisMode,
-    AnalysisResult,
-    Claim,
-    Entity,
-    InspirationInput,
     OCRObservation,
     ReminderCandidate,
-    ReviewIssue,
     TranscriptSegment,
     VideoMetadata,
 )
@@ -120,59 +114,6 @@ class FakeOCR:
         return [OCRObservation(timestamp_ms=0, text="财经媒体筛选", confidence=0.99)]
 
 
-class FakeAnalysisProvider(AnalysisProvider):
-    configured = True
-    name = "fake"
-    model = "fake-model"
-
-    async def correct_transcript(
-        self, segments: list[TranscriptSegment], ocr: list[OCRObservation]
-    ) -> tuple[list[TranscriptSegment], list[ReviewIssue]]:
-        return segments, []
-
-    async def analyze(
-        self,
-        segments: list[TranscriptSegment],
-        ocr: list[OCRObservation],
-        inspirations: list[InspirationInput],
-        metadata: dict,
-    ) -> AnalysisResult:
-        source_quote = (
-            segments[-1].text.rstrip("。") if segments else "筛选信息源要看它能否提供一手证据"
-        )
-        return AnalysisResult(
-            title="离职后如何筛选财经媒体",
-            summary="减少低价值财经媒体，优先保留能够提供一手证据的信息源。",
-            core_points=["信息源质量比数量重要"],
-            evidence=["作者说明自己主动取关大量财经媒体"],
-            steps=["识别信息源", "检查是否提供一手证据"],
-            applicable_scenarios=[inspiration.text for inspiration in inspirations],
-            risks=["这是作者个人经验，不代表所有场景"],
-            actions=["整理当前关注的信息源"],
-            tags=["财经", "信息筛选"],
-            concepts=["信息源筛选"],
-            entities=[Entity(name="Nee霓公子", kind="creator")],
-            claims=[
-                Claim(
-                    id="claim-1",
-                    text="高质量信息源应提供一手证据",
-                    source_quote=source_quote,
-                    start_ms=5000,
-                )
-            ],
-            reminders=[
-                ReminderCandidate(
-                    id="reminder-1",
-                    title="检查财经信息源",
-                    due_at=None,
-                    reason="视频提出了可执行的整理动作",
-                    source_quote=source_quote,
-                    confidence=0.7,
-                    needs_clarification=True,
-                )
-            ],
-            ai_judgment="值得保存，适合用于建立个人信息源筛选标准。",
-        )
 
 
 class FakeReminderAdapter:
@@ -190,8 +131,7 @@ class FakeReminderAdapter:
 def config(tmp_path: Path) -> AppConfig:
     return AppConfig(
         vault_path=tmp_path / "vault",
-        analysis_mode=AnalysisMode.PROVIDER,
-        llm=LLMSettings(enabled=False),
+        analysis_mode=AnalysisMode.GATEWAY,
         embeddings=EmbeddingSettings(provider="hash", fallback_dimensions=128),
         media=MediaSettings(
             retention_days=30,
@@ -217,7 +157,6 @@ def service(config: AppConfig, fake_reminders: FakeReminderAdapter) -> DouyinWik
         media=FakeMediaProcessor(),
         transcriber=FakeTranscriber(),
         ocr=FakeOCR(),
-        analysis=FakeAnalysisProvider(),
         embeddings=EmbeddingService(config.embeddings),
         reminders=fake_reminders,
     )

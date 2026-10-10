@@ -406,25 +406,12 @@ def message_for_user(
     if job.status == JobStatus.NEEDS_SELECTION:
         return "清点已完成，请选择要导入的作品并确认。"
     if job.status == JobStatus.AWAITING_AGENT_ANALYSIS:
-        if analysis_mode == AnalysisMode.GATEWAY.value:
-            return (
-                "当前为 Gateway 模式。网页不会自动分析，需要外部 Agent 接续。"
-                "后台不会自动完成 AI 整理。"
-            )
-        if analysis_mode == AnalysisMode.LOCAL.value:
-            return "本地模式正在等待整理，不会调用外部模型。"
-        return "等待后台模型接口继续整理。"
+        return (
+            "当前为 Gateway 模式。网页不会自动分析，需要外部 Agent 接续。"
+            "后台不会自动完成 AI 整理。"
+        )
     if job.status == JobStatus.ANALYZING:
-        correction = (job.artifacts.get("analysis_progress") or {}).get("phase") == "correction"
-        if correction:
-            if job.artifacts["analysis_progress"].get("waiting_for_resource"):
-                return "等待模型校正资源。"
-            return "后台模型正在校正逐字稿。"
-        if analysis_mode == AnalysisMode.GATEWAY.value:
-            return "外部 Agent 正在提交分析。后台不会在 Gateway 模式下自行完成整理。"
-        if analysis_mode == AnalysisMode.LOCAL.value:
-            return "本地模式正在整理，不调用外部模型。"
-        return "后台模型接口正在整理。"
+        return "后台正在校验 Agent 提交的分析并写入知识库。"
     if job.status == JobStatus.COMPLETED:
         return "已写入知识库。"
     if job.status == JobStatus.COMPLETED_WITH_WARNINGS:
@@ -587,14 +574,8 @@ def analysis_presentation(mode: str) -> dict[str, Any]:
         "mode": mode,
         "mode_label": ANALYSIS_MODE_LABELS.get(mode, mode),
         "web_copy": ANALYSIS_MODE_WEB_COPY.get(mode, mode),
-        "web_can_complete": mode != AnalysisMode.GATEWAY.value,
-        "token_hint": (
-            "可能调用外部模型并消耗 Token"
-            if mode == AnalysisMode.PROVIDER.value
-            else "不调用外部模型"
-            if mode == AnalysisMode.LOCAL.value
-            else "Web 不能单独完成分析，需要外部 Agent 接续"
-        ),
+        "web_can_complete": False,
+        "token_hint": "Web 不能单独完成分析，需要外部 Agent 接续",
     }
 
 

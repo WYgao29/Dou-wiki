@@ -21,13 +21,9 @@ from typing import Any
 from .config import (
     AppConfig,
     default_config_path,
-    llm_api_key_required,
-    llm_is_configured,
     render_default_config,
 )
 from .errors import ExternalToolError
-from .models import AnalysisMode
-from .secrets import get_secret
 
 
 def qwen3_health(settings) -> dict[str, Any]:
@@ -422,11 +418,7 @@ def doctor(config: AppConfig) -> dict[str, Any]:
     checks["analysis_mode"] = {
         "ok": True,
         "mode": config.analysis_mode.value,
-        "message": {
-            AnalysisMode.GATEWAY: "校正与分析由 OpenClaw/Hermes 等 Gateway Agent 完成",
-            AnalysisMode.PROVIDER: "校正与分析由后台 OpenAI-compatible provider 完成",
-            AnalysisMode.LOCAL: "校正与分析使用无 token 的本地降级逻辑",
-        }[config.analysis_mode],
+        "message": "校正与分析由 Gateway Agent 完成",
     }
     for command in ("yt-dlp", "ffmpeg", "ffprobe", "swift", "osascript", "git"):
         checks[command] = {"ok": bool(shutil.which(command)), "path": shutil.which(command)}
@@ -499,42 +491,6 @@ def doctor(config: AppConfig) -> dict[str, Any]:
     checks["database"] = {
         "ok": config.database_path.exists(),
         "path": str(config.database_path),
-    }
-    api_key = get_secret(config.llm.api_key_env)
-    backend_llm_required = config.analysis_mode == AnalysisMode.PROVIDER
-    api_key_required = llm_api_key_required(config.llm.base_url)
-    backend_llm_configured = llm_is_configured(config.llm, api_key)
-    checks["llm"] = {
-        "ok": backend_llm_configured or not backend_llm_required,
-        "required": backend_llm_required,
-        "model": config.llm.model,
-        "base_url": config.llm.base_url,
-        "api_key_env": config.llm.api_key_env,
-        "api_key_required": api_key_required,
-        "message": (
-            None
-            if backend_llm_configured
-            else (
-                "当前模式不需要后台模型；AI token 由 Gateway Agent 使用其已配置模型消耗"
-                if config.analysis_mode == AnalysisMode.GATEWAY
-                else "当前模式不需要后台模型"
-                if config.analysis_mode == AnalysisMode.LOCAL
-                else "provider 模式需要配置模型与 API key"
-            )
-        ),
-    }
-    checks["web_llm"] = {
-        "ok": backend_llm_configured or not config.web.enabled,
-        "required": config.web.enabled,
-        "model": config.llm.model or "未配置",
-        "message": (
-            None
-            if backend_llm_configured
-            else (
-                "文章浏览可正常使用；AI 对话请打开「设置 › 共用模型」，"
-                "或运行 douyin-wiki configure-model"
-            )
-        ),
     }
     sentence_transformers = importlib.util.find_spec("sentence_transformers") is not None
     checks["embeddings"] = {

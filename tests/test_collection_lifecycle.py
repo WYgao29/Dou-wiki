@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from douyin_wiki.models import JobStatus
+from tests.support.gateway import complete_gateway_job
 from tests.test_collection_flow import MIX, A, FakeCollectionAdapter, ready, snapshot
 
 
@@ -163,6 +164,8 @@ async def test_collection_new_and_reused_counts_survive_capture_completion(servi
     assert service.collections.get(second)["summary"]["reused_tasks"] == 1
     service.resolver = FakeResolver()
     result = await service.process_claimed_job(service.database.get_job(child))
+    if result.status == JobStatus.AWAITING_AGENT_ANALYSIS:
+        result = await complete_gateway_job(service, result.id)
     assert result.status == JobStatus.COMPLETED
     for parent, kind in [(first, "new_tasks"), (second, "reused_tasks")]:
         data = service.collections.get(parent)

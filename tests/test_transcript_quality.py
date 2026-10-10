@@ -5,18 +5,17 @@ from fastapi.testclient import TestClient
 
 from douyin_wiki import mcp_server
 from douyin_wiki.mcp_server import mcp
-from douyin_wiki.models import AnalysisMode, JobStatus, ReviewIssue, TranscriptSegment
+from douyin_wiki.models import JobStatus, ReviewIssue, TranscriptSegment
 from douyin_wiki.review import detect_review_issues, transcript_confidence_info
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.worker import Worker
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [AnalysisMode.PROVIDER, AnalysisMode.GATEWAY])
 @pytest.mark.parametrize("has_issue", [False, True])
 @pytest.mark.parametrize("asr_provider", ["sensevoice", "qwen3"])
 async def test_model_correction_notes_do_not_block(
-    service, monkeypatch, mode, has_issue, asr_provider
+    service, monkeypatch, has_issue, asr_provider
 ):
     source = TranscriptSegment(id=0, start_ms=0, end_ms=9000, text="AI课程售价2000元。")
     issue = ReviewIssue(
@@ -31,37 +30,30 @@ async def test_model_correction_notes_do_not_block(
     async def transcribe(*_args):
         return [source]
 
-    async def correct(*_args):
-        return [source], [issue] if has_issue else []
-
     service.transcriber = SimpleNamespace(
         transcribe=transcribe, provenance={"provider": asr_provider, "model": "test"}
     )
-    service.config.analysis_mode = mode
-    monkeypatch.setattr(service.analysis, "correct_transcript", correct)
     monkeypatch.setattr(mcp_server, "_SERVICE", service)
     job = service.capture_douyin("https://v.douyin.com/uvHsRpXIn8s/")
     outcome = await Worker(service).run_once()
-    if mode == AnalysisMode.GATEWAY:
-        assert outcome.status == JobStatus.AWAITING_AGENT_ANALYSIS
-        context = mcp_server.get_analysis_context(job.id)
-        assert context["media_provenance"]["asr"]["confidence_status"] == "unavailable"
-        await mcp.call_tool(
-            "submit_transcript_correction",
-            {
-                "job_id": job.id,
-                "corrections": [{"id": 0, "text": source.text}],
-                "review_issues": [issue.model_dump(mode="json")] if has_issue else [],
-                "producer": "test-agent",
-            },
-        )
-        outcome = service.get_job(job.id)
-        await mcp.call_tool(
-            "submit_gateway_analysis",
-            {"job_id": job.id, "analysis": {"title": "课程介绍"}, "producer": "test-agent"},
-        )
-        outcome = await Worker(service).run_once()
-
+    assert outcome.status == JobStatus.AWAITING_AGENT_ANALYSIS
+    context = mcp_server.get_analysis_context(job.id)
+    assert context["media_provenance"]["asr"]["confidence_status"] == "unavailable"
+    await mcp.call_tool(
+        "submit_transcript_correction",
+        {
+            "job_id": job.id,
+            "corrections": [{"id": 0, "text": source.text}],
+            "review_issues": [issue.model_dump(mode="json")] if has_issue else [],
+            "producer": "test-agent",
+        },
+    )
+    outcome = service.get_job(job.id)
+    await mcp.call_tool(
+        "submit_gateway_analysis",
+        {"job_id": job.id, "analysis": {"title": "课程介绍"}, "producer": "test-agent"},
+    )
+    outcome = await Worker(service).run_once()
     assert outcome.status == JobStatus.COMPLETED
     assert service.database.get_review_issues(job.id) == []
     assert [item["id"] for item in outcome.artifacts["correction_notes"]] == (
