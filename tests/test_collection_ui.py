@@ -59,7 +59,7 @@ async def collection_ui(config, service):
             sock.close()
 
 
-async def test_collection_ui_paste_all_pages_confirm_and_reload(collection_ui):
+async def test_collection_ui_paste_all_pages_confirm_and_reload(collection_ui, tmp_path):
     ui, page = collection_ui, collection_ui.page
     await page.goto(ui.url + "/imports")
     await page.locator("#import-paste").fill(f"https://www.douyin.com/collection/{MIX}")
@@ -71,6 +71,10 @@ async def test_collection_ui_paste_all_pages_confirm_and_reload(collection_ui):
     assert ui.service.database.list_jobs() == []
     await page.locator("#collection-form button[type=submit]").click()
     await expect(page.locator("#collection-summary")).to_contain_text("已读 105", timeout=12000)
+    await expect(page.locator("#collection-status")).to_contain_text("待选择作品")
+    await page.locator("[data-theme-select]").select_option("light")
+    await expect(page.locator("html")).to_have_attribute("data-theme", "light")
+    await page.screenshot(path=str(tmp_path / "collection-desktop-light.png"))
     await expect(page.locator("#collection-confirm")).to_be_disabled()
     await page.locator("#collection-select-all").click()
     await expect(page.locator("#collection-summary")).to_contain_text("已选 105")
@@ -83,10 +87,20 @@ async def test_collection_ui_paste_all_pages_confirm_and_reload(collection_ui):
     assert len([j for j in ui.service.database.list_jobs(limit=None) if j.kind == "capture"]) == 105
     await page.reload()
     await expect(page.locator("#collection-result")).to_contain_text("新任务 105")
+    parent = next(
+        j for j in ui.service.database.list_jobs(limit=None) if j.kind == "collection_import"
+    )
+    await page.locator("#collection-history").select_option("")
+    await expect(page.locator("#collection-summary")).to_have_text("")
+    await expect(page.locator("#collection-result")).to_have_text("")
+    await expect(page.locator("#collection-task")).to_be_hidden()
+    assert await page.locator("#collection-items input").count() == 0
+    await page.locator("#collection-history").select_option(parent.id)
+    await expect(page.locator("#collection-result")).to_contain_text("新任务 105")
     assert ui.errors == []
 
 
-async def test_collection_ui_waits_for_save_and_retries_error(collection_ui):
+async def test_collection_ui_waits_for_save_and_retries_error(collection_ui, tmp_path):
     ui, page = collection_ui, collection_ui.page
     await page.goto(ui.url + "/imports/collections")
     await page.locator("#collection-source").fill(f"https://www.douyin.com/collection/{MIX}")
@@ -107,10 +121,15 @@ async def test_collection_ui_waits_for_save_and_retries_error(collection_ui):
     await page.unroute("**/selection", delayed)
     await page.locator("#collection-save-retry").click()
     await expect(page.locator("#collection-confirm")).to_be_enabled()
+    await page.locator("[data-theme-select]").select_option("dark")
+    await expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+    await page.screenshot(path=str(tmp_path / "collection-desktop-dark.png"))
     await page.set_viewport_size({"width": 390, "height": 844})
-    await page.emulate_media(color_scheme="dark")
+    await expect(page.locator("#library-sidebar")).not_to_be_visible()
+    await page.screenshot(path=str(tmp_path / "collection-narrow-dark.png"))
     await page.locator("#collection-confirm").scroll_into_view_if_needed()
     await expect(page.locator("#collection-confirm")).to_be_in_viewport()
+    await page.screenshot(path=str(tmp_path / "collection-narrow-footer.png"))
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     await page.locator("#collection-items input").first.focus()
     await page.keyboard.press("x")

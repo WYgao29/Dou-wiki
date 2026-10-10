@@ -121,6 +121,14 @@
     if (jobId) url.searchParams.set("job", jobId); else url.searchParams.delete("job");
     window.history.replaceState(window.history.state, "", url);
   }
+  function reset() {
+    current = null; page = 1; failedSelection = null; $("partial").checked = false;
+    $("status").textContent = "尚未开始清点";
+    ["summary", "result", "error", "save-hint"].forEach((id) => { $(id).textContent = ""; });
+    $("items").replaceChildren(); $("warnings").replaceChildren();
+    ["task", "gateway", "auth"].forEach((id) => { $(id).hidden = true; });
+    $("page").textContent = "第 1 页"; controls();
+  }
   window.addEventListener("douku:route", async (event) => {
     epoch++; clearTimeout(timer);
     if (event.detail.path !== "/imports/collections") return;
@@ -129,20 +137,20 @@
     await operation;
     if (!active()) return;
     const requested = new URLSearchParams(location.search).get("job");
-    if (requested !== jobId) { jobId = requested; current = null; page = 1; failedSelection = null; $("partial").checked = false; }
+    if (requested !== jobId) { jobId = requested; reset(); }
     await run(async () => { await history(); if (jobId) await load(); });
   });
   $("form").addEventListener("submit", (event) => {
     event.preventDefault(); run(async () => {
       const data = await request("/api/collections/inventory", {source_text: $("source").value,
         options: {allow_long: $("allow-long").checked, retention: $("retention").value}});
-      jobId = data.job_id; page = 1; current = null; failedSelection = null; $("partial").checked = false;
+      jobId = data.job_id; reset();
       address(); await history(); await load();
     });
   });
   $("history").addEventListener("change", () => run(async () => {
-    jobId = $("history").value || null; epoch++; page = 1; failedSelection = null; $("partial").checked = false;
-    address(); if (jobId) await load(); else { current = null; $("items").replaceChildren(); $("status").textContent = "尚未开始清点"; }
+    jobId = $("history").value || null; epoch++; reset();
+    address(); if (jobId) await load();
   }));
   $("select-all").addEventListener("click", () => saveSelection({decision: "selected", all_works: true}));
   $("skip-all").addEventListener("click", () => saveSelection({decision: "skipped", all_works: true}));
