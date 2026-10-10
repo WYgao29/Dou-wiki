@@ -11,15 +11,25 @@ from playwright.async_api import async_playwright, expect
 from douyin_wiki.adapters.share import DouyinShareResolver
 from douyin_wiki.models import JobStatus
 from douyin_wiki.webapp.app import create_app
-from tests.test_collection_flow import MIX, FakeCollectionAdapter, snapshot
+from tests.test_collection_flow import MIX, A, B, FakeCollectionAdapter, snapshot
+
+COVER = (
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='180'"
+    "%3E%3Crect width='320' height='180' fill='%23375378'/%3E%3Ctext x='28' y='104' "
+    "fill='white' font-size='26'%3EPROJECT STORY%3C/text%3E%3C/svg%3E"
+)
 
 
 @pytest.fixture
 async def collection_ui(config, service):
     service.resolver = DouyinShareResolver()
-    service.collections.adapter = FakeCollectionAdapter(
-        snapshot(tuple(str(7000000000000000000 + n) for n in range(105)))
-    )
+    inventory = snapshot(tuple(str(7000000000000000000 + n) for n in range(105)))
+    for index, work in enumerate(inventory.works):
+        work.title = f"第 {index + 1} 集：项目经理如何拆分工作并协调团队成员"
+        work.author = "项目经理故事汇"
+        work.thumbnail_url = COVER
+        work.duration_seconds = 92
+    service.collections.adapter = FakeCollectionAdapter(inventory)
     app = create_app(config, service=service, start_watcher=False)
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -79,8 +89,15 @@ async def test_collection_ui_paste_all_pages_confirm_and_reload(collection_ui, t
     await expect(page.locator("html")).to_have_attribute("data-theme", "light")
     await page.screenshot(path=str(tmp_path / "collection-desktop-light.png"))
     await expect(page.locator("#collection-confirm")).to_be_disabled()
+    await expect(page.locator("#collection-result")).to_contain_text("预计新建 0")
+    await expect(page.locator("#collection-result")).to_contain_text("复用任务 0")
+    cover = page.locator("#collection-items img").first
+    await expect(cover).to_have_attribute("src", COVER)
+    assert await cover.evaluate("image => image.complete && image.naturalWidth > 0")
+    await expect(page.locator("#collection-items").first).to_contain_text("1:32")
     await page.locator("#collection-select-all").click()
     await expect(page.locator("#collection-summary")).to_contain_text("已选 105")
+    await expect(page.locator("#collection-result")).to_contain_text("预计新建 105")
     await expect(page.locator("#collection-confirm")).to_be_enabled()
     await page.locator("#collection-next").click()
     await expect(page.locator("#collection-page")).to_contain_text("第 2 页")
@@ -100,6 +117,49 @@ async def test_collection_ui_paste_all_pages_confirm_and_reload(collection_ui, t
     assert await page.locator("#collection-items input").count() == 0
     await page.locator("#collection-history").select_option(parent.id)
     await expect(page.locator("#collection-result")).to_contain_text("新任务 105")
+    assert ui.errors == []
+
+
+async def test_collection_ui_preview_counts_and_partial_retry(collection_ui, tmp_path):
+    from douyin_wiki.collection_models import CollectionWork
+    from tests.test_collection_vault import import_entry
+
+    ui, page = collection_ui, collection_ui.page
+    await import_entry(ui.service)
+    ui.service.resolver = DouyinShareResolver()
+    ui.service.capture_douyin(f"https://www.douyin.com/video/{B}")
+    c, d, e, new = (str(7000000000000000200 + n) for n in range(4))
+    inventory = snapshot((A, B, c, d, e), complete=False)
+    inventory.works[2].duration_seconds = 3661
+    inventory.works[2].thumbnail_url = COVER
+    inventory.works[3] = CollectionWork(work_id=d, position=4, source_kind="article")
+    inventory.works[4].available = False
+    ui.service.collections.adapter = FakeCollectionAdapter(inventory)
+    await page.goto(ui.url + "/imports/collections")
+    await page.locator("#collection-source").fill(f"https://www.douyin.com/collection/{MIX}")
+    await page.locator("#collection-form button[type=submit]").click()
+    await expect(page.locator("#collection-summary")).to_contain_text("已读 5", timeout=12000)
+    await expect(page.locator("#collection-result")).to_contain_text("不可导入 2")
+    await expect(page.locator("#collection-summary")).to_contain_text("已在资料库 1")
+    await page.locator("#collection-select-all").click()
+    await expect(page.locator("#collection-result")).to_contain_text("预计新建 1")
+    await expect(page.locator("#collection-result")).to_contain_text("复用任务 1")
+    await expect(page.locator("#collection-items")).to_contain_text("61:01")
+    await expect(page.locator("#collection-confirm")).to_be_disabled()
+    await expect(page.locator("#collection-retry")).to_have_text("重新清点")
+    await expect(page.locator("#collection-retry")).to_be_enabled()
+    await page.screenshot(path=str(tmp_path / "collection-preview-partial.png"))
+    inventory = inventory.model_copy(update={
+        "complete": True, "warnings": [],
+        "works": [*inventory.works, CollectionWork(work_id=new, position=6)],
+    })
+    ui.service.collections.adapter = FakeCollectionAdapter(inventory)
+    await page.locator("#collection-retry").click()
+    await expect(page.locator("#collection-summary")).to_contain_text("已读 6", timeout=12000)
+    await expect(page.locator("#collection-summary")).to_contain_text("待选择 1")
+    assert await page.locator("#collection-items input:checked").count() == 3
+    await expect(page.locator("#collection-confirm")).to_be_disabled()
+    await expect(page.locator("#collection-retry")).to_be_hidden()
     assert ui.errors == []
 
 
@@ -134,6 +194,9 @@ async def test_collection_ui_waits_for_save_and_retries_error(collection_ui, tmp
     await expect(page.locator("#collection-confirm")).to_be_in_viewport()
     await page.screenshot(path=str(tmp_path / "collection-narrow-footer.png"))
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await expect(
+        page.locator("#collection-items .favorites-item").last.get_by_text("1:32", exact=True)
+    ).to_be_in_viewport()
     await page.locator("#collection-items input").first.focus()
     await page.keyboard.press("x")
     await expect(page.locator("#collection-summary")).to_contain_text("已选 104")

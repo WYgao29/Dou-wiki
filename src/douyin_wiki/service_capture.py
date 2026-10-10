@@ -103,6 +103,8 @@ class CaptureMixin:
             )
 
     async def process_capture(self, job: JobRecord) -> JobRecord:
+        if job.artifacts.get("shared_capture_job_id"):
+            return self.capture_sharing.refresh(job.id)
         request = job.request
         artifacts = dict(job.artifacts)
 
@@ -189,7 +191,7 @@ class CaptureMixin:
             # first-write race and its user data is never lost.
             existing = self.database.find_entry_by_video_id(video_id)
             if existing:
-                for inspiration in request.inspirations:
+                for inspiration in self.capture_sharing.inspirations(job):
                     existing = self.add_inspiration_locked(existing.id, inspiration)
                 should_reacquire = (
                     existing.media_status == "removed"
@@ -208,6 +210,9 @@ class CaptureMixin:
                         },
                         unlock=True,
                     )
+        shared = self.capture_sharing.join_if_active(job.id, video_id)
+        if shared is not None:
+            return self.capture_sharing.refresh(shared.id)
         effective_inspirations = existing.inspirations if existing else request.inspirations
 
         creator_context = artifacts.get("creator_context") or {}
@@ -757,6 +762,7 @@ class CaptureMixin:
             self.check_job_cancelled(job)
             if existing:
                 entry = self.merge_reacquisition_state(entry, data, existing.id)
+            entry = self.capture_sharing.apply_inspirations(job, entry, data)
             if entry.retention == RetentionPolicy.DISCARD:
                 self.trash_assets(entry, mark_database=False)
                 entry = entry.model_copy(update={"media_status": "removed"})
@@ -816,7 +822,7 @@ class CaptureMixin:
             # The work lock makes this re-read authoritative for a waiter.
             existing = self.database.find_entry_by_video_id(work_id)
             if existing:
-                for inspiration in request.inspirations:
+                for inspiration in self.capture_sharing.inspirations(job):
                     existing = self.add_inspiration_locked(existing.id, inspiration)
                 existing_data = self.database.get_entry_data(existing.id)
                 if self.image_note_files_intact(existing_data):
@@ -833,6 +839,9 @@ class CaptureMixin:
                         },
                         unlock=True,
                     )
+        shared = self.capture_sharing.join_if_active(job.id, work_id)
+        if shared is not None:
+            return self.capture_sharing.refresh(shared.id)
         effective_inspirations = existing.inspirations if existing else request.inspirations
 
         creator_context = artifacts.get("creator_context") or {}
@@ -1132,6 +1141,7 @@ class CaptureMixin:
             self.check_job_cancelled(job)
             if existing:
                 entry = self.merge_reacquisition_state(entry, data, existing.id)
+            entry = self.capture_sharing.apply_inspirations(job, entry, data)
             chunks, relations, reminders = self.prepare_entry_bundle(
                 entry, data, reminders=reminders
             )

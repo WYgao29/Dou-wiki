@@ -279,7 +279,7 @@ class CollectionStore:
             conn.execute(
                 "UPDATE jobs SET status=?,result_json=?,updated_at=? WHERE id=?",
                 (
-                    JobStatus.MONITORING.value if child_ids else JobStatus.COMPLETED.value,
+                    JobStatus.MONITORING.value,
                     json.dumps(
                         {"child_job_ids": child_ids, "accept_partial": bool(accept_partial)}
                     ),

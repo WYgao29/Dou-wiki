@@ -23,6 +23,7 @@ from .adapters.media_models import OCREngine, SelectedOCR, SelectedTranscriber, 
 from .adapters.reminders import MacOSReminderAdapter
 from .adapters.share import DouyinShareResolver
 from .auth_guidance import AuthGuidanceLauncher, NoopAuthGuidanceLauncher
+from .capture_sharing import CaptureSharing
 from .config import AppConfig
 from .database import Database
 from .errors import (
@@ -88,6 +89,7 @@ class DouyinWikiService(
         self.database = Database(config.database_path)
         self.vault = VaultWriter(config.vault_path)
         self.tags = TagManager(self.database, self.vault)
+        self.capture_sharing = CaptureSharing(self)
         self.resolver = resolver or DouyinShareResolver()
         self.downloader = downloader or YtDlpDownloader(config.media, config.browser_profile_dir)
         self.image_note_downloader = image_note_downloader or PlaywrightImageNoteDownloader(
@@ -291,6 +293,8 @@ class DouyinWikiService(
 
     def get_job(self, job_id: str) -> JobRecord:
         job = self.database.get_job(job_id)
+        if job.artifacts.get("shared_capture_job_id"):
+            job = self.capture_sharing.refresh(job_id)
         self._apply_live_creator_selection(job)
         if job.kind == "favorites_import":
             job = self.favorites.refresh(job.id)
@@ -306,6 +310,8 @@ class DouyinWikiService(
     def list_jobs(self, status: JobStatus | None = None, limit: int = 50) -> list[JobRecord]:
         jobs = self.database.list_jobs(status, limit)
         for index, job in enumerate(jobs):
+            if job.artifacts.get("shared_capture_job_id"):
+                jobs[index] = self.capture_sharing.refresh(job.id)
             self._apply_live_creator_selection(job)
             if job.kind == "favorites_import":
                 jobs[index] = self.favorites.refresh(job.id)
@@ -382,7 +388,9 @@ class DouyinWikiService(
         # previously failed candidate forever — clear it on ordinary retries.
         updated = self.database.requeue_job(
             job_id,
-            remove_artifacts={"analysis_candidate", "user_dismissed", "cancel_requested"},
+            remove_artifacts={
+                "analysis_candidate", "user_dismissed", "cancel_requested", "shared_capture_job_id"
+            },
             expected_updated_at=job.updated_at,
         )
         self.refresh_job_parents(updated.id)
@@ -418,10 +426,13 @@ class DouyinWikiService(
                         and not p.artifacts.get("cancel_requested")
                         and not p.artifacts.get("user_deleted")
                         for p in parents
-                    )
+                    ) or self.capture_sharing.has_independent_waiters(child_id)
                     if owned_by_batch and not shared:
                         self.database.request_cancel(child_id)
                         self.refresh_job_parents(child_id)
+        owner_id = job.artifacts.get("shared_capture_job_id")
+        if owner_id and self.capture_sharing.cancel_abandoned_batch_owner(owner_id):
+            self.refresh_job_parents(owner_id)
         self.refresh_job_parents(job_id)
         if job.kind == "favorites_import":
             self.favorites.refresh(job_id)
@@ -432,6 +443,7 @@ class DouyinWikiService(
         return self.database.get_job(job_id)
 
     def refresh_job_parents(self, job_id: str) -> None:
+        self.capture_sharing.refresh_for_owner(job_id)
         self.favorites.refresh_for_child(job_id)
         self.collections.refresh_for_child(job_id)
         for parent_id in self.database.capture_parent_ids(job_id):

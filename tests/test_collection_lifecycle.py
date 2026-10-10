@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from douyin_wiki.models import JobStatus
 from tests.test_collection_flow import MIX, A, FakeCollectionAdapter, ready, snapshot
 
@@ -168,3 +170,27 @@ async def test_collection_new_and_reused_counts_survive_capture_completion(servi
         assert data["summary"]["selected"] == 1
         assert data["summary"]["in_library"] == 1
         assert service.get_job(parent).status == JobStatus.COMPLETED
+
+
+@pytest.mark.parametrize("already_imported", [False, True])
+async def test_collection_without_children_emits_completion_once(service, already_imported):
+    from douyin_wiki.models import GatewayContext
+    from tests.test_collection_vault import import_entry
+
+    if already_imported:
+        await import_entry(service)
+    context = GatewayContext(gateway="test", conversation_id="collection-finish")
+    parent = await ready(service, ids=(A,), gateway_context=context)
+    if not already_imported:
+        service.collections.select(parent, "skipped", all_works=True)
+    first = service.confirm_collection_import(parent)
+    assert first.status == JobStatus.COMPLETED
+    assert first.result["child_job_ids"] == []
+    events = service.database.list_job_timeline(parent)
+    assert [event.status for event in events] == [JobStatus.NEEDS_SELECTION, JobStatus.COMPLETED]
+    assert events[0].superseded_at is not None
+    assert events[-1].result["summary"]["in_library"] == int(already_imported)
+    assert events[-1].gateway_context == context
+    service.confirm_collection_import(parent)
+    service.get_job(parent)
+    assert len(service.database.list_job_timeline(parent)) == 2

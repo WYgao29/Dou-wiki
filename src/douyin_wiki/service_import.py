@@ -413,6 +413,7 @@ class ImportMixin:
                 self.commit_vault(changed, f"creator: {creator.nickname} {action}")
 
     def refresh_batch_parents(self) -> None:
+        self.capture_sharing.refresh_all()
         self.favorites.refresh_all()
         self.collections.refresh_all()
         for parent in self.database.list_jobs(

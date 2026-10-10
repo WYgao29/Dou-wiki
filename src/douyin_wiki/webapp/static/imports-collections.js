@@ -14,6 +14,11 @@
   const selectable = () => current?.status === "needs_selection" && !current.confirmed;
   const request = (path, body) => D.api(path, body === undefined ? {} : {method: "POST", body: JSON.stringify(body)});
   const jobPath = () => base + "/" + encodeURIComponent(jobId);
+  function durationText(seconds) {
+    if (seconds == null || !Number.isFinite(Number(seconds)) || Number(seconds) <= 0) return "";
+    const total = Math.round(Number(seconds));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+  }
   function controls() {
     view.querySelectorAll("button").forEach((button) => { button.disabled = busy; });
     $("history").disabled = busy;
@@ -29,6 +34,8 @@
     $("confirm").hidden = !selectable();
     $("partial-row").hidden = !selectable() || current.complete;
     $("retry").hidden = !current?.can_retry;
+    $("retry").textContent = current?.confirmed ? "重试失败项"
+      : current?.status === "needs_selection" && !current.complete ? "重新清点" : "重试清点";
     $("stop").hidden = !current || !(ongoing.has(current.status) || selectable());
     $("save-retry").hidden = !failedSelection;
     $("save-hint").textContent = failedSelection ? "选择尚未保存，请重试保存后再确认。"
@@ -45,7 +52,7 @@
     $("summary").textContent = `已读 ${s.discovered || 0} 件 · 待选择 ${s.undecided || 0} 件 · 已选 ${s.selected || 0} 件 · 已在资料库 ${s.in_library || 0} 件`;
     $("result").textContent = data.confirmed
       ? `新任务 ${s.new_tasks || 0} 件 · 复用任务 ${s.reused_tasks || 0} 件 · 失败 ${s.failed || 0} 件 · 已取消 ${s.cancelled || 0} 件`
-      : "新作品默认未选择；每件可导入作品都需选择或跳过。";
+      : `预计新建 ${s.new_tasks || 0} 件 · 复用任务 ${s.reused_tasks || 0} 件 · 不可导入 ${(s.unsupported || 0) + (s.unavailable || 0)} 件。请为每件可导入作品选择或跳过。`;
     $("gateway").hidden = !(data.confirmed && data.analysis_mode === "gateway" && ongoing.has(data.status));
     $("auth").hidden = !(data.status === "needs_auth" || s.child_status_counts?.needs_auth);
     $("warnings").replaceChildren(...(data.warnings || []).map((text) => node("li", text)));
@@ -60,20 +67,30 @@
       input.addEventListener("change", () => saveSelection({decision: input.checked ? "selected" : "skipped",
         work_ids: input.selectionWorkIds || [item.work_id]}));
       const content = node("div", null, "favorites-item-content");
+      const cover = node(item.thumbnail_url ? "img" : "span", null, "collection-item-cover");
+      if (item.thumbnail_url) {
+        cover.src = item.thumbnail_url; cover.alt = ""; cover.loading = "lazy";
+        cover.referrerPolicy = "no-referrer";
+      }
       const title = node("a", item.title, "favorites-item-title");
       title.href = item.canonical_url; title.target = "_blank"; title.rel = "noopener noreferrer";
+      const duration = durationText(item.duration_seconds);
       content.append(title, node("small", `${item.episode_label ? "第 " + item.episode_label + " 集 · " : "清单第 " + item.ordinal + " 件 · "}${item.author || "未提供作者"} · ${item.source_kind_label || item.source_kind}`));
       if (item.error_message) content.append(node("small", item.error_message, "dialog-error"));
       const side = node("div", null, "favorites-item-side");
       const badge = node("span", labels[item.disposition] || item.disposition, "favorites-item-state");
       badge.dataset.state = item.disposition; side.append(badge);
+      if (duration) {
+        const time = node("span", duration);
+        time.setAttribute("aria-label", "时长 " + duration); side.append(time);
+      }
       if (item.entry_id || item.job_id) {
         const link = node("a", item.entry_id ? "查看资料" : "查看任务", "text-button");
         link.href = (item.entry_id ? "/articles/" : "/jobs/") + encodeURIComponent(item.entry_id || item.job_id);
         link.addEventListener("click", (event) => { event.preventDefault(); D.navigate(link.getAttribute("href")); });
         side.append(link);
       }
-      row.append(input, content, side); $("items").append(row);
+      row.append(input, cover, content, side); $("items").append(row);
     }
     if (!data.works?.length) $("items").append(node("p", ongoing.has(data.status) ? "正在读取清单…" : "本页没有作品。", "hint-copy"));
     $("items").querySelectorAll("input").forEach((input) => { if (input.dataset.work === focused) input.focus(); });

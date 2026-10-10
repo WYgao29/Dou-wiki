@@ -6,8 +6,9 @@ import asyncio
 from collections import Counter
 from typing import TYPE_CHECKING
 
+from .batch_capture import active_capture_jobs
 from .errors import JobCancelledError, JobStateError
-from .favorites_store import TERMINAL, FavoritesStore, capture_keys, eligible
+from .favorites_store import TERMINAL, FavoritesStore, eligible
 from .models import CaptureRequest, JobStatus
 
 if TYPE_CHECKING:
@@ -101,22 +102,8 @@ class FavoritesService:
                     (job_id,),
                 )
             }
-            active = {}
             # Include globally queued captures so the preview agrees with dispatch-time dedupe.
-            for r in conn.execute(
-                "SELECT * FROM jobs WHERE kind='capture' AND status NOT IN (?,?,?) "
-                "AND ?=0 ORDER BY created_at",
-                (
-                    JobStatus.COMPLETED.value,
-                    JobStatus.COMPLETED_WITH_WARNINGS.value,
-                    JobStatus.FAILED.value,
-                    int(run["confirmed"]),
-                ),
-            ):
-                child = self.database._job_from_row(r)
-                if child.status not in TERMINAL:
-                    for key in capture_keys(child.request, child.artifacts):
-                        active.setdefault(key, child)
+            active = {} if run["confirmed"] else active_capture_jobs(conn)
             children = {
                 r["id"]: self.database._job_from_row(r)
                 for r in conn.execute(

@@ -285,6 +285,7 @@ class CollectionService:
                 any(item["can_retry"] for item in items)
                 if run["confirmed"]
                 else job.status in {JobStatus.FAILED, JobStatus.NEEDS_AUTH}
+                or (job.status == JobStatus.NEEDS_SELECTION and not run["snapshot"].get("complete"))
             ),
             "analysis_mode": self.core.config.analysis_mode.value,
             "profile": run["snapshot"].get("profile"),
@@ -391,6 +392,12 @@ class CollectionService:
             run = self.store.load(job_id)
             self.store._assert_mutable(run)
             if not run["confirmed"]:
+                current = self.database.get_job(job_id)
+                if (
+                    current.status == JobStatus.NEEDS_SELECTION
+                    and not run["snapshot"].get("complete")
+                ):
+                    return self.database.requeue_job(job_id, expected_updated_at=current.updated_at)
                 return self.core.retry_job(job_id)
             for item in self._items(job_id, run):
                 if item["can_retry"]:

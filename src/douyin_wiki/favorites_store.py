@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 from typing import Any
 
-from .batch_capture import capture_keys
+from .batch_capture import active_capture_jobs
 from .database import Database
 from .errors import BrowserAuthRequiredError, JobStateError
 from .favorites_models import FavoriteInventory
@@ -321,14 +321,7 @@ class FavoritesStore:
                 raise JobStateError("清单未完整读取；仅导入已发现作品需显式 accept_partial=true")
             parent = conn.execute("SELECT request_json FROM jobs WHERE id=?", (job_id,)).fetchone()
             request = CaptureRequest.model_validate_json(parent["request_json"])
-            active = {}
-            for row in conn.execute("SELECT * FROM jobs WHERE kind='capture' ORDER BY created_at"):
-                if JobStatus(row["status"]) in TERMINAL:
-                    continue
-                child_request = CaptureRequest.model_validate_json(row["request_json"])
-                artifacts = json.loads(row["artifacts_json"])
-                for key in capture_keys(child_request, artifacts):
-                    active.setdefault(key, row["id"])
+            active = {key: job.id for key, job in active_capture_jobs(conn).items()}
             rows = conn.execute(
                 "SELECT * FROM favorites_items WHERE parent_id=? AND selected=1 ORDER BY position",
                 (job_id,),

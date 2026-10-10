@@ -43,7 +43,10 @@ def active_capture_jobs(conn) -> dict:
         if JobStatus(row["status"]) in TERMINAL:
             continue
         artifacts = json.loads(row["artifacts_json"])
-        if artifacts.get("user_deleted") or artifacts.get("cancel_requested"):
+        if (
+            artifacts.get("user_deleted") or artifacts.get("cancel_requested")
+            or artifacts.get("shared_capture_job_id")
+        ):
             continue
         child = Database._job_from_row(row)
         for key in capture_keys(child.request, artifacts):
