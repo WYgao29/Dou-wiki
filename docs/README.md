@@ -9,6 +9,7 @@
 | [MCP 自助接入入口](agents/README.md) | 与客户端无关的配置步骤、参数契约和仓库外验收记录 |
 | [Gateway Agent 接入指南](gateway-agents.md) | MCP 接入、校正分析、批量选择与事件接续 |
 | [收藏批量导入](favorites-import.md) | 网页、CLI/MCP 操作和验证边界 |
+| [合集批量导入](collections-import.md) | 合集链接、跨页选择、逐条处理、知识关系与验收范围 |
 | [授权与任务排障](troubleshooting.md) | 登录、作品类型、待处理任务和失败重试 |
 | [Service 协作 API](service-collaboration-api.md) | Service 与 mixin 的命名、锁和发布约定 |
 | [Web UI 设计系统](web-ui-design-system.md) | 当前实现的界面令牌、组件和交互约定 |
@@ -27,7 +28,7 @@
 
 ## 开发中的功能
 
-[抖音合集导入开发方案](superpowers/specs/2026-10-10-douyin-collection-import-design.md)基于当前主线编写，处于设计审阅阶段。建议先验证网页原生请求与主动分页，再接入合集清点、独立关系、现有采集任务及 Web/CLI/MCP；《项目经理故事汇》的 18 条网页链接已核查，程序接口分页与实际入库尚未验收。
+[抖音合集导入方案](superpowers/specs/2026-10-10-douyin-collection-import-design.md)已获确认，Web/CLI/MCP 和持久关系已在 `codex/douyin-collection-import` 实现。正式读取器的 18 件多页清单与网页 ID、集数、顺序一致；独立 Vault 的一条真实视频已完成 Gateway 校正、分析与入库，复用及故意失败也已验证。使用规范见[合集导入](collections-import.md)，检查结果、范围与集成状态见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)。
 
 [独立 AI 术语仓库与热词接入方案](superpowers/specs/2026-10-08-ai-terms-design.md)已根据当前 Qwen3 主线编写，处于方案审阅阶段。建议先建立独立词库、Agent 维护规则与确定性数据导出，再接入抖库的主识别和局部识别；当前尚未建库或修改运行代码。
 

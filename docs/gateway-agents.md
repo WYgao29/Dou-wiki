@@ -34,7 +34,7 @@ flowchart LR
 
 本指南适用于通过 MCP 使用抖库的外部 Agent。仓库维护规则见[根 AGENTS.md](../AGENTS.md)，通用自助接入入口见 [docs/agents](agents/README.md)。应用生成的 Vault AGENTS.md 约束知识库文档，三者职责分别维护。
 
-外部 Agent 默认使用 `tools/list` 返回的全部 MCP 工具，按用户任务和已有授权完成查询、采集、分析、博主与收藏导入、专题、提醒、重分析及维护，不设置查询或采集角色白名单，不逐项重复询问已授权操作。
+外部 Agent 默认使用 `tools/list` 返回的全部 MCP 工具，按用户任务和已有授权完成查询、采集、分析、博主、收藏与合集导入、专题、提醒、重分析及维护，不设置查询或采集角色白名单，不逐项重复询问已授权操作。
 
 本项目源码由 Codex 维护。外部 Agent 对仓库只读，不修改源码、项目配置、测试、依赖或 Git 状态，不在其中创建配置、技能、脚本、日志或临时文件。生效配置和工作目录放在仓库外，STDIO 启动命令可指向仓库现有解释器，并禁止写入 Python 字节码。
 
@@ -147,7 +147,7 @@ OCR 投影只去除附近精确重复字幕，并合并 60 秒内重复画面文
 
 等 Agent 的有效阶段 `next_tool=get_analysis_context`；已入队或处理中为 `list_job_events`；
 完成后为 `null`，不要反复取完整材料。历史待确认任务的 `reason/duration_minutes`、授权 `auth_scope` 与
-错误说明保留。`favorites_context/creator_context` 的父任务和 `batch_silent` 保留；静默子任务
+错误说明保留。`favorites_context/creator_context/collection_context` 的父任务和 `batch_silent` 保留；静默子任务
 照常完成校正分析，成功处理或投递后才确认事件，不因紧凑回执自动确认。
 
 紧凑协议减少应用往返正文，不保证固定计费 token 节省。实际用量取决于客户端如何保留历史和使用缓存；
@@ -201,7 +201,7 @@ Gateway 应先调用 `get_auth_status` 和 `get_job` 复核最新状态，不要
 `retry_job`。
 
 **状态字段约定（程序判断用机读码）**：MCP/`get_job` 同时返回英文机读码 （`status` / 事件里的状态）和中文展示字段（`status_label`、`state_label`、`stage_label` 等）。Agent 轮询与分支判断必须用英文机读码（如 `awaiting_agent_analysis`、历史 `needs_review`）；面向用户回复时只用中文 label，不要用中文 label 做相等判断。若用户选择稍后处理、引导超时或本机弹框不可用，再按任务中的 `auth_scope` 提供手工登录步骤：
-优先在仓库外工作目录、沿用服务配置环境运行 `<PYTHON_EXECUTABLE> -B -m douyin_wiki auth douyin`，完成视频主路径、图文、博主和收藏共用的专用浏览器授权。
+优先在仓库外工作目录、沿用服务配置环境运行 `<PYTHON_EXECUTABLE> -B -m douyin_wiki auth douyin`，完成视频主路径、图文、博主、收藏和合集共用的专用浏览器授权。
 `<PYTHON_EXECUTABLE> -B -m douyin_wiki auth video` 只为 yt-dlp 最后回退准备系统浏览器 Cookie；确认对应路径授权成功后再调用 `retry_job`。
 不得要求用户提供 Cookie；状态接口也不会返回 Cookie 值。
 
@@ -233,6 +233,18 @@ Gateway 应先调用 `get_auth_status` 和 `get_job` 复核最新状态，不要
 用户任务包含博主同步时调用 `sync_creator`，不重复询问已授权的同步目标。它会完整重新清点并只把新增作品放入新一轮
 选择清单；没有新增时返回“同步完成：没有发现新作品”。任务包含定期同步时由客户端安排，普通一次性同步不扩展为长期订阅。
 每个博主的新增资料都写入独立的 `creators/<博主名_短ID>/` 目录，旧资料保持原位并由博主索引链接。
+
+## 合集选择式批量采集
+
+用户提交合集分享文案或 `/collection/{mix_id}` 链接时，调用 `capture_douyin_collection` 并传递原会话 `gateway_context`。清点不下载视频，短链即使继续导航到第一集也保留原合集范围。
+
+1. 等父任务进入 `needs_selection`，调用 `get_collection_inventory` 读取全部清单；不传 page/limit 时不会截成第一页。展示名称、读取是否完整、作品编号及实际数量。
+2. 根据已有范围调用 `set_collection_work_selection`，`decision` 为 selected 或 skipped，ordinals、work_ids、all_works 三选一。用户明确要求全部入库时使用 `all_works=true`；部分导入先跳过其他可导入作品。编号为本轮 ordinal，不一定等于集数。
+3. 每件可导入且尚未入库的作品都有决定后，调用 `confirm_collection_import`。已有授权覆盖完整清单时直接执行；部分清单需要已有授权覆盖 `accept_partial=true`，否则补充这项范围决定。重复确认不会重复创建任务，选项冲突会拒绝整批。
+4. 本地 Worker 和当前模型继续完成各 capture 的转写、校正、分析与入库。`collection_context.batch_silent=true` 的新子任务不逐条刷屏；复用任务保留原 Gateway 路由与通知行为。等待其他 Gateway 时父任务仍为 monitoring，不能提前回复整批成功。
+5. 用父任务查询汇总成功、已有、失败和取消；失败项调用 `retry_collection_import`。需要再清点时创建新批次，新增作品不会自动继承旧选择。
+
+`get_collection/list_collections` 查询持久知识关系，`list_collection_imports` 查询操作历史。合集索引引用已有资料目录，清理批次历史不会删除知识关系。详细参数及验证边界见[合集导入](collections-import.md)。
 
 ## 事件接续
 
