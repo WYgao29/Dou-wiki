@@ -2,7 +2,7 @@
 
 合集导入按“清点 → 选择 → 确认 → 逐条处理”执行。每个作品使用现有视频或静态图文采集流程；合集目录保存顺序及知识资料链接，同一作品跨合集、收藏、博主或单条导入仍复用同一份资料。
 
-本功能已在 `codex/douyin-collection-import` 实现，主线集成和部署状态见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)。
+本功能及后续审查修复已集成本地 `main`，合并验证与分支清理见[主线集成记录](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md#主线集成与清理2026-10-10)。真实样本与验收范围见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)。
 
 ## 网页操作
 

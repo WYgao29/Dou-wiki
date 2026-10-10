@@ -26,13 +26,11 @@
 
 [收藏夹 API 读取设计](superpowers/specs/2026-10-04-favorites-api-reading-design.md)与[实施计划](superpowers/plans/2026-10-04-favorites-api-reading.md)已确认，实现及搜索反馈修复已集成主线。目录与指定夹使用网页原生请求及原始 JSON；真实账号目录、单夹、多夹和主动分页只读验收已完成，数量差异仍要求明确接受不完整清单。作品搜索筛选本次已读清单，刷新保留当前任务。使用契约见[收藏批量导入](favorites-import.md)。
 
+[抖音合集导入方案](superpowers/specs/2026-10-10-douyin-collection-import-design.md)及两轮审查修复已集成本地 `main`，包括 Web/CLI/MCP、共享采集和持久合集关系。完整非 live 回归1415项通过；合并后136项相关测试及 Ruff 检查通过。本地开发分支已删除，工作树已归档，历史截图已外置保存并核对，见[主线集成与清理](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md#主线集成与清理2026-10-10)。
+
+正式读取器的18件多页清单与网页 ID、集数、顺序一致；独立 Vault 的一条真实视频已完成 Gateway 校正、分析与入库，复用及故意失败也已验证。使用规范见[合集导入](collections-import.md)，真实样本范围见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)，修正行为与证据见[首次审查修复](superpowers/reviews/2026-10-10-collection-import-review-fixes.md)和[共享采集后续修复](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md)。
+
 ## 开发中的功能
-
-[抖音合集导入方案](superpowers/specs/2026-10-10-douyin-collection-import-design.md)已获确认，Web/CLI/MCP 和持久关系已在 `codex/douyin-collection-import` 实现。正式读取器的 18 件多页清单与网页 ID、集数、顺序一致；独立 Vault 的一条真实视频已完成 Gateway 校正、分析与入库，复用及故意失败也已验证。使用规范见[合集导入](collections-import.md)，检查结果、范围与集成状态见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)。
-
-后续审查的跨入口重复采集、部分清点重试、无子任务完成事件及确认前界面差异已修复；完整非 live 回归1400项通过，开发分支仍待集成。修正行为及证据见[审查修复记录](superpowers/reviews/2026-10-10-collection-import-review-fixes.md)。
-
-再次复核提出的共享等待网页入口、批次取消遗漏及重试旧回执也已修复；本轮新增15项行为回归，完整非 live 检查1415项通过，实际安装包接口检查通过。开发分支仍待集成，详见[共享采集后续修复](superpowers/reviews/2026-10-10-collection-import-follow-up-fixes.md)。
 
 [独立 AI 术语仓库与热词接入方案](superpowers/specs/2026-10-08-ai-terms-design.md)已根据当前 Qwen3 主线编写，处于方案审阅阶段。建议先建立独立词库、Agent 维护规则与确定性数据导出，再接入抖库的主识别和局部识别；当前尚未建库或修改运行代码。
 

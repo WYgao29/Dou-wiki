@@ -2,7 +2,7 @@
 
 日期：2026-10-10（Asia/Shanghai）。用户已确认[设计](../specs/2026-10-10-douyin-collection-import-design.md)并要求按其开发，当前 Agent 完成实现与整分支审查，未委派子 Agent。操作规范见[合集导入](../../collections-import.md)，任务记录见[实施计划](../plans/2026-10-10-douyin-collection-import.md)。
 
-本记录保留首次实现验收的基准、真实样本与历史判断。用户随后要求再次审查并修复，三个 P2 问题及界面差异已在 `fce0c13` 和 `6da7246` 修正；最终完整回归为1400 passed / 2 deselected。当前行为、证据和修复范围见[审查修复记录](2026-10-10-collection-import-review-fixes.md)。
+本记录保留首次实现验收的基准、真实样本与历史判断。用户随后要求再次审查并修复，三个 P2 问题及界面差异已在 `fce0c13` 和 `6da7246` 修正；该轮完整回归为1400 passed / 2 deselected，见[审查修复记录](2026-10-10-collection-import-review-fixes.md)。再次复核的三项修复、1415项完整回归与后续主线合并、分支清理见[共享采集后续记录](2026-10-10-collection-import-follow-up-fixes.md)。下列交付状态保留首次验收时的基准。
 
 ## 交付状态
 

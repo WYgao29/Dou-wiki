@@ -1,10 +1,10 @@
 # 共享采集后续审查修复
 
-2026-10-10。用户通过“修复”授权处理上一轮复核的两个 P2 和一个 P3 问题。三项均已修复，完整非 live 回归1415项通过。当前 Agent 直接实现与复核，未委派；分支仍待集成，未修改生产 Vault、Profile 或主线现用环境。
+2026-10-10。用户通过“修复”授权处理上一轮复核的两个 P2 和一个 P3 问题。三项均已修复，完整非 live 回归1415项通过。当前 Agent 直接实现与复核，未委派；修复验收时尚未集成，未修改生产 Vault、Profile 或主线现用环境。后续合并与清理见[主线集成记录](#主线集成与清理2026-10-10)。
 
 ## 版本与范围
 
-审查基准为 `09d426526767de96e164afe5c053c5dd5f29d20a`，运行代码提交为 `c046d21`、`ae2c643`、`7f8c844`。工作树为 `/Users/weisengao/.codex/worktrees/douyin-collection-import/douyin-wiki`，分支为 `codex/douyin-collection-import`。主线仍为 `54ae500fd3abaffaefecb2af812ec6881b1e0e35`，工作区干净，安装的服务继续引用主线 `.venv/bin/python`。
+审查基准为 `09d426526767de96e164afe5c053c5dd5f29d20a`，运行代码提交为 `c046d21`、`ae2c643`、`7f8c844`。验收工作树为 `/Users/weisengao/.codex/worktrees/douyin-collection-import/douyin-wiki`，分支为 `codex/douyin-collection-import`。修复交付时主线仍为 `54ae500fd3abaffaefecb2af812ec6881b1e0e35`，工作区干净，安装的服务继续引用主线 `.venv/bin/python`。
 
 沿用[既有设计](../specs/2026-10-10-douyin-collection-import-design.md)和已确认范围，[本轮计划](../plans/2026-10-10-collection-import-follow-up-fixes.md)记录具体实现。CLI/MCP 名称与参数、Service 调用、Web 路径与状态字段、schema15 和 Vault 格式保持兼容；新增 Web 动作 `view_shared_capture`。
 
@@ -50,4 +50,16 @@
 
 wheel SHA-256：`71831c8bad71cc4c5812a33b4c5de43736bc42baa501e10231cd34f6e4e31950`。
 
-保留开发分支，未合并、推送或部署。此前只读复核仍位于 `douyin-wiki-validation/2026-10-10-collection-fix-review-LF2qCq`；其中未列为审查问题的旧选择事件探针继续排除，本轮没有扩大修复范围。
+修复验收时保留开发分支，未合并、推送或部署。此前只读复核仍位于 `douyin-wiki-validation/2026-10-10-collection-fix-review-LF2qCq`；其中未列为审查问题的旧选择事件探针继续排除，本轮没有扩大修复范围。
+
+## 主线集成与清理（2026-10-10）
+
+用户随后明确要求“合并，然后删除分支”。本地 `main` 从 `54ae500fd3abaffaefecb2af812ec6881b1e0e35` 快进到 `40a41234343c18253220f393522adfc6fa04abdd`，包含合集导入及两轮审查修复，没有合并冲突。
+
+合并前后逐一核对172个源码、测试及依赖元数据文件的 SHA-256，均与上述1415项完整检查的版本相同。合并后使用开发工作树的独立环境，显式从主仓库加载 Python 源码，执行合集适配器、分页、选择确认、生命周期、Vault、CLI/MCP/Web 接口及共享采集相关回归：136 passed，12.34秒；Ruff 检查通过。测试数据与缓存均在仓库外，未同步主线现用环境；未重复相同源码的完整回归。
+
+已通过 Codex 工作树归档工具移除开发工作区，并删除本地分支 `codex/douyin-collection-import`；归档标识为 `/Users/weisengao/.codex/worktrees/douyin-collection-import/douyin-wiki`，可通过工作树恢复工具读取。Git 归档不包含的8张历史截图已复制到下列材料目录的 `preserved-worktree-screenshots/` 并逐一核对哈希。此前合集、审查与共享采集验收材料继续保留；`codex/visual-search-phase1` 工作树未修改。
+
+本次范围为本地主线合并和开发分支清理，没有推送远端、重启服务或向生产 Vault 导入作品。已安装服务的配置仍引用主仓库 `.venv/bin/python`；服务实际运行版本和部署验收需另行检查，不能将此次合并解释为全部视频已入库。
+
+合并验证、截图副本、归档及最终 Git 状态保存于 `/Users/weisengao/Documents/ChatGPT/douyin-wiki-validation/2026-10-10-collection-main-merge-mctwfcp0`。文档索引与合集使用说明同步更新为已集成状态，早期验收基准及失败记录保留。
