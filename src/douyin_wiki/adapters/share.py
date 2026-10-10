@@ -16,6 +16,7 @@ WORK_ID_PATTERNS = (
     re.compile(r"[?&]modal_id=(?P<id>\d{10,})"),
 )
 CREATOR_PATH_PATTERN = re.compile(r"/user/(?P<sec_uid>[A-Za-z0-9_-]{8,256})")
+COLLECTION_PATH_PATTERN = re.compile(r"/collection/(?P<mix_id>[0-9]{1,32})/?\Z")
 ALLOWED_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
 
 
@@ -26,6 +27,14 @@ class ResolvedShare:
     video_id: str
     redirect_chain: tuple[str, ...]
     source_kind: SourceKind = SourceKind.VIDEO
+
+
+@dataclass(frozen=True)
+class ResolvedCollection:
+    original_url: str
+    canonical_url: str
+    mix_id: str
+    redirect_chain: tuple[str, ...]
 
 
 def extract_douyin_url(share_text: str) -> str:
@@ -57,6 +66,27 @@ def extract_creator_sec_uid(value: str) -> str | None:
     if match := CREATOR_PATH_PATTERN.search(value):
         return match.group("sec_uid")
     return None
+
+
+def extract_collection_id(value: str) -> str | None:
+    parsed = urlparse(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or (parsed.hostname or "").lower() not in {"www.douyin.com", "douyin.com"}
+        or parsed.username
+        or parsed.password
+        or parsed.port
+    ):
+        return None
+    match = COLLECTION_PATH_PATTERN.fullmatch(parsed.path)
+    return match.group("mix_id") if match else None
+
+
+def assert_collection_share(share_text: str) -> str:
+    url = extract_douyin_url(share_text)
+    if extract_collection_id(url) or is_douyin_short_link(url):
+        return url
+    raise InvalidShareTextError("请粘贴抖音合集链接，或 v.douyin.com 合集短链")
 
 
 def _host(url: str) -> str:
@@ -162,13 +192,51 @@ class DouyinShareResolver:
             raise InvalidShareTextError("请粘贴抖音博主主页链接；这个链接不是博主主页")
         return url
 
+    async def resolve_collection(self, share_text: str) -> ResolvedCollection:
+        original = assert_collection_share(share_text)
+        chain = [original]
+        mix_id = extract_collection_id(original)
+        if mix_id is None:
+            current = original
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds,
+                transport=self.transport,
+                headers={"User-Agent": "Mozilla/5.0 Chrome/124 Safari/537.36"},
+            ) as client:
+                for _ in range(8):
+                    extract_douyin_url(current)
+                    response = await client.get(current, follow_redirects=False)
+                    candidates = [str(response.url)]
+                    location = response.headers.get("location")
+                    if location:
+                        current = urljoin(current, location)
+                        extract_douyin_url(current)
+                        candidates.append(current)
+                        chain.append(current)
+                    for candidate in candidates:
+                        if found := extract_collection_id(candidate):
+                            if mix_id is not None and found != mix_id:
+                                raise InvalidShareTextError("短链重定向中的合集 ID 不一致")
+                            mix_id = found
+                    if not location:
+                        break
+                else:
+                    raise InvalidShareTextError("抖音短链重定向次数过多")
+        if mix_id is None:
+            raise InvalidShareTextError("这个链接不是抖音合集")
+        return ResolvedCollection(
+            original, f"https://www.douyin.com/collection/{mix_id}", mix_id, tuple(chain)
+        )
+
     async def classify(self, share_text: str) -> str:
         kind, _ = await self.classify_target(share_text)
         return kind
 
     async def classify_target(self, share_text: str) -> tuple[str, str]:
-        """Return work, creator, or unknown. Canonical links do not touch the network."""
+        """Return work, creator, collection, or unknown without fetching canonical links."""
         original_url = extract_douyin_url(share_text)
+        if mix_id := extract_collection_id(original_url):
+            return "collection", f"https://www.douyin.com/collection/{mix_id}"
         if extract_creator_sec_uid(original_url):
             return "creator", original_url
         if extract_work_identity(original_url):
@@ -202,6 +270,8 @@ class DouyinShareResolver:
                     chain.append(current)
                     candidates.append(current)
                 for candidate in candidates:
+                    if mix_id := extract_collection_id(candidate):
+                        return "collection", f"https://www.douyin.com/collection/{mix_id}"
                     if extract_creator_sec_uid(candidate):
                         return "creator", candidate
                     if extract_work_identity(candidate):

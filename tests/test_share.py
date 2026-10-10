@@ -18,10 +18,13 @@ def test_extract_url_from_full_share_text() -> None:
 
 
 def test_extract_video_id_from_supported_urls() -> None:
-    assert extract_video_id(
-        "https://www.douyin.com/user/self?from_tab_name=main&modal_id=7689429622975314067"
-        "&showSubTab=video&showTab=favorite_collection"
-    ) == "7689429622975314067"
+    assert (
+        extract_video_id(
+            "https://www.douyin.com/user/self?from_tab_name=main&modal_id=7689429622975314067"
+            "&showSubTab=video&showTab=favorite_collection"
+        )
+        == "7689429622975314067"
+    )
     assert extract_video_id("https://www.douyin.com/video/7672717300746907078") == (
         "7672717300746907078"
     )
@@ -79,17 +82,14 @@ async def test_final_note_redirect_overrides_intermediate_video_route() -> None:
         if request.url.host == "v.douyin.com":
             return httpx.Response(
                 302,
-                headers={
-                    "location": f"https://www.iesdouyin.com/share/video/{work_id}/"
-                },
+                headers={"location": f"https://www.iesdouyin.com/share/video/{work_id}/"},
             )
         if request.url.host == "www.iesdouyin.com":
             return httpx.Response(
                 302,
                 headers={
                     "location": (
-                        f"https://www.douyin.com/note/{work_id}"
-                        "?previous_page=web_code_link"
+                        f"https://www.douyin.com/note/{work_id}?previous_page=web_code_link"
                     )
                 },
             )
@@ -118,9 +118,7 @@ async def test_final_video_redirect_overrides_intermediate_note_route() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         location = next(locations, None)
         return (
-            httpx.Response(302, headers={"location": location})
-            if location
-            else httpx.Response(200)
+            httpx.Response(302, headers={"location": location}) if location else httpx.Response(200)
         )
 
     result = await DouyinShareResolver(transport=httpx.MockTransport(handler)).resolve(
@@ -143,9 +141,7 @@ async def test_redirect_chain_rejects_conflicting_work_ids() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         location = next(locations, None)
         return (
-            httpx.Response(302, headers={"location": location})
-            if location
-            else httpx.Response(200)
+            httpx.Response(302, headers={"location": location}) if location else httpx.Response(200)
         )
 
     with pytest.raises(InvalidShareTextError, match="作品 ID 不一致"):
@@ -185,3 +181,71 @@ async def test_direct_canonical_url_never_calls_transport() -> None:
 
     assert result.source_kind == SourceKind.IMAGE_NOTE
     assert result.canonical_url == f"https://www.douyin.com/note/{work_id}"
+
+
+@pytest.mark.asyncio
+async def test_collection_canonical_classification_does_not_request_network() -> None:
+    def unexpected_request(_: httpx.Request) -> httpx.Response:
+        raise AssertionError("canonical collection must not perform an HTTP request")
+
+    resolver = DouyinShareResolver(transport=httpx.MockTransport(unexpected_request))
+    assert await resolver.classify_target(
+        "正在看合集 https://www.douyin.com/collection/7651028428363139126?from=share"
+    ) == ("collection", "https://www.douyin.com/collection/7651028428363139126")
+
+
+@pytest.mark.asyncio
+async def test_collection_redirect_keeps_container_identity() -> None:
+    locations = iter(
+        (
+            "https://www.douyin.com/collection/7651028428363139126",
+            "https://www.douyin.com/video/7644758067783852901",
+        )
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        location = next(locations, None)
+        return (
+            httpx.Response(302, headers={"location": location}) if location else httpx.Response(200)
+        )
+
+    resolver = DouyinShareResolver(transport=httpx.MockTransport(handler))
+    resolve = getattr(resolver, "resolve_collection", None)
+    assert callable(resolve), "resolver must expose collection resolution"
+    result = await resolve("合集 https://v.douyin.com/mTVp-S6IApM/")
+    assert result.mix_id == "7651028428363139126"
+    assert result.canonical_url == "https://www.douyin.com/collection/7651028428363139126"
+    assert result.redirect_chain[-1] == "https://www.douyin.com/video/7644758067783852901"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://www.douyin.com/collection/7651028428363139127",
+        "https://example.com/collection/7651028428363139126",
+    ],
+)
+async def test_collection_redirect_rejects_conflict_or_external_host(target) -> None:
+    locations = iter(("https://www.douyin.com/collection/7651028428363139126", target))
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        location = next(locations, None)
+        return (
+            httpx.Response(302, headers={"location": location}) if location else httpx.Response(200)
+        )
+
+    resolver = DouyinShareResolver(transport=httpx.MockTransport(handler))
+    resolve = getattr(resolver, "resolve_collection", None)
+    assert callable(resolve), "resolver must expose collection resolution"
+    with pytest.raises(InvalidShareTextError):
+        await resolve("https://v.douyin.com/example/")
+
+
+@pytest.mark.asyncio
+async def test_single_work_is_not_expanded_to_a_collection() -> None:
+    resolver = DouyinShareResolver()
+    assert await resolver.classify_target("https://www.douyin.com/video/7644758067783852901") == (
+        "work",
+        "https://www.douyin.com/video/7644758067783852901",
+    )
