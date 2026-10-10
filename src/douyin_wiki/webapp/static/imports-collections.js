@@ -38,6 +38,10 @@
     current = data;
     const s = data.summary || {}, profile = data.profile || {};
     $("status").textContent = (profile.name || "合集任务") + " · " + (data.status_label || data.status);
+    const historyOption = $("history").selectedOptions[0];
+    if (historyOption?.value === jobId) {
+      historyOption.textContent = `${profile.name || "读取中"} · ${data.status_label || data.status} · ${s.discovered || 0} 件`;
+    }
     $("summary").textContent = `已读 ${s.discovered || 0} 件 · 待选择 ${s.undecided || 0} 件 · 已选 ${s.selected || 0} 件 · 已在资料库 ${s.in_library || 0} 件`;
     $("result").textContent = data.confirmed
       ? `新任务 ${s.new_tasks || 0} 件 · 复用任务 ${s.reused_tasks || 0} 件 · 失败 ${s.failed || 0} 件 · 已取消 ${s.cancelled || 0} 件`

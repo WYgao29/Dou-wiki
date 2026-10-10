@@ -72,6 +72,9 @@ async def test_collection_ui_paste_all_pages_confirm_and_reload(collection_ui, t
     await page.locator("#collection-form button[type=submit]").click()
     await expect(page.locator("#collection-summary")).to_contain_text("已读 105", timeout=12000)
     await expect(page.locator("#collection-status")).to_contain_text("待选择作品")
+    await expect(page.locator("#collection-history option:checked")).to_contain_text(
+        "待选择作品 · 105 件"
+    )
     await page.locator("[data-theme-select]").select_option("light")
     await expect(page.locator("html")).to_have_attribute("data-theme", "light")
     await page.screenshot(path=str(tmp_path / "collection-desktop-light.png"))
