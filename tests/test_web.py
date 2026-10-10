@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import re
 import threading
 from datetime import UTC, datetime
@@ -11,19 +10,71 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from douyin_wiki.config import LLMSettings, load_config
+from douyin_wiki.config import load_config
 from douyin_wiki.errors import EntryNotFoundError
 from douyin_wiki.models import EntryRecord, InspirationInput, JobStatus, RetentionPolicy
 from douyin_wiki.service import DouyinWikiService
 from douyin_wiki.webapp.app import WEB_VERSION, create_app
-from douyin_wiki.webapp.chat import OpenAICompatibleChatProvider
-from tests.support.web import (
-    ConfigurableFakeProvider,
-    FakeChatProvider,
-    TopicFakeProvider,
-    _web_fixture,
-    local_client,
-)
+from tests.support.web import _web_fixture, local_client
+
+RETIRED_MODEL_ENDPOINTS = [
+    ("POST", "/api/topics/missing/artifacts"),
+    ("GET", "/api/chat/sessions"),
+    ("POST", "/api/chat/sessions"),
+    ("GET", "/api/chat/sessions/missing"),
+    ("DELETE", "/api/chat/sessions/missing"),
+    ("POST", "/api/chat/sessions/missing/messages"),
+    ("GET", "/api/settings/model"),
+    ("POST", "/api/settings/model"),
+    ("POST", "/api/settings/model/test"),
+    ("GET", "/api/system/model-health"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), RETIRED_MODEL_ENDPOINTS)
+@pytest.mark.parametrize("payload", [None, {}, {"kind": "overview", "content": "旧请求"}])
+def test_retired_model_features_have_no_side_effects(tmp_path, monkeypatch, method, path, payload):
+    from types import SimpleNamespace
+
+    from douyin_wiki.webapp import app as app_module
+
+    config, service = _web_fixture(tmp_path)
+    # Keep the old server offline while measuring its HTTP behavior before removal.
+    monkeypatch.setattr(
+        app_module, "OpenAICompatibleChatProvider",
+        lambda *_: SimpleNamespace(model="", configured=False), raising=False,
+    )
+    monkeypatch.setattr(app_module, "get_secret", lambda *_: None, raising=False)
+    before_jobs = {job.id for job in service.database.list_jobs()}
+    with service.database.connect() as conn:
+        before_notes = {row[0] for row in conn.execute("SELECT id FROM topic_artifacts")}
+    with local_client(create_app(config, service=service, start_watcher=False)) as client:
+        response = client.request(
+            method, path, **({"json": payload} if payload is not None else {})
+        )
+    assert response.status_code == 410
+    assert "已停用" in response.json()["detail"]
+    assert {job.id for job in service.database.list_jobs()} == before_jobs
+    with service.database.connect() as conn:
+        assert {row[0] for row in conn.execute("SELECT id FROM topic_artifacts")} == before_notes
+
+
+def test_retired_model_features_do_not_read_keys_or_construct_providers(tmp_path, monkeypatch):
+    from douyin_wiki.webapp import app as app_module
+
+    config, service = _web_fixture(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("停用入口不应访问密钥、创建对话模型或连接模型")
+
+    monkeypatch.setattr(app_module, "OpenAICompatibleChatProvider", forbidden, raising=False)
+    monkeypatch.setattr(app_module, "get_secret", forbidden, raising=False)
+    monkeypatch.setattr(app_module, "store_secret", forbidden, raising=False)
+    monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
+    with local_client(create_app(config, service=service, start_watcher=False)) as client:
+        for method, path in RETIRED_MODEL_ENDPOINTS:
+            response = client.request(method, path, json={})
+            assert response.status_code == 410
 
 
 def test_catalog_skips_bad_date_and_keeps_valid_articles(tmp_path: Path) -> None:
@@ -57,7 +108,7 @@ def test_library_article_rendering_and_media_security(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-        chat_provider=FakeChatProvider(),
+
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -120,22 +171,11 @@ content_type: explanation
         assert "只读文章" in article.json()["html"]
         assert client.get("/media/raw/assets/456/example.webp").status_code == 200
 
-        rejected = client.post(
-            "/api/chat/sessions",
-            json={"scope": "entry", "context_entry_id": "dy-456"},
-        )
-        assert rejected.status_code == 409
-        assert "只读" in rejected.json()["detail"]
-        assert service.database.list_chat_sessions() == []
-
+        assert client.post(
+            "/api/chat/sessions", json={"scope": "entry", "context_entry_id": "dy-456"}
+        ).status_code == 410
         managed = next(item for item in library.json()["items"] if item["entry_id"] == "dy-123")
         assert managed["database_managed"] is True
-        created = client.post(
-            "/api/chat/sessions",
-            json={"scope": "entry", "context_entry_id": "dy-123"},
-        )
-        assert created.status_code == 201
-        assert created.json()["scope"] == "entry"
 
 
 def test_web_can_favorite_and_unfavorite_an_article(tmp_path: Path) -> None:
@@ -265,7 +305,7 @@ def test_web_ui_uses_local_accessible_redesign_assets(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-        chat_provider=FakeChatProvider(),
+
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -440,7 +480,7 @@ def test_article_trash_restore_and_permanent_delete(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-        chat_provider=FakeChatProvider(),
+
         start_watcher=False,
     )
     source = config.vault_path / "wiki" / "sources" / "测试文章_123.md"
@@ -455,10 +495,6 @@ def test_article_trash_restore_and_permanent_delete(tmp_path: Path) -> None:
         topic_id = service.create_topic("删除恢复测试", ["dy-123"], goal="验证专题来源恢复")[
             "topic"
         ]["id"]
-        session_id = client.post(
-            "/api/chat/sessions",
-            json={"scope": "entry", "context_entry_id": "dy-123"},
-        ).json()["id"]
         rejected = client.request("DELETE", "/api/articles/dy-123", json={"confirmed": False})
         assert rejected.status_code == 400
 
@@ -474,9 +510,6 @@ def test_article_trash_restore_and_permanent_delete(tmp_path: Path) -> None:
         assert not raw_record.exists()
         assert not machine.exists()
         assert service.database.get_topic(topic_id).sources == []
-        deleted_session = service.database.get_chat_session(session_id)
-        assert deleted_session.scope == "library"
-        assert deleted_session.context_entry_id is None
         trash = client.get("/api/trash").json()
         assert trash["total"] == 1
         assert trash["items"][0]["title"] == "测试文章"
@@ -497,9 +530,6 @@ def test_article_trash_restore_and_permanent_delete(tmp_path: Path) -> None:
         assert [item.entry_id for item in service.database.get_topic(topic_id).sources] == [
             "dy-123"
         ]
-        restored_session = service.database.get_chat_session(session_id)
-        assert restored_session.scope == "entry"
-        assert restored_session.context_entry_id == "dy-123"
         assert client.get("/api/trash").json()["total"] == 0
 
         deleted_again = client.request(
@@ -571,7 +601,7 @@ def test_trash_batch_restore_and_permanent_delete(tmp_path: Path) -> None:
     app = create_app(
         config,
         service=service,
-        chat_provider=FakeChatProvider(),
+
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -771,13 +801,12 @@ def test_web_delete_survives_catalog_refresh_failure(tmp_path: Path, monkeypatch
         service.database.get_entry("dy-123")
 
 
-def test_topic_web_flow_strict_chat_artifacts_and_note_confirmation(tmp_path: Path) -> None:
+def test_topic_web_flow_notes_and_retired_generation(tmp_path: Path) -> None:
     config, service = _web_fixture(tmp_path)
-    provider = TopicFakeProvider()
     app = create_app(
         config,
         service=service,
-        chat_provider=provider,
+
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -797,26 +826,9 @@ def test_topic_web_flow_strict_chat_artifacts_and_note_confirmation(tmp_path: Pa
         assert 'id="topics-nav"' in page
         assert 'id="topic-select-toggle"' in page
 
-        session = client.post(
-            "/api/chat/sessions",
-            json={"scope": "topic", "context_topic_id": topic_id},
-        ).json()
-        no_evidence = client.post(
-            f"/api/chat/sessions/{session['id']}/messages",
-            json={"content": "聪明杯怎么冲？"},
-        )
-        assert no_evidence.status_code == 200
-        assert "当前专题没有相关证据" in no_evidence.text
-        assert provider.calls == 0
-
-        artifact = client.post(
-            f"/api/topics/{topic_id}/artifacts",
-            json={"kind": "decision_brief"},
-        )
-        assert artifact.status_code == 201
-        assert artifact.json()["status_label"] == "当前版本"
-        assert artifact.json()["total_tokens"] == 13
-        assert provider.calls == 1
+        retired = client.post(f"/api/topics/{topic_id}/artifacts", json={"kind": "decision_brief"})
+        assert retired.status_code == 410
+        assert client.post("/api/chat/sessions", json={"scope": "topic"}).status_code == 410
 
         cancelled = client.post(
             f"/api/topics/{topic_id}/notes",
@@ -836,7 +848,7 @@ def test_model_settings_page_shares_theme_and_accessible_controls(tmp_path: Path
     app = create_app(
         config,
         service=service,
-        chat_provider=FakeChatProvider(),
+
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -868,45 +880,9 @@ def test_model_settings_page_shares_theme_and_accessible_controls(tmp_path: Path
         assert 'data-route="/settings/analysis"' in analysis.text
 
 
-def test_chat_stream_persists_history_and_usage(tmp_path: Path, monkeypatch) -> None:
-    config, service = _web_fixture(tmp_path)
-    original_add_message = service.database.add_chat_message
-
-    def add_message_off_event_loop(*args, **kwargs):
-        with pytest.raises(RuntimeError, match="no running event loop"):
-            asyncio.get_running_loop()
-        return original_add_message(*args, **kwargs)
-
-    monkeypatch.setattr(service.database, "add_chat_message", add_message_off_event_loop)
-    app = create_app(
-        config,
-        service=service,
-        chat_provider=FakeChatProvider(),
-        start_watcher=False,
-    )
-    with local_client(app) as client:
-        session = client.post(
-            "/api/chat/sessions",
-            json={"scope": "entry", "context_entry_id": "dy-123"},
-        ).json()
-        response = client.post(
-            f"/api/chat/sessions/{session['id']}/messages",
-            json={"content": "这篇文章讲了什么？"},
-        )
-        assert response.status_code == 200
-        assert "这是测试回答" in response.text
-        assert '"total_tokens": 20' in response.text
-        assert '"original_url": "https://www.douyin.com/video/123"' in response.text
-        history = client.get(f"/api/chat/sessions/{session['id']}").json()
-        assert [item["role"] for item in history["messages"]] == ["user", "assistant"]
-        assert history["messages"][1]["total_tokens"] == 20
-        assert client.delete(f"/api/chat/sessions/{session['id']}").status_code == 200
-        assert service.database.list_chat_sessions() == []
-
-
 def test_local_host_and_same_origin_are_enforced(tmp_path: Path) -> None:
     config, service = _web_fixture(tmp_path)
-    app = create_app(config, service=service, chat_provider=FakeChatProvider(), start_watcher=False)
+    app = create_app(config, service=service,  start_watcher=False)
     with TestClient(app) as client:
         assert client.get("/", headers={"host": "example.com"}).status_code == 400
         blocked = client.post(
@@ -945,7 +921,7 @@ def test_local_host_and_same_origin_are_enforced(tmp_path: Path) -> None:
                 json={"scope": "library"},
                 headers={"origin": "http://testserver", "sec-fetch-site": "same-origin"},
             ).status_code
-            == 201
+            == 410
         )
         # Matching Referer (no Origin) is accepted — classic form posts.
         assert (
@@ -954,7 +930,7 @@ def test_local_host_and_same_origin_are_enforced(tmp_path: Path) -> None:
                 json={"scope": "library"},
                 headers={"referer": "http://testserver/"},
             ).status_code
-            == 201
+            == 410
         )
         # Neither Origin nor Referer — headerless writes are rejected.
         assert client.post("/api/chat/sessions", json={"scope": "library"}).status_code == 403
@@ -988,7 +964,7 @@ inspirations: []
     hidden = config.vault_path / "creators" / "示例_abcd" / ".data" / "sources" / "999.md"
     hidden.parent.mkdir(parents=True)
     hidden.write_text("---\ntype: source\nvideo_id: '999'\n---\n# 不应出现", encoding="utf-8")
-    app = create_app(config, service=service, chat_provider=FakeChatProvider(), start_watcher=False)
+    app = create_app(config, service=service,  start_watcher=False)
     with local_client(app) as client:
         library = client.get("/api/library").json()
         assert {item["entry_id"] for item in library["items"]} == {"dy-123", "dy-456"}
@@ -1000,7 +976,7 @@ inspirations: []
 
 def test_file_watcher_refreshes_library_without_generating_html(tmp_path: Path) -> None:
     config, service = _web_fixture(tmp_path)
-    app = create_app(config, service=service, chat_provider=FakeChatProvider(), start_watcher=True)
+    app = create_app(config, service=service,  start_watcher=True)
     with local_client(app) as client:
         assert client.get("/api/library").json()["total"] == 1
         added = config.vault_path / "wiki" / "sources" / "自动刷新_789.md"
@@ -1017,265 +993,14 @@ def test_file_watcher_refreshes_library_without_generating_html(tmp_path: Path) 
         assert not list(config.vault_path.rglob("*.html"))
 
 
-def test_model_settings_save_to_keychain_without_changing_gateway_mode(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_web_preserves_gateway_mode_with_retired_model_settings(tmp_path):
     config, service = _web_fixture(tmp_path)
     config_path = tmp_path / "config.toml"
-    secrets: dict[str, str] = {}
-
-    monkeypatch.setattr(
-        "douyin_wiki.webapp.app.get_secret",
-        lambda account: secrets.get(account, ""),
-    )
-    monkeypatch.setattr(
-        "douyin_wiki.webapp.app.store_secret",
-        lambda account, value: secrets.__setitem__(account, value),
-    )
-
-    def factory(settings):
-        return ConfigurableFakeProvider(
-            settings.model,
-            bool(settings.model and secrets.get(settings.api_key_env)),
-        )
-
-    app = create_app(
-        config,
-        config_path=config_path,
-        service=service,
-        chat_provider_factory=factory,
-        start_watcher=False,
-    )
-    with local_client(app) as client:
-        page = client.get("/settings/model")
-        assert page.status_code == 200
-        assert "API Key" in page.text
-        before = client.get("/api/settings/model").json()
-        assert before["configured"] is False
-        assert before["api_key_required"] is True
-        assert before["analysis_mode_label"] == "网关 Agent"
-
-        invalid = client.post(
-            "/api/settings/model",
-            json={"base_url": "file:///tmp/model", "model": "bad", "api_key": "secret"},
-        )
-        assert invalid.status_code == 422
-        saved = client.post(
-            "/api/settings/model",
-            json={
-                "base_url": "https://models.example/v1/",
-                "model": "example/model-1",
-                "api_key": "super-secret-value",
-            },
-        )
-        assert saved.status_code == 200
-        assert saved.json()["configured"] is True
-        assert saved.json()["analysis_mode"] == "gateway"
-        assert "super-secret-value" not in saved.text
-
-        persisted = load_config(config_path)
-        assert persisted.analysis_mode.value == "gateway"
-        assert persisted.llm.base_url == "https://models.example/v1"
-        assert persisted.llm.model == "example/model-1"
-        assert "super-secret-value" not in config_path.read_text(encoding="utf-8")
-
-        status = client.get("/api/settings/model")
-        assert status.json()["api_key_configured"] is True
-        assert "super-secret-value" not in status.text
-        tested = client.post("/api/settings/model/test", json={})
-        assert tested.status_code == 200
-        assert tested.json()["usage"]["total_tokens"] == 7
-
-
-def test_web_can_switch_analysis_mode_without_silent_change(tmp_path: Path, monkeypatch) -> None:
-    config, service = _web_fixture(tmp_path)
-    config_path = tmp_path / "config.toml"
-    monkeypatch.setattr("douyin_wiki.webapp.app.get_secret", lambda account: "")
-    app = create_app(
-        config,
-        config_path=config_path,
-        service=service,
-        start_watcher=False,
-    )
-    with local_client(app) as client:
-        before = client.get("/api/settings/model").json()
-        assert before["analysis_mode"] == "gateway"
-        assert {item["value"] for item in before["analysis_modes"]} == {
-            "gateway",
-            "provider",
-            "local",
-        }
-        switched = client.post("/api/settings/analysis-mode", json={"mode": "provider"})
-        assert switched.status_code == 200
-        assert switched.json()["analysis_mode"] == "provider"
-        assert switched.json()["web_can_complete"] is True
-        assert load_config(config_path).analysis_mode.value == "provider"
-        saved_model = client.post(
-            "/api/settings/model",
-            json={
-                "base_url": "http://127.0.0.1:8000/v1",
-                "model": "local-test",
-            },
-        )
-        assert saved_model.status_code == 200
-        assert saved_model.json()["analysis_mode"] == "provider"
-        rejected = client.post("/api/settings/analysis-mode", json={"mode": "cloud"})
-        assert rejected.status_code == 422
-
-
-def test_model_settings_rejects_remote_http_before_secret_and_saves_loopback(
-    tmp_path: Path, monkeypatch
-) -> None:
-    config, service = _web_fixture(tmp_path)
-    config_path = tmp_path / "config.toml"
-    secrets: dict[str, str] = {}
-    monkeypatch.setattr(
-        "douyin_wiki.webapp.app.get_secret",
-        lambda account: secrets.get(account, ""),
-    )
-    monkeypatch.setattr(
-        "douyin_wiki.webapp.app.store_secret",
-        lambda account, value: secrets.__setitem__(account, value),
-    )
-    app = create_app(
-        config,
-        config_path=config_path,
-        service=service,
-        chat_provider_factory=lambda settings: ConfigurableFakeProvider(settings.model, True),
-        start_watcher=False,
-    )
-
-    with local_client(app) as client:
-        rejected = client.post(
-            "/api/settings/model",
-            json={
-                "base_url": "http://models.example/v1",
-                "model": "remote-model",
-                "api_key": "remote-secret",
-            },
-        )
-        assert rejected.status_code == 422
-        assert secrets == {}
-
-        saved = client.post(
-            "/api/settings/model",
-            json={
-                "base_url": "http://127.0.0.1:1234/v1/",
-                "model": "local-model",
-                "api_key": None,
-            },
-        )
-        assert saved.status_code == 200
-
-    assert load_config(config_path).llm.base_url == "http://127.0.0.1:1234/v1"
-    assert secrets == {}
-
-
-def test_model_settings_validation_does_not_echo_credential_url(
-    tmp_path: Path,
-) -> None:
-    config, service = _web_fixture(tmp_path)
-    app = create_app(
-        config,
-        service=service,
-        chat_provider=FakeChatProvider(),
-        start_watcher=False,
-    )
-    credential_url = "https://user:secret@models.example/v1"
-
-    with local_client(app) as client:
-        rejected = client.post(
-            "/api/settings/model",
-            json={
-                "base_url": credential_url,
-                "model": "remote-model",
-                "api_key": "body-secret",
-            },
-        )
-
-    assert rejected.status_code == 422
-    assert credential_url not in rejected.text
-    assert "user:secret" not in rejected.text
-    assert "body-secret" not in rejected.text
-
-
-def test_loopback_model_endpoint_does_not_require_api_key(tmp_path: Path, monkeypatch) -> None:
-    config, service = _web_fixture(tmp_path)
-    local_config = config.model_copy(
-        update={
-            "llm": config.llm.model_copy(
-                update={"base_url": "http://127.0.0.1:1234/v1", "model": "local-model"}
-            )
-        }
-    )
-    monkeypatch.setattr("douyin_wiki.webapp.app.get_secret", lambda _: "")
-    monkeypatch.setattr("douyin_wiki.adapters.chat.get_secret", lambda _: "")
-    app = create_app(local_config, service=service, start_watcher=False)
-
-    with local_client(app) as client:
-        status = client.get("/api/settings/model").json()
-        assert status["configured"] is True
-        assert status["api_key_required"] is False
-        assert status["api_key_source"] == "本机接口无需密钥"
-
-
-def test_loopback_model_provider_forwards_configured_api_key(monkeypatch) -> None:
-    monkeypatch.setattr("douyin_wiki.adapters.chat.get_secret", lambda _: "omlx-local-key")
-
-    provider = OpenAICompatibleChatProvider(
-        LLMSettings(
-            base_url="http://127.0.0.1:8000/v1",
-            model="Qwen3.6-35B-A3B-4bit",
-        )
-    )
-
-    assert provider.configured is True
-    assert provider.api_key == "omlx-local-key"
-
-
-def test_loopback_model_status_reports_configured_api_key_source(
-    tmp_path: Path, monkeypatch
-) -> None:
-    config, service = _web_fixture(tmp_path)
-    local_config = config.model_copy(
-        update={
-            "llm": config.llm.model_copy(
-                update={"base_url": "http://127.0.0.1:8000/v1", "model": "local-model"}
-            )
-        }
-    )
-    monkeypatch.setattr("douyin_wiki.webapp.app.get_secret", lambda _: "omlx-local-key")
-    monkeypatch.setattr("douyin_wiki.adapters.chat.get_secret", lambda _: "omlx-local-key")
-    app = create_app(local_config, service=service, start_watcher=False)
-
-    with local_client(app) as client:
-        status = client.get("/api/settings/model").json()
-        assert status["api_key_configured"] is True
-        assert status["api_key_required"] is False
-        assert status["api_key_source"] == "macOS Keychain"
-
-
-def test_switching_cloud_endpoint_requires_a_new_provider_key(tmp_path: Path, monkeypatch) -> None:
-    config, service = _web_fixture(tmp_path)
-    config_path = tmp_path / "config.toml"
-    secrets = {config.llm.api_key_env: "old-provider-key"}
-    monkeypatch.setattr(
-        "douyin_wiki.webapp.app.get_secret", lambda account: secrets.get(account, "")
-    )
-    monkeypatch.setattr(
-        "douyin_wiki.webapp.app.store_secret",
-        lambda account, value: secrets.__setitem__(account, value),
-    )
     app = create_app(config, config_path=config_path, service=service, start_watcher=False)
-
     with local_client(app) as client:
-        rejected = client.post(
-            "/api/settings/model",
-            json={
-                "base_url": "https://different-provider.example/v1",
-                "model": "different-model",
-                "api_key": None,
-            },
-        )
-        assert rejected.status_code == 400
-        assert "重新输入" in rejected.json()["detail"]
+        assert client.get("/api/settings/model").status_code == 410
+        saved = client.post("/api/settings/analysis-mode", json={"mode": "gateway"})
+        assert saved.status_code == 200
+        assert saved.json()["analysis_mode"] == "gateway"
+        assert load_config(config_path).analysis_mode.value == "gateway"
+        assert client.post("/api/settings/analysis-mode", json={"mode": "cloud"}).status_code == 422

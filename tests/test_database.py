@@ -26,6 +26,81 @@ from douyin_wiki.models import (
 )
 
 
+def test_empty_schema_has_no_chat_tables(tmp_path):
+    database = Database(tmp_path / "fresh.sqlite3")
+    database.initialize()
+    database.initialize()
+    with database.connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 16
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert not {"web_chat_sessions", "web_chat_messages"}.intersection(tables)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(topic_artifacts)")}
+        assert not {"model", "prompt_tokens", "completion_tokens", "total_tokens"}.intersection(
+            columns
+        )
+
+
+@pytest.mark.parametrize("version", [0, 1, 15, 17])
+def test_legacy_state_is_rejected_without_migration(tmp_path, version):
+    from douyin_wiki.errors import JobStateError
+
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE legacy_business(id TEXT PRIMARY KEY, payload TEXT)")
+        conn.execute("INSERT INTO legacy_business VALUES ('old', '需要保留的旧数据')")
+        conn.execute(f"PRAGMA user_version={version}")
+        before = list(conn.iterdump())
+    with pytest.raises(JobStateError, match="状态库"):
+        Database(path).initialize()
+    with sqlite3.connect(path) as conn:
+        assert list(conn.iterdump()) == before
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == version
+
+
+def _initialize_fresh_gateway_database(path, start, results, share_text):
+    assert start.wait(timeout=10)
+    database = Database(Path(path))
+    database.initialize()
+    job = database.create_job(CaptureRequest(share_text=share_text))
+    results.put(job.id)
+
+
+def test_concurrent_fresh_initialization_keeps_schema_16(tmp_path):
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    start, results = context.Event(), context.Queue()
+    path = tmp_path / "concurrent.sqlite3"
+    processes = [
+        context.Process(
+            target=_initialize_fresh_gateway_database,
+            args=(str(path), start, results, f"https://www.douyin.com/video/{index}"),
+        )
+        for index in (1, 2)
+    ]
+    try:
+        for process in processes:
+            process.start()
+        start.set()
+        for process in processes:
+            process.join(timeout=20)
+            assert process.exitcode == 0
+        job_ids = {results.get(timeout=2) for _ in processes}
+        assert len(job_ids) == 2
+        database = Database(path)
+        assert {job.id for job in database.list_jobs()} == job_ids
+        with database.connect() as conn:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 16
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        results.close()
+
+
 def test_queue_claim_and_recovery(tmp_path: Path) -> None:
     database = Database(tmp_path / "state.sqlite3")
     database.initialize()
@@ -142,10 +217,6 @@ def test_replace_knowledge_cache_rolls_back_every_projection_on_restore_failure(
     database.update_job(job.id, status=JobStatus.COMPLETED)
     database.create_creator_run_items(job.id, creator.id, [work.work_id])
     database.attach_creator_child_job(creator.id, work.work_id, job.id)
-    session = database.create_chat_session(
-        title="保留对话", scope="topic", context_topic_id=topic.id
-    )
-    database.add_chat_message(session.id, "user", "保留这条消息")
     database.record_maintenance("weekly", {"status": "保留"})
 
     with database.connect() as conn:
@@ -163,8 +234,6 @@ def test_replace_knowledge_cache_rolls_back_every_projection_on_restore_failure(
                 "jobs",
                 "job_events",
                 "creator_run_items",
-                "web_chat_sessions",
-                "web_chat_messages",
                 "maintenance_runs",
             )
         }
@@ -231,8 +300,6 @@ def test_replace_knowledge_cache_rolls_back_every_projection_on_restore_failure(
                 "jobs",
                 "job_events",
                 "creator_run_items",
-                "web_chat_sessions",
-                "web_chat_messages",
                 "maintenance_runs",
             )
         }
@@ -296,83 +363,6 @@ def test_legacy_purposes_payload_migrates_to_inspirations() -> None:
     assert request.inspirations[0].text == "旧字段内容"
     assert payload["inspirations"][0]["text"] == "旧字段内容"
     assert "purposes" not in payload
-
-
-def test_initialize_migrates_chunks_with_image_index(tmp_path: Path) -> None:
-    path = tmp_path / "legacy.sqlite3"
-    with sqlite3.connect(path) as connection:
-        connection.execute(
-            """CREATE TABLE chunks (
-                id TEXT PRIMARY KEY,
-                entry_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                text TEXT NOT NULL,
-                timestamp_ms INTEGER,
-                purposes_text TEXT NOT NULL DEFAULT '',
-                tags_text TEXT NOT NULL DEFAULT '',
-                embedding_json TEXT,
-                stale INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            )"""
-        )
-        connection.execute("PRAGMA user_version=2")
-    database = Database(path)
-    database.initialize()
-    with database.connect() as connection:
-        columns = {row["name"] for row in connection.execute("PRAGMA table_info(chunks)")}
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-    assert "image_index" in columns
-    assert version == 15
-
-
-def test_initialize_adds_favorite_to_existing_entries_table(tmp_path: Path) -> None:
-    path = tmp_path / "state.sqlite3"
-    with sqlite3.connect(path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE entries (
-                id TEXT PRIMARY KEY,
-                video_id TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL,
-                original_url TEXT NOT NULL,
-                canonical_url TEXT NOT NULL,
-                raw_path TEXT NOT NULL,
-                source_path TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
-                media_status TEXT NOT NULL DEFAULT 'present',
-                retention TEXT NOT NULL DEFAULT 'temporary',
-                media_expires_at TEXT,
-                summary TEXT NOT NULL DEFAULT '',
-                purposes_json TEXT NOT NULL DEFAULT '[]',
-                tags_json TEXT NOT NULL DEFAULT '[]',
-                data_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            INSERT INTO entries (
-                id, video_id, title, original_url, canonical_url, raw_path, source_path,
-                created_at, updated_at
-            ) VALUES (
-                'dy-legacy', 'legacy', '旧资料', 'https://example.com/legacy',
-                'https://example.com/legacy', 'raw/legacy.md', 'wiki/sources/legacy.md',
-                '2026-08-01T00:00:00+00:00', '2026-08-01T00:00:00+00:00'
-            );
-            PRAGMA user_version=9;
-            """
-        )
-    database = Database(path)
-    database.initialize()
-
-    with database.connect() as connection:
-        columns = {row["name"] for row in connection.execute("PRAGMA table_info(entries)")}
-        version = connection.execute("PRAGMA user_version").fetchone()[0]
-        favorite = connection.execute(
-            "SELECT favorite FROM entries WHERE id='dy-legacy'"
-        ).fetchone()[0]
-
-    assert "favorite" in columns
-    assert version == 15
-    assert favorite == 0
 
 
 def test_entry_favorite_round_trips_through_database(tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright, expect
 
 from douyin_wiki.models import CaptureRequest, JobStatus
 from douyin_wiki.webapp.app import create_app
-from tests.support.web import FakeChatProvider, _web_fixture, local_client
+from tests.support.web import _web_fixture, local_client
 from tests.test_favorites import A, scan, snapshot
 from tests.test_tags import source
 
@@ -21,9 +21,7 @@ async def ui(tmp_path):
     config, service = _web_fixture(tmp_path)
     source(service, "1000", ["AI 代理"], managed=True)
     source(service, "1001", ["AI Agent"], managed=True)
-    service.database.create_chat_session(title="资料库会话", scope="library")
-    service.database.create_chat_session(title="文章会话", scope="entry", context_entry_id="dy-123")
-    app = create_app(config, service=service, chat_provider=FakeChatProvider(), start_watcher=False)
+    app = create_app(config, service=service,  start_watcher=False)
     with local_client(app) as client:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch()
@@ -62,38 +60,11 @@ async def ui(tmp_path):
             await page.route("**/*", route_handler)
             await page.goto("http://testserver/")
             await page.wait_for_selector("#library-results [data-entry-id]")
-            await page.wait_for_function(
-                "document.querySelector('#session-select').textContent.includes('资料库会话')"
-            )
             try:
                 yield page, service, client, calls
                 assert not errors, errors
             finally:
                 await browser.close()
-
-
-async def test_chat_scope_restores_selected_library_session_and_new_chat_intent(ui):
-    page, service, _client, _calls = ui
-    second = service.database.create_chat_session(title="另一资料库会话", scope="library")
-    await page.reload()
-    await page.wait_for_function(
-        "document.querySelector('#session-select').textContent.includes('另一资料库会话')"
-    )
-    await page.locator("#panel-tab-chat").click()
-    await page.locator("#session-select").select_option(second.id)
-    await page.evaluate("window.Douku.navigate('/articles/dy-1000')")
-    await page.wait_for_function("document.querySelector('#session-select').value === ''")
-    await page.evaluate("window.Douku.navigate('/')")
-    await page.wait_for_function(
-        "id => document.querySelector('#session-select').value === id", arg=second.id
-    )
-    await page.locator("#panel-tab-chat").click()
-    await page.locator("#chat-menu-toggle").click()
-    await page.locator("#new-session").click()
-    await page.evaluate("window.Douku.navigate('/articles/dy-123')")
-    await page.wait_for_function("document.querySelector('#session-select').value !== ''")
-    await page.evaluate("window.Douku.navigate('/')")
-    await page.wait_for_function("document.querySelector('#session-select').value === ''")
 
 
 async def test_command_search_closes_with_one_escape_and_keeps_query(ui):
@@ -173,17 +144,9 @@ async def test_cancelled_delete_does_not_run_when_reanalyzing_and_dialog_reuses(
 
 async def test_scope_changes_and_command_query_clears_old_results(ui):
     page, _service, _client, _calls = ui
-    assert "资料库会话" in await page.locator("#session-select").inner_text()
     await page.evaluate("window.Douku.navigate('/articles/dy-123')")
-    await page.wait_for_function(
-        "document.querySelector('#session-select').textContent.includes('文章会话')"
-    )
-    assert "资料库会话" not in await page.locator("#session-select").inner_text()
+    await page.locator("#article-view:not(.hidden)").wait_for()
     await page.evaluate("window.Douku.navigate('/settings')")
-    await page.wait_for_function(
-        "document.querySelector('#session-select').textContent.includes('资料库会话')"
-    )
-    assert "文章会话" not in await page.locator("#session-select").inner_text()
     await page.keyboard.press("Control+k")
     await page.fill("#command-input", "本地资料")
     await page.locator("#command-results [data-entry-id='dy-123']").wait_for()

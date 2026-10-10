@@ -23,7 +23,7 @@ from douyin_wiki.models import (
 from douyin_wiki.time_utils import utc_now
 from douyin_wiki.webapp.app import create_app
 from douyin_wiki.worker import Worker
-from tests.support.web import TopicFakeProvider, _web_fixture, local_client
+from tests.support.web import _web_fixture, local_client
 from tests.test_creator import DirectResolver
 from tests.test_image_note import make_service
 
@@ -502,7 +502,6 @@ def test_tag_rename_preserves_valid_yaml_and_external_anchor_values(tmp_path, ta
         "creator",
         "topic_create",
         "topic_note",
-        "topic_generate",
         "topic_get",
         "topic_list",
         "topic_sources",
@@ -525,7 +524,7 @@ def test_waiting_web_operations_leave_health_responsive(tmp_path, monkeypatch, a
             service.database.get_entry_data(entry.id),
         )
     app = create_app(
-        config, service=service, chat_provider=TopicFakeProvider(), start_watcher=False
+        config, service=service,  start_watcher=False
     )
     acquired, attempted, release = Event(), Event(), Event()
     original = service.vault.entry_operations_locked
@@ -556,7 +555,6 @@ def test_waiting_web_operations_leave_health_responsive(tmp_path, monkeypatch, a
             f"/api/topics/{topic_id}/notes",
             {"content": "原始笔记", "confirmed": True},
         ),
-        "topic_generate": ("POST", f"/api/topics/{topic_id}/artifacts", {"kind": "decision_brief"}),
         "topic_get": ("GET", f"/api/topics/{topic_id}", {}),
         "topic_list": ("GET", "/api/topics", {}),
         "topic_sources": (

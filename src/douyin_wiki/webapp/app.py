@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable
@@ -13,27 +12,22 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from watchfiles import awatch
 
-from ..adapters.chat import ChatProvider, OpenAICompatibleChatProvider
 from ..adapters.llm import FallbackAnalysisProvider, OpenAICompatibleProvider
 from ..adapters.share import extract_douyin_url
 from ..config import (
     AppConfig,
-    LLMSettings,
     default_config_path,
-    llm_api_key_required,
     load_config,
-    normalize_llm_base_url,
 )
 from ..errors import DouyinWikiError, EntryNotFoundError, JobStateError
 from ..localization import add_display_labels, label_entry_status
@@ -44,17 +38,14 @@ from ..models import (
     InspirationDraft,
     InspirationInput,
     RetentionPolicy,
-    TopicArtifactKind,
 )
-from ..secrets import get_secret, store_secret
 from ..service import DouyinWikiService
 from ..setup import update_config_values, write_config
 from ..time_utils import beijing_iso, format_beijing, parse_clock_to_ms
 from ..vault import entry_operation_observer
 from ..web_operation import WebOperationService
 from .catalog import CONTENT_TYPE_LABELS, LibraryCatalog
-from .chat import ChatContextBuilder
-from .rendering import render_article, render_chat
+from .rendering import render_article, render_topic_note
 from .version import WEB_VERSION
 
 ANALYSIS_MODE_INFO = {
@@ -150,16 +141,6 @@ class CaptureSubmissionRequest(BaseModel):
     approve_cloud_analysis: bool = False
 
 
-class CreateSessionRequest(BaseModel):
-    scope: Literal["library", "entry", "topic"] = "library"
-    context_entry_id: str | None = None
-    context_topic_id: str | None = None
-
-
-class SendMessageRequest(BaseModel):
-    content: str = Field(min_length=1, max_length=8000)
-
-
 class CreateTopicRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     entry_ids: list[str] = Field(min_length=1, max_length=500)
@@ -174,10 +155,6 @@ class TopicSourceRequest(BaseModel):
 
 class SetTopicSourcesRequest(BaseModel):
     sources: list[TopicSourceRequest] = Field(min_length=1, max_length=500)
-
-
-class GenerateTopicArtifactRequest(BaseModel):
-    kind: TopicArtifactKind
 
 
 class SaveTopicNoteRequest(BaseModel):
@@ -203,33 +180,6 @@ class SetFavoriteRequest(BaseModel):
 class AnalysisModeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: AnalysisMode
-
-
-class ModelSettingsRequest(BaseModel):
-    model_config = ConfigDict(hide_input_in_errors=True)
-
-    base_url: str = Field(min_length=8, max_length=2048)
-    model: str = Field(min_length=1, max_length=256)
-    api_key: str | None = Field(default=None, max_length=8192)
-
-    @field_validator("base_url")
-    @classmethod
-    def validate_base_url(cls, value: str) -> str:
-        return normalize_llm_base_url(value)
-
-    @field_validator("model")
-    @classmethod
-    def validate_model(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized or any(character in normalized for character in {'"', "\\", "\r", "\n"}):
-            raise ValueError("模型名称为空或包含不支持的字符")
-        return normalized
-
-    @field_validator("api_key")
-    @classmethod
-    def normalize_api_key(cls, value: str | None) -> str | None:
-        normalized = (value or "").strip()
-        return normalized or None
 
 
 _change_origin: ContextVar[str | None] = ContextVar("change_origin", default=None)
@@ -343,7 +293,7 @@ def _topic_payload(value: dict[str, Any]) -> dict[str, Any]:
             "需要更新" if artifact["status"] == "needs_update" else "当前版本"
         )
         artifact["created_display"] = format_beijing(artifact.get("created_at"))
-        artifact["html"] = render_chat(artifact["content_markdown"])
+        artifact["html"] = render_topic_note(artifact["content_markdown"])
         artifacts.append(artifact)
     return {"topic": topic, "artifacts": artifacts}
 
@@ -418,8 +368,6 @@ def create_app(
     *,
     config_path: Path | None = None,
     service: DouyinWikiService | None = None,
-    chat_provider: ChatProvider | None = None,
-    chat_provider_factory: Callable[[LLMSettings], ChatProvider] | None = None,
     start_watcher: bool = True,
 ) -> FastAPI:
     cfg = config or load_config()
@@ -434,9 +382,6 @@ def create_app(
     catalog.refresh()
     notifier = ChangeNotifier(catalog.compute_fingerprint)
     operations = WebOperationService(core)
-    provider_factory = chat_provider_factory or OpenAICompatibleChatProvider
-    provider = chat_provider or provider_factory(cfg.llm)
-    context_builder = ChatContextBuilder(core)
     settings_lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -490,7 +435,6 @@ def create_app(
     app.state.config_path = target_config_path
     app.state.service = core
     app.state.catalog = catalog
-    app.state.chat_provider = provider
     app.state.operations = operations
 
     async def publish_mutation(
@@ -997,24 +941,8 @@ def create_app(
         return _topic_payload(value)
 
     @app.post("/api/topics/{topic_id}/artifacts", status_code=201)
-    async def generate_topic_artifact(topic_id: str, payload: GenerateTopicArtifactRequest):
-        try:
-            artifact = await core.generate_topic_artifact(
-                topic_id,
-                payload.kind,
-                provider=app.state.chat_provider,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except (ValueError, DouyinWikiError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        await asyncio.to_thread(catalog.refresh)
-        await notifier.publish()
-        result = {
-            "topic": (await asyncio.to_thread(core.get_topic, topic_id))["topic"],
-            "artifacts": [artifact],
-        }
-        return _topic_payload(result)["artifacts"][0]
+    async def generate_topic_artifact(topic_id: str):
+        raise HTTPException(status_code=410, detail="专题自动生成已停用")
 
     @app.post("/api/topics/{topic_id}/notes", status_code=201)
     async def save_topic_note(topic_id: str, payload: SaveTopicNoteRequest):
@@ -1058,283 +986,31 @@ def create_app(
 
     @app.get("/api/chat/sessions")
     async def list_sessions():
-        current_provider = app.state.chat_provider
-        sessions = await asyncio.to_thread(core.database.list_chat_sessions)
-        return {
-            "sessions": [item.model_dump(mode="json") for item in sessions],
-            "model": current_provider.model or "未配置",
-            "configured": current_provider.configured,
-        }
+        raise HTTPException(status_code=410, detail="聊天已停用")
 
     @app.post("/api/chat/sessions", status_code=201)
-    async def create_session(payload: CreateSessionRequest):
-        if payload.scope == "entry":
-            if not payload.context_entry_id:
-                raise HTTPException(status_code=400, detail="文章范围对话需要有效的目标文章")
-            item = catalog.get(payload.context_entry_id)
-            if item is None:
-                raise HTTPException(status_code=400, detail="文章范围对话需要有效的目标文章")
-            if not item.database_managed:
-                raise HTTPException(
-                    status_code=409,
-                    detail="该文章来自只读 Markdown，无法创建文章范围对话，请使用全库对话",
-                )
-        if payload.scope == "topic":
-            if not payload.context_topic_id:
-                raise HTTPException(status_code=400, detail="专题范围对话需要有效的目标专题")
-            try:
-                await asyncio.to_thread(core.get_topic, payload.context_topic_id)
-            except KeyError as exc:
-                raise HTTPException(
-                    status_code=400, detail="专题范围对话需要有效的目标专题"
-                ) from exc
-        session = await asyncio.to_thread(
-            core.database.create_chat_session,
-            scope=payload.scope,
-            context_entry_id=payload.context_entry_id,
-            context_topic_id=payload.context_topic_id,
-        )
-        return session.model_dump(mode="json")
+    async def create_session():
+        raise HTTPException(status_code=410, detail="聊天已停用")
 
     @app.get("/api/chat/sessions/{session_id}")
     async def get_session(session_id: str):
-        try:
-            session = await asyncio.to_thread(core.database.get_chat_session, session_id)
-            messages = await asyncio.to_thread(core.database.list_chat_messages, session_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {
-            "session": session.model_dump(mode="json"),
-            "messages": [
-                {
-                    **message.model_dump(mode="json"),
-                    "html": render_chat(message.content) if message.role == "assistant" else "",
-                }
-                for message in messages
-            ],
-        }
+        raise HTTPException(status_code=410, detail="聊天已停用")
 
     @app.delete("/api/chat/sessions/{session_id}")
     async def delete_session(session_id: str):
-        if not await asyncio.to_thread(core.database.delete_chat_session, session_id):
-            raise HTTPException(status_code=404, detail="对话不存在")
-        return {"status": "已删除"}
+        raise HTTPException(status_code=410, detail="聊天已停用")
 
     @app.post("/api/chat/sessions/{session_id}/messages")
-    async def send_message(session_id: str, payload: SendMessageRequest):
-        try:
-            session = await asyncio.to_thread(core.database.get_chat_session, session_id)
-            history = await asyncio.to_thread(
-                core.database.list_chat_messages, session_id, limit=24
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        if session.scope == "topic" and not session.context_topic_id:
-            raise HTTPException(status_code=409, detail="该对话关联的专题已不存在，请新建对话")
-        try:
-            messages, citations = await asyncio.to_thread(
-                context_builder.build,
-                payload.content,
-                context_entry_id=(session.context_entry_id if session.scope == "entry" else None),
-                context_topic_id=(session.context_topic_id if session.scope == "topic" else None),
-                history=history,
-            )
-        except KeyError as exc:
-            raise HTTPException(
-                status_code=409, detail="该对话关联的专题已不存在，请新建对话"
-            ) from exc
-        await asyncio.to_thread(core.database.add_chat_message, session_id, "user", payload.content)
-        if session.title == "新对话":
-            await asyncio.to_thread(
-                core.database.update_chat_session,
-                session_id,
-                title=payload.content.strip().replace("\n", " ")[:32],
-            )
-
-        async def response_stream() -> AsyncIterator[str]:
-            current_provider = app.state.chat_provider
-            yield _event(
-                "meta",
-                {
-                    "model": current_provider.model or "未配置",
-                    "citations": [item.model_dump(mode="json") for item in citations],
-                },
-            )
-            answer = ""
-            usage: dict[str, int | None] = {}
-            try:
-                if session.scope == "topic" and not citations:
-                    answer = "当前专题没有相关证据。"
-                    yield _event("delta", {"text": answer})
-                    saved = await asyncio.to_thread(
-                        core.database.add_chat_message,
-                        session_id,
-                        "assistant",
-                        answer,
-                        citations=[],
-                    )
-                    yield _event(
-                        "done",
-                        {
-                            "message": {
-                                **saved.model_dump(mode="json"),
-                                "html": render_chat(answer),
-                            },
-                            "usage": None,
-                        },
-                    )
-                    return
-                async for chunk in current_provider.stream(messages):
-                    if chunk.text:
-                        answer += chunk.text
-                        yield _event("delta", {"text": chunk.text})
-                    if chunk.usage:
-                        usage = chunk.usage
-                saved = await asyncio.to_thread(
-                    core.database.add_chat_message,
-                    session_id,
-                    "assistant",
-                    answer,
-                    citations=citations,
-                    model=current_provider.model or None,
-                    prompt_tokens=usage.get("prompt_tokens"),
-                    completion_tokens=usage.get("completion_tokens"),
-                    total_tokens=usage.get("total_tokens"),
-                )
-                yield _event(
-                    "done",
-                    {
-                        "message": {
-                            **saved.model_dump(mode="json"),
-                            "html": render_chat(answer),
-                        },
-                        "usage": usage or None,
-                    },
-                )
-            except (DouyinWikiError, httpx.HTTPError) as exc:
-                if answer:
-                    await asyncio.to_thread(
-                        core.database.add_chat_message,
-                        session_id,
-                        "assistant",
-                        answer,
-                        citations=citations,
-                        model=current_provider.model or None,
-                    )
-                details = getattr(exc, "details", {})
-                cause = str(details.get("cause") or "").strip()
-                yield _event(
-                    "error",
-                    {
-                        "message": str(exc),
-                        "cause": cause[:500] or None,
-                        "partial_saved": bool(answer),
-                    },
-                )
-            except Exception:
-                yield _event("error", {"message": "AI 对话暂时不可用，请稍后重试。"})
-
-        return StreamingResponse(response_stream(), media_type="text/event-stream")
+    async def send_message(session_id: str):
+        raise HTTPException(status_code=410, detail="聊天已停用")
 
     @app.get("/api/settings/model")
     async def get_model_settings():
-        current_config = app.state.config
-        current_provider = app.state.chat_provider
-        key_required = llm_api_key_required(current_config.llm.base_url)
-        key_present = bool(await asyncio.to_thread(get_secret, current_config.llm.api_key_env))
-        return {
-            "enabled": current_config.llm.enabled,
-            "base_url": current_config.llm.base_url,
-            "model": current_config.llm.model,
-            "api_key_configured": key_present,
-            "api_key_required": key_required,
-            "api_key_source": (
-                "环境变量"
-                if os.environ.get(current_config.llm.api_key_env)
-                else "macOS Keychain"
-                if key_present
-                else "本机接口无需密钥"
-                if not key_required
-                else "未配置"
-            ),
-            "configured": current_provider.configured,
-            "analysis_mode": current_config.analysis_mode.value,
-            "analysis_mode_label": ANALYSIS_MODE_INFO[current_config.analysis_mode.value]["label"],
-            "analysis_modes": [
-                {"value": value, **info} for value, info in ANALYSIS_MODE_INFO.items()
-            ],
-        }
+        raise HTTPException(status_code=410, detail="模型设置已停用")
 
     @app.post("/api/settings/model")
-    async def save_model_settings(payload: ModelSettingsRequest):
-        try:
-            async with settings_lock:
-                config_path_value = Path(app.state.config_path)
-                current_config = (
-                    load_config(config_path_value)
-                    if config_path_value.exists()
-                    else app.state.config
-                )
-                existing_key = await asyncio.to_thread(get_secret, current_config.llm.api_key_env)
-                endpoint_changed = current_config.llm.base_url.rstrip("/") != payload.base_url
-                if (
-                    endpoint_changed
-                    and llm_api_key_required(payload.base_url)
-                    and existing_key
-                    and not payload.api_key
-                ):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="更换云端接口时必须重新输入该服务对应的 API Key",
-                    )
-                llm = current_config.llm.model_copy(
-                    update={
-                        "enabled": True,
-                        "base_url": payload.base_url,
-                        "model": payload.model,
-                    }
-                )
-                updated = current_config.model_copy(update={"llm": llm})
-                if payload.api_key:
-                    await asyncio.to_thread(store_secret, llm.api_key_env, payload.api_key)
-                if config_path_value.exists():
-                    await asyncio.to_thread(
-                        update_config_values,
-                        config_path_value,
-                        {
-                            "llm": {
-                                "enabled": True,
-                                "base_url": llm.base_url,
-                                "model": llm.model,
-                            }
-                        },
-                    )
-                else:
-                    await asyncio.to_thread(
-                        write_config, updated, config_path_value, overwrite=True
-                    )
-                app.state.config = updated
-                core.config = updated
-                app.state.chat_provider = await asyncio.to_thread(provider_factory, llm)
-                if updated.analysis_mode == AnalysisMode.PROVIDER:
-                    core.analysis = await asyncio.to_thread(OpenAICompatibleProvider, llm)
-                reload_result = operations.request_worker_reload()
-        except (DouyinWikiError, OSError) as exc:
-            raise HTTPException(status_code=500, detail=f"保存模型配置失败：{exc}") from exc
-        current_provider = app.state.chat_provider
-        key_present = bool(await asyncio.to_thread(get_secret, llm.api_key_env))
-        key_required = llm_api_key_required(llm.base_url)
-        return {
-            "status": "配置已保存",
-            "worker_reload": reload_result["status"],
-            "worker_reload_note": reload_result["note"],
-            "configured": current_provider.configured,
-            "model": current_provider.model or "未配置",
-            "api_key_configured": key_present,
-            "api_key_required": key_required,
-            "analysis_mode": updated.analysis_mode.value,
-            "analysis_mode_label": ANALYSIS_MODE_INFO[updated.analysis_mode.value]["label"],
-        }
+    async def save_model_settings():
+        raise HTTPException(status_code=410, detail="模型设置已停用")
 
     @app.post("/api/settings/analysis-mode")
     async def save_analysis_mode(payload: AnalysisModeRequest):
@@ -1361,11 +1037,6 @@ def create_app(
             reload_result = operations.request_worker_reload()
         info = ANALYSIS_MODE_INFO[payload.mode.value]
         warning = None
-        if payload.mode == AnalysisMode.PROVIDER and not app.state.chat_provider.configured:
-            warning = (
-                "已改为后台模型接口，但共用模型尚未配置完整。"
-                "请先到「设置 › 共用模型」保存接口和模型。"
-            )
         return {
             "status": "分析方式已保存",
             "analysis_mode": payload.mode.value,
@@ -1378,34 +1049,7 @@ def create_app(
 
     @app.post("/api/settings/model/test")
     async def test_model_settings():
-        current_provider = app.state.chat_provider
-        if not current_provider.configured:
-            raise HTTPException(status_code=400, detail="请先保存模型名称和 API Key")
-        answer = ""
-        usage: dict[str, int | None] = {}
-        try:
-            async for chunk in current_provider.stream(
-                [
-                    {
-                        "role": "system",
-                        "content": "这是连接测试。请只回复：连接成功",
-                    },
-                    {"role": "user", "content": "测试连接"},
-                ]
-            ):
-                answer += chunk.text
-                if chunk.usage:
-                    usage = chunk.usage
-        except DouyinWikiError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"模型连接失败：{exc}") from exc
-        return {
-            "status": "连接成功",
-            "model": current_provider.model,
-            "response": answer[:200],
-            "usage": usage or None,
-        }
+        raise HTTPException(status_code=410, detail="模型连接测试已停用")
 
     @app.post("/api/inspirations/confirm")
     async def confirm_inspiration(payload: InspirationDraft):

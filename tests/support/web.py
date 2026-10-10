@@ -1,58 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from douyin_wiki.adapters.chat import ChatChunk
 from douyin_wiki.config import AppConfig
 from douyin_wiki.models import EntryRecord, RetentionPolicy
 from douyin_wiki.service import DouyinWikiService
-
-
-class FakeChatProvider:
-    model = "测试模型"
-    configured = True
-
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[ChatChunk]:
-        assert "当前文章（优先）" in "\n".join(item["content"] for item in messages)
-        yield ChatChunk(text="依据文章，")
-        yield ChatChunk(
-            text="这是测试回答。",
-            usage={"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
-        )
-
-
-class ConfigurableFakeProvider:
-    def __init__(self, model: str, configured: bool) -> None:
-        self.model = model
-        self.configured = configured
-
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[ChatChunk]:
-        assert messages[-1]["content"] == "测试连接"
-        yield ChatChunk(
-            text="连接成功",
-            usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
-        )
-
-
-class TopicFakeProvider:
-    model = "专题测试模型"
-    configured = True
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[ChatChunk]:
-        self.calls += 1
-        joined = "\n".join(item["content"] for item in messages)
-        assert "dy-123" in joined
-        yield ChatChunk(
-            text="核心结论来自测试文章。〔dy-123〕",
-            usage={"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
-        )
 
 
 def local_client(app, **kwargs):

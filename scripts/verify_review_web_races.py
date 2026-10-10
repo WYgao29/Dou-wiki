@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import async_playwright
 
 from douyin_wiki.webapp.app import create_app
-from tests.support.web import FakeChatProvider, _web_fixture, local_client
+from tests.support.web import _web_fixture, local_client
 
 
 @asynccontextmanager
@@ -31,7 +31,7 @@ async def browser_fixture(*, startup_gate=None, initial_route=None):
             for title in ["第一个专题", "第二个专题"]
         ]
         app = create_app(
-            config, service=service, chat_provider=FakeChatProvider(), start_watcher=False
+            config, service=service,  start_watcher=False
         )
         with local_client(app) as client:
             async with async_playwright() as p:

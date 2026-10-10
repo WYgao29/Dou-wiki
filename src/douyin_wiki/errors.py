@@ -15,6 +15,10 @@ class InvalidShareTextError(DouyinWikiError):
     code = "invalid_share_text"
 
 
+class FeatureDisabledError(DouyinWikiError):
+    code = "feature_disabled"
+
+
 class CookieRequiredError(DouyinWikiError):
     code = "cookie_required"
 

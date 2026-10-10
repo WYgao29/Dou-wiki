@@ -70,8 +70,8 @@ collection_context.batch_silent=true 的子任务仍需
 完成校正和分析，但不要逐条向用户发送完成消息；以父任务汇总结果为准。用户任务包含同步时调用
 sync_creator，包含定期同步时由客户端安排，普通一次性任务不扩展为长期订阅。
 专题研究必须使用 create_topic 等专题工具；search_topic 只检索当前启用来源。专题没有相关证据时
-明确回复“当前专题没有相关证据”，不得调用 search_knowledge 回退到全库。成果按用户任务和已有授权
-调用 generate_topic_artifact；用户要求保存或已有授权覆盖保存时调用 save_topic_note，不重复确认。
+明确回复“当前专题没有相关证据”，不得调用 search_knowledge 回退到全库。用户要求保存或已有授权
+覆盖保存专题笔记时调用 save_topic_note，不重复确认。
 持续执行到完成（含提示）、失败、取消或确实需要用户补充信息。
 completed、completed_with_warnings、failed、cancelled 都是终态；回复对应结果并按事件确认规则处理后，
 停止该任务的轮询和自动接续，保留其他任务与共用调度；取消后不自动 retry_job。
@@ -492,22 +492,6 @@ def search_topic(
     return _payload(
         _service().search_topic(topic_id, query, include_stale=include_stale, limit=limit)
     )
-
-
-@mcp.tool()
-async def generate_topic_artifact(topic_id: str, kind: str) -> dict[str, Any]:
-    """用户明确要求后生成专题成果；会调用配置模型并消耗 token。"""
-    allowed = {
-        "overview",
-        "comparison",
-        "evidence_map",
-        "consensus",
-        "decision_brief",
-        "faq",
-    }
-    if kind not in allowed:
-        raise ValueError("不支持的专题成果类型")
-    return _payload(await _service().generate_topic_artifact(topic_id, kind))
 
 
 @mcp.tool()

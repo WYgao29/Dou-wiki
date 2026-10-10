@@ -197,7 +197,7 @@ def render_article(markdown: str, *, source_path: str, catalog: LibraryCatalog) 
     )
 
 
-def render_chat(markdown: str) -> str:
+def render_topic_note(markdown: str) -> str:
     return nh3.clean(
         _MARKDOWN.render(markdown),
         tags=_ALLOWED_TAGS - {"img"},

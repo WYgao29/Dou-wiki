@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from douyin_wiki.config import LLMSettings
 from douyin_wiki.models import (
-    AnalysisMode,
     AuthCheckResult,
     CaptureRequest,
     InspirationInput,
@@ -12,26 +10,19 @@ from douyin_wiki.models import (
     ReviewIssue,
 )
 from douyin_wiki.webapp.app import WEB_VERSION, create_app
-from tests.support.web import ConfigurableFakeProvider, _web_fixture, local_client
+from tests.support.web import _web_fixture, local_client
 
 
-def test_model_health_reports_actual_provider_reachability(tmp_path, monkeypatch) -> None:
+def test_model_health_is_disabled_without_provider_requests(tmp_path, monkeypatch):
     config, service = _web_fixture(tmp_path)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("停用的模型健康检查不应请求网络")
+    monkeypatch.setattr(httpx.AsyncClient, "send", forbidden)
     app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
-        assert client.get("/api/system/model-health").json()["status"] == "inactive"
-
-    config.analysis_mode = AnalysisMode.PROVIDER
-    config.llm = LLMSettings(base_url="http://127.0.0.1:8000/v1", model="test-model")
-    client_type = httpx.AsyncClient
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"data": []}))
-    monkeypatch.setattr(
-        "douyin_wiki.web_operation.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    app = create_app(config, service=service, start_watcher=False)
-    with local_client(app) as client:
-        assert client.get("/api/system/model-health").json()["status"] == "ready"
+        response = client.get("/api/system/model-health")
+    assert response.status_code == 410
+    assert "已停用" in response.json()["detail"]
 
 
 def test_evidence_audit_is_available_in_job_detail_only(tmp_path) -> None:
@@ -558,7 +549,7 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
         config,
         config_path=tmp_path / "config.toml",
         service=service,
-        chat_provider=ConfigurableFakeProvider("unset", False),
+
         start_watcher=False,
     )
     with local_client(app) as client:
@@ -617,8 +608,7 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
         )
         assert "设置 › 授权状态" in unverified["message"]
         assert unverified["actions"][0]["href"] == "/settings/auth"
-        switched = client.post("/api/settings/analysis-mode", json={"mode": "provider"})
+        switched = client.post("/api/settings/analysis-mode", json={"mode": "gateway"})
         assert switched.status_code == 200
         warning = switched.json()["warning"]
-        assert "设置 › 共用模型" in warning
-        assert "对话模型页" not in warning
+        assert warning is None

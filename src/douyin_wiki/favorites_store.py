@@ -109,27 +109,8 @@ class FavoritesStore:
         with self.database.connect() as conn:
             run = self._run(conn, job_id)
             snapshot = run["snapshot"]
-            if "_baseline_work_ids" not in snapshot:
-                if not snapshot.get("account_id"):
-                    return set()
-                # Compatibility fallback is read-only; initialization freezes legacy baselines.
-                source_id = self._previous_run_conn(conn, job_id, run, snapshot["account_id"])
-                return set(self._work_ids_conn(conn, source_id))
-            return set(snapshot["_baseline_work_ids"])
+            return set(snapshot.get("_baseline_work_ids", []))
 
-    @classmethod
-    def migrate_legacy_baselines(cls, conn: sqlite3.Connection) -> None:
-        for row in conn.execute("SELECT * FROM favorites_runs").fetchall():
-            snapshot = json.loads(row["snapshot_json"])
-            if "_baseline_work_ids" in snapshot or not snapshot.get("account_id"):
-                continue
-            run = {"options": json.loads(row["options_json"])}
-            source_id = cls._previous_run_conn(conn, row["parent_id"], run, snapshot["account_id"])
-            snapshot["_baseline_work_ids"] = cls._work_ids_conn(conn, source_id)
-            conn.execute(
-                "UPDATE favorites_runs SET snapshot_json=? WHERE parent_id=?",
-                (json.dumps(snapshot, ensure_ascii=False), row["parent_id"]),
-            )
 
     @staticmethod
     def _work_ids_conn(conn: sqlite3.Connection, source_id: str | None) -> list[str]:

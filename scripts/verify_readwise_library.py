@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from douyin_wiki.models import EntryRecord, RetentionPolicy  # noqa: E402
 from douyin_wiki.webapp.app import create_app  # noqa: E402
-from tests.support.web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
+from tests.support.web import _web_fixture, local_client  # noqa: E402
 
 
 def populate(config, service):
@@ -95,7 +95,7 @@ async def verify():
         config, service = _web_fixture(Path(tmp))
         populate(config, service)
         app = create_app(
-            config, service=service, chat_provider=FakeChatProvider(), start_watcher=False
+            config, service=service,  start_watcher=False
         )
         with local_client(app) as client:
             async with async_playwright() as p:

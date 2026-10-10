@@ -83,29 +83,18 @@ async def test_analysis_limit_fails_without_publishing(service, monkeypatch):
     assert service.vault.load_entries() == []
 
 
-def test_model_save_switches_provider_and_requests_reload(service, monkeypatch, tmp_path):
-    monkeypatch.setattr("douyin_wiki.adapters.llm.get_secret", lambda _: "")
-    monkeypatch.setattr("douyin_wiki.webapp.app.get_secret", lambda _: "")
-    service.config.analysis_mode = AnalysisMode.PROVIDER
-    service.config.llm.enabled = True
-    service.config.llm.base_url = "http://127.0.0.1:8000/v1"
-    service.config.llm.model = "old-model"
-    service.analysis = OpenAICompatibleProvider(service.config.llm)
+def test_model_save_is_disabled_without_requesting_reload(service, tmp_path):
     app = create_app(
-        service.config, config_path=tmp_path / "settings.toml", service=service,
-        start_watcher=False,
-        chat_provider_factory=lambda c: SimpleNamespace(model=c.model, configured=True),
+        service.config, config_path=tmp_path / "settings.toml", service=service, start_watcher=False
     )
     with TestClient(app) as client:
         response = client.post(
             "/api/settings/model", headers={"Origin": "http://testserver"},
-            json={"base_url": "http://127.0.0.1:9000/v1", "model": "new-model"},
+            json={"base_url": "http://127.0.0.1:9000/v1", "model": "old-call"},
         )
-    assert response.status_code == 200
-    assert service.analysis.model == "new-model"
-    assert service.analysis.settings.base_url == "http://127.0.0.1:9000/v1"
-    assert response.json()["worker_reload"]
-    assert Worker(service).reload_requested()
+    assert response.status_code == 410
+    assert not Worker(service).reload_requested()
+    assert not (tmp_path / "settings.toml").exists()
 
 
 @pytest.mark.asyncio

@@ -2,13 +2,59 @@ from __future__ import annotations
 
 import shutil
 import threading
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from douyin_wiki.models import EntryRecord, RetentionPolicy
-from douyin_wiki.webapp.chat import ChatChunk, ChatContextBuilder
+
+
+@pytest.mark.parametrize(
+    "kind", ["overview", "comparison", "evidence_map", "consensus", "decision_brief", "faq"]
+)
+async def test_retired_model_features_service_generation_is_disabled(service, kind):
+    from types import SimpleNamespace
+
+    from douyin_wiki import errors
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("已停用生成不应读取专题或调用模型")
+
+    service.database.get_topic = forbidden
+    before = {job.id for job in service.database.list_jobs()}
+    with pytest.raises(errors.DouyinWikiError, match="已停用") as result:
+        await service.generate_topic_artifact(
+            "missing-topic", kind, provider=SimpleNamespace(stream=forbidden)
+        )
+    assert isinstance(result.value, errors.FeatureDisabledError)
+    assert result.value.code == "feature_disabled"
+    assert {job.id for job in service.database.list_jobs()} == before
+    with service.database.connect() as conn:
+        assert not conn.execute("SELECT id FROM topic_artifacts").fetchall()
+
+
+def test_topic_note_roundtrip_and_rebuild_without_chat_tables(service):
+    entry = _add_entry(service, "dy-1234567890123456789", "专题来源", "保留来源证据")
+    data = service.database.get_entry_data(entry.id)
+    data["metadata"] = {"source_kind": "video"}
+    service.vault.write_entry(entry, data)
+    topic_id = service.create_topic("笔记专题", [entry.id])["topic"]["id"]
+    literal = "## 我的笔记\n\n逐字保留 **判断**。\n\n<script>alert('x')</script>"
+    note = service.save_topic_note(topic_id, literal, confirmed=True)
+    assert note["kind"] == "note" and note["content_markdown"] == literal
+    assert note["model"] is None and note["total_tokens"] is None
+    updated = entry.model_copy(update={"updated_at": entry.updated_at + timedelta(minutes=1)})
+    service.database.upsert_entry(updated, data)
+    service.vault.write_entry(updated, data)
+    assert service.get_topic(topic_id)["artifacts"][0]["content_markdown"] == literal
+    with service.database.connect() as conn:
+        assert not conn.execute(
+            "SELECT name FROM sqlite_master WHERE name IN ('web_chat_sessions','web_chat_messages')"
+        ).fetchall()
+    service.rebuild_database_from_vault(apply=True)
+    restored = service.get_topic(topic_id)["artifacts"][0]
+    assert restored["id"] == note["id"] and restored["content_markdown"] == literal
+    assert restored["kind"] == "note"
 
 
 def _analysis(title: str, statement: str, atom_id: str) -> dict:
@@ -74,73 +120,6 @@ def _add_entry(service, entry_id: str, title: str, statement: str) -> EntryRecor
     return entry
 
 
-class TopicProvider:
-    model = "专题测试模型"
-    configured = True
-
-    def __init__(self, entry_id: str) -> None:
-        self.entry_id = entry_id
-
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[ChatChunk]:
-        joined = "\n".join(message["content"] for message in messages)
-        assert "只能使用给出的专题来源" in joined
-        yield ChatChunk(text=f"## 核心结论\n\n采用渐进部署。〔{self.entry_id}〕")
-        yield ChatChunk(
-            usage={"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50}
-        )
-
-
-class SourceChangingTopicProvider(TopicProvider):
-    def __init__(
-        self,
-        service,
-        topic_id: str,
-        cited_entry_id: str,
-        replacement_entry_id: str,
-    ) -> None:
-        super().__init__(cited_entry_id)
-        self.service = service
-        self.topic_id = topic_id
-        self.replacement_entry_id = replacement_entry_id
-
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[ChatChunk]:
-        self.service.set_topic_sources(
-            self.topic_id,
-            [{"entry_id": self.replacement_entry_id, "enabled": True}],
-        )
-        async for chunk in super().stream(messages):
-            yield chunk
-
-
-class TopicDeletingProvider(TopicProvider):
-    def __init__(self, service, topic_id: str, cited_entry_id: str) -> None:
-        super().__init__(cited_entry_id)
-        self.service = service
-        self.topic_id = topic_id
-
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[ChatChunk]:
-        with self.service.database.connect() as conn:
-            conn.execute("DELETE FROM research_topics WHERE id=?", (self.topic_id,))
-        async for chunk in super().stream(messages):
-            yield chunk
-
-
-class EntryRevisionChangingTopicProvider(TopicProvider):
-    def __init__(self, service, entry_id: str) -> None:
-        super().__init__(entry_id)
-        self.service = service
-
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[ChatChunk]:
-        entry = self.service.database.get_entry(self.entry_id)
-        data = self.service.database.get_entry_data(self.entry_id)
-        changed = entry.model_copy(
-            update={"updated_at": entry.updated_at + timedelta(minutes=1)}
-        )
-        self.service.database.upsert_entry(changed, data)
-        async for chunk in super().stream(messages):
-            yield chunk
-
-
 def _start_topic_mutation_after_artifact_save(
     service,
     mutation,
@@ -199,37 +178,13 @@ def test_topic_search_is_filtered_before_ranking_and_source_disable_is_immediate
     assert all(item.entry_id == ai_two.id for item in service.search_topic(topic_id, "本地模型"))
 
 
-def test_entry_and_topic_chat_contexts_never_fall_back_to_library(service) -> None:
-    ai = _add_entry(service, "dy-ai", "AI 文章", "AI 项目先验证高价值流程")
-    coffee = _add_entry(service, "dy-coffee", "咖啡文章", "聪明杯使用十五克咖啡粉")
-    topic_id = service.create_topic("AI 专题", [ai.id])["topic"]["id"]
-    builder = ChatContextBuilder(service)
-
-    _, entry_citations = builder.build(
-        "聪明杯", context_entry_id=ai.id, history=[]
-    )
-    assert {item.entry_id for item in entry_citations} == {ai.id}
-
-    messages, topic_citations = builder.build(
-        "聪明杯怎么冲",
-        context_entry_id=None,
-        context_topic_id=topic_id,
-        history=[],
-    )
-    assert topic_citations == []
-    assert "当前专题没有相关证据" in "\n".join(item["content"] for item in messages)
-    assert coffee.id not in "\n".join(item["content"] for item in messages)
-
-
 @pytest.mark.asyncio
-async def test_topic_artifact_provenance_staleness_and_literal_note(service) -> None:
+async def test_topic_note_provenance_staleness_and_literal_note(service) -> None:
     entry = _add_entry(service, "dy-ai", "AI 文章", "企业应先验证一个高价值流程")
     topic_id = service.create_topic("决策专题", [entry.id], goal="决定试点范围")["topic"]["id"]
-    artifact = await service.generate_topic_artifact(
-        topic_id, "decision_brief", provider=TopicProvider(entry.id)
-    )
+    artifact = service.save_topic_note(topic_id, "逐字笔记", confirmed=True)
     assert artifact["status"] == "current"
-    assert artifact["total_tokens"] == 50
+    assert artifact["total_tokens"] is None
     artifact_path = (
         service.config.vault_path
         / "topics"
@@ -238,14 +193,15 @@ async def test_topic_artifact_provenance_staleness_and_literal_note(service) -> 
         / f"{artifact['id']}.md"
     )
     assert artifact_path.exists()
-    assert "专题测试模型" in artifact_path.read_text(encoding="utf-8")
+    assert "逐字笔记" in artifact_path.read_text(encoding="utf-8")
 
     data = service.database.get_entry_data(entry.id)
     changed = entry.model_copy(update={"updated_at": entry.updated_at + timedelta(minutes=1)})
     service.database.upsert_entry(changed, data)
     refreshed = service.get_topic(topic_id)
-    assert refreshed["artifacts"][0]["status"] == "needs_update"
-    assert "需要更新" in artifact_path.read_text(encoding="utf-8")
+    assert refreshed["artifacts"][0]["status"] == "current"
+    assert refreshed["artifacts"][0]["content_markdown"] == "逐字笔记"
+    assert "当前版本" in artifact_path.read_text(encoding="utf-8")
 
     before = len(refreshed["artifacts"])
     with pytest.raises(ValueError, match="明确确认"):
@@ -287,9 +243,7 @@ def test_rebuild_reports_invalid_topic_sidecar_without_clearing_database(service
 async def test_rebuild_reports_missing_topic_artifact_without_clearing_database(service) -> None:
     entry = _add_entry(service, "dy-artifact-rebuild", "成果来源", "成果来源内容")
     topic_id = service.create_topic("成果预检", [entry.id])["topic"]["id"]
-    artifact = await service.generate_topic_artifact(
-        topic_id, "decision_brief", provider=TopicProvider(entry.id)
-    )
+    artifact = service.save_topic_note(topic_id, "逐字笔记", confirmed=True)
     artifact_path = (
         service.config.vault_path
         / "topics"
@@ -317,9 +271,7 @@ async def test_rebuild_reports_invalid_topic_artifact_frontmatter_without_cleari
     entry_data["metadata"] = {"source_kind": "video"}
     service.vault.write_entry(entry, entry_data)
     topic_id = service.create_topic("成果元数据预检", [entry.id])["topic"]["id"]
-    artifact = await service.generate_topic_artifact(
-        topic_id, "decision_brief", provider=TopicProvider(entry.id)
-    )
+    artifact = service.save_topic_note(topic_id, "逐字笔记", confirmed=True)
     artifact_path = (
         service.config.vault_path
         / "topics"
@@ -345,63 +297,6 @@ async def test_rebuild_reports_invalid_topic_artifact_frontmatter_without_cleari
 
 
 @pytest.mark.asyncio
-async def test_source_changes_during_generation_mark_artifact_stale_and_keep_latest_topic(
-    service,
-) -> None:
-    original = _add_entry(service, "dy-original", "原始文章", "原始专题证据")
-    replacement = _add_entry(service, "dy-replacement", "替换文章", "替换专题证据")
-    topic_id = service.create_topic("交错专题", [original.id])["topic"]["id"]
-    before = service.get_topic(topic_id)["topic"]
-
-    artifact = await service.generate_topic_artifact(
-        topic_id,
-        "overview",
-        provider=SourceChangingTopicProvider(
-            service, topic_id, original.id, replacement.id
-        ),
-    )
-
-    assert artifact["status"] == "needs_update"
-    assert artifact["source_revision"] == before["source_revision"]
-    assert artifact["source_revisions"] == [
-        {
-            "entry_id": original.id,
-            "updated_at": before["sources"][0]["source_revision"],
-            "enabled": True,
-        }
-    ]
-    assert [source["entry_id"] for source in service.get_topic(topic_id)["topic"]["sources"]] == [
-        replacement.id
-    ]
-    topic_data = (
-        service.config.vault_path / "topics" / topic_id / ".data" / "topic.md"
-    ).read_text(encoding="utf-8")
-    assert replacement.id in topic_data
-
-
-@pytest.mark.asyncio
-async def test_entry_revision_changes_during_generation_mark_artifact_stale(
-    service,
-) -> None:
-    entry = _add_entry(service, "dy-revision", "版本变化文章", "版本变化专题证据")
-    topic_id = service.create_topic("版本交错专题", [entry.id])["topic"]["id"]
-    before = service.get_topic(topic_id)["topic"]
-
-    artifact = await service.generate_topic_artifact(
-        topic_id,
-        "overview",
-        provider=EntryRevisionChangingTopicProvider(service, entry.id),
-    )
-
-    assert artifact["status"] == "needs_update"
-    assert artifact["source_revision"] == before["source_revision"]
-    assert artifact["source_revisions"][0]["entry_id"] == entry.id
-    assert artifact["source_revisions"][0]["updated_at"] == before["sources"][0][
-        "source_revision"
-    ]
-
-
-@pytest.mark.asyncio
 async def test_source_update_at_finalization_does_not_revert_vault_topic(service) -> None:
     original = _add_entry(service, "dy-final-original", "最终化原始文章", "原始证据")
     replacement = _add_entry(service, "dy-final-replacement", "最终化替换文章", "替换证据")
@@ -417,11 +312,7 @@ async def test_source_update_at_finalization_does_not_revert_vault_topic(service
         original_save,
     )
 
-    artifact = await service.generate_topic_artifact(
-        topic_id,
-        "overview",
-        provider=TopicProvider(original.id),
-    )
+    artifact = service.save_topic_note(topic_id, "逐字笔记", confirmed=True)
     worker.join(timeout=2)
 
     assert finished.is_set()
@@ -451,11 +342,7 @@ async def test_topic_delete_at_finalization_is_serialized_without_sqlite_error(s
         service, delete_topic, original_save
     )
 
-    artifact = await service.generate_topic_artifact(
-        topic_id,
-        "overview",
-        provider=TopicProvider(entry.id),
-    )
+    artifact = service.save_topic_note(topic_id, "逐字笔记", confirmed=True)
     worker.join(timeout=2)
 
     assert finished.is_set()
@@ -469,28 +356,3 @@ async def test_topic_delete_at_finalization_is_serialized_without_sqlite_error(s
             "SELECT COUNT(*) FROM topic_artifacts WHERE topic_id=?", (topic_id,)
         ).fetchone()[0] == 0
     assert not topic_dir.exists()
-
-
-@pytest.mark.asyncio
-async def test_deleted_topic_during_generation_does_not_save_or_recreate_artifact(
-    service,
-) -> None:
-    entry = _add_entry(service, "dy-deleted-topic", "待删除专题来源", "专题证据")
-    topic_id = service.create_topic("删除交错专题", [entry.id])["topic"]["id"]
-
-    with pytest.raises(KeyError, match="专题不存在"):
-        await service.generate_topic_artifact(
-            topic_id,
-            "overview",
-            provider=TopicDeletingProvider(service, topic_id, entry.id),
-        )
-
-    with service.database.connect() as conn:
-        topic_count = conn.execute(
-            "SELECT COUNT(*) FROM research_topics WHERE id=?", (topic_id,)
-        ).fetchone()[0]
-        artifact_count = conn.execute(
-            "SELECT COUNT(*) FROM topic_artifacts WHERE topic_id=?", (topic_id,)
-        ).fetchone()[0]
-    assert topic_count == 0
-    assert artifact_count == 0

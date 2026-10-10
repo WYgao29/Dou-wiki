@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 import unicodedata
 import uuid
 from collections.abc import Callable, Collection, Iterable
@@ -16,9 +17,6 @@ from .errors import EntryNotFoundError, JobCancelledError, JobLeaseLostError, Jo
 from .models import (
     CANCELLABLE_JOB_STATUSES,
     CaptureRequest,
-    ChatMessage,
-    ChatSession,
-    Citation,
     CreatorInventoryItem,
     CreatorInventoryResult,
     CreatorInventoryWork,
@@ -43,11 +41,9 @@ from .models import (
 )
 from .time_utils import iso_now, parse_datetime, utc_now
 
-SCHEMA = """
-PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
-PRAGMA synchronous=NORMAL;
+STATE_SCHEMA_VERSION = 16
 
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL DEFAULT 'capture',
@@ -100,6 +96,7 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 CREATE INDEX IF NOT EXISTS idx_entries_video_id ON entries(video_id);
 CREATE INDEX IF NOT EXISTS idx_entries_expiry ON entries(retention, media_status, media_expires_at);
+CREATE INDEX IF NOT EXISTS idx_entries_favorite ON entries(favorite, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS research_topics (
     id TEXT PRIMARY KEY,
@@ -128,18 +125,14 @@ ON topic_sources(topic_id, enabled, position);
 CREATE TABLE IF NOT EXISTS topic_artifacts (
     id TEXT PRIMARY KEY,
     topic_id TEXT NOT NULL REFERENCES research_topics(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind='note'),
     title TEXT NOT NULL,
     content_markdown TEXT NOT NULL,
     source_revision TEXT NOT NULL,
     source_revisions_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current', 'needs_update')),
-    model TEXT,
     prompt_version TEXT NOT NULL,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    total_tokens INTEGER,
-    user_authored INTEGER NOT NULL DEFAULT 0,
+    user_authored INTEGER NOT NULL DEFAULT 1 CHECK(user_authored=1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -267,6 +260,7 @@ CREATE TABLE IF NOT EXISTS creator_run_items (
     creator_id TEXT NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
     work_id TEXT NOT NULL,
     ordinal INTEGER NOT NULL,
+    child_job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
     is_new INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY(job_id, work_id),
     UNIQUE(job_id, ordinal),
@@ -275,32 +269,6 @@ CREATE TABLE IF NOT EXISTS creator_run_items (
 );
 CREATE INDEX IF NOT EXISTS idx_creator_run_items_job ON creator_run_items(job_id, ordinal);
 
-CREATE TABLE IF NOT EXISTS web_chat_sessions (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    scope TEXT NOT NULL CHECK(scope IN ('library', 'entry', 'topic')),
-    context_entry_id TEXT,
-    context_topic_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_web_chat_sessions_updated
-ON web_chat_sessions(updated_at DESC);
-
-CREATE TABLE IF NOT EXISTS web_chat_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES web_chat_sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
-    content TEXT NOT NULL,
-    citations_json TEXT NOT NULL DEFAULT '[]',
-    model TEXT,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    total_tokens INTEGER,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_web_chat_messages_session
-ON web_chat_messages(session_id, id);
 
 """
 
@@ -388,71 +356,59 @@ class Database:
 
     def initialize(self) -> None:
         from .collection_store import COLLECTION_SCHEMA
-        from .favorites_store import FAVORITES_SCHEMA, FavoritesStore
+        from .favorites_store import FAVORITES_SCHEMA
         from .tags import TAG_SCHEMA
 
         with self.connect() as conn:
-            previous_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            conn.executescript(SCHEMA)
-            conn.executescript(TAG_SCHEMA)
-            conn.executescript(FAVORITES_SCHEMA)
-            conn.executescript(COLLECTION_SCHEMA)
-            conn.executescript(AUTH_SESSIONS_SCHEMA)
-            # Web and Worker may initialize together; inspect and migrate under one write lock.
+            self._check_state_schema(conn)
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    # Switching journal mode can report BUSY without honoring the timeout.
+                    code = getattr(exc, "sqlite_errorcode", 0) & 0xFF
+                    if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("BEGIN IMMEDIATE")
-            creator_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(creator_run_items)")
-            }
-            if "child_job_id" not in creator_columns:
-                conn.execute(
-                    "ALTER TABLE creator_run_items ADD COLUMN child_job_id TEXT "
-                    "REFERENCES jobs(id) ON DELETE SET NULL"
-                )
-            favorite_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(favorites_items)")
-            }
-            if "selection_explicit" not in favorite_columns:
-                conn.execute(
-                    "ALTER TABLE favorites_items ADD COLUMN "
-                    "selection_explicit INTEGER NOT NULL DEFAULT 0"
-                )
-            FavoritesStore.migrate_legacy_baselines(conn)
-            conn.commit()
-            self._migrate_chat_sessions_for_topics(conn)
-            chunk_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(chunks)").fetchall()
-            }
-            if "image_index" not in chunk_columns:
-                conn.execute("ALTER TABLE chunks ADD COLUMN image_index INTEGER")
-            job_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
-            }
-            if "lock_owner" not in job_columns:
-                conn.execute("ALTER TABLE jobs ADD COLUMN lock_owner TEXT")
-            if "lease_expires_at" not in job_columns:
-                conn.execute("ALTER TABLE jobs ADD COLUMN lease_expires_at TEXT")
-            event_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(job_events)").fetchall()
-            }
-            if "superseded_at" not in event_columns:
-                conn.execute("ALTER TABLE job_events ADD COLUMN superseded_at TEXT")
-            entry_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(entries)").fetchall()
-            }
-            if "favorite" not in entry_columns:
-                conn.execute("ALTER TABLE entries ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_entries_favorite "
-                "ON entries(favorite, updated_at DESC)"
+            # Recheck after acquiring the write lock: Web and Worker can start together.
+            self._check_state_schema(conn)
+            schemas = (
+                SCHEMA, TAG_SCHEMA, FAVORITES_SCHEMA, COLLECTION_SCHEMA, AUTH_SESSIONS_SCHEMA
             )
-            if previous_version < 9:
-                self._rebuild_fts_conn(conn)
+            for schema in schemas:
+                statement = ""
+                for line in schema.splitlines(keepends=True):
+                    statement += line
+                    if sqlite3.complete_statement(statement):
+                        conn.execute(statement)
+                        statement = ""
+                if statement.strip():
+                    raise JobStateError("状态库建表语句不完整")
             for row in conn.execute(
                 "SELECT tags_json, created_at FROM entries WHERE status='active'"
-            ).fetchall():
+            ):
                 self._remember_tags_conn(conn, json.loads(row["tags_json"]), row["created_at"])
             self._retire_undeliverable_events_conn(conn)
-            conn.execute(f"PRAGMA user_version={max(previous_version, 15)}")
+            conn.execute(f"PRAGMA user_version={STATE_SCHEMA_VERSION}")
+
+    @staticmethod
+    def _check_state_schema(conn: sqlite3.Connection) -> None:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        existing = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') "
+            "AND name NOT LIKE 'sqlite_%' LIMIT 1"
+        ).fetchone()
+        if version not in (0, STATE_SCHEMA_VERSION) or (version == 0 and existing):
+            raise JobStateError(
+                f"不支持此状态库（版本 {version}）；精简版只接受空库或版本 {STATE_SCHEMA_VERSION}，"
+                "请使用新的空知识库。"
+            )
 
     def capture_parent_ids(self, child_id: str) -> list[str]:
         with self.connect() as conn:
@@ -544,66 +500,6 @@ class Database:
             ],
         )
 
-    @staticmethod
-    def _migrate_chat_sessions_for_topics(conn: sqlite3.Connection) -> None:
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='web_chat_sessions'"
-        ).fetchone()
-        columns = {
-            item["name"] for item in conn.execute("PRAGMA table_info(web_chat_sessions)").fetchall()
-        }
-        table_sql = str(row["sql"] or "") if row else ""
-        if (
-            row
-            and "'topic'" in table_sql
-            and "context_topic_id" in columns
-            and "REFERENCES research_topics" not in table_sql
-        ):
-            return
-        conn.commit()
-        conn.execute("PRAGMA foreign_keys=OFF")
-        try:
-            conn.executescript(
-                """
-                ALTER TABLE web_chat_messages RENAME TO web_chat_messages_legacy;
-                ALTER TABLE web_chat_sessions RENAME TO web_chat_sessions_legacy;
-                CREATE TABLE web_chat_sessions (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    scope TEXT NOT NULL CHECK(scope IN ('library', 'entry', 'topic')),
-                    context_entry_id TEXT,
-                    context_topic_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                INSERT INTO web_chat_sessions
-                    (id, title, scope, context_entry_id, context_topic_id, created_at, updated_at)
-                SELECT id, title, scope, context_entry_id, NULL, created_at, updated_at
-                FROM web_chat_sessions_legacy;
-                CREATE TABLE web_chat_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL REFERENCES web_chat_sessions(id) ON DELETE CASCADE,
-                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
-                    content TEXT NOT NULL,
-                    citations_json TEXT NOT NULL DEFAULT '[]',
-                    model TEXT,
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    total_tokens INTEGER,
-                    created_at TEXT NOT NULL
-                );
-                INSERT INTO web_chat_messages
-                SELECT * FROM web_chat_messages_legacy;
-                DROP TABLE web_chat_messages_legacy;
-                DROP TABLE web_chat_sessions_legacy;
-                CREATE INDEX idx_web_chat_sessions_updated
-                ON web_chat_sessions(updated_at DESC);
-                CREATE INDEX idx_web_chat_messages_session
-                ON web_chat_messages(session_id, id);
-                """
-            )
-        finally:
-            conn.execute("PRAGMA foreign_keys=ON")
 
     def _retire_undeliverable_events_conn(self, conn: sqlite3.Connection) -> None:
         """Hide legacy route-less events and obsolete events from the delivery queue."""
@@ -2422,14 +2318,6 @@ class Database:
                         "SELECT * FROM purposes WHERE entry_id=?", (entry_id,)
                     ).fetchall()
                 ],
-                "chat_session_ids": [
-                    row["id"]
-                    for row in conn.execute(
-                        """SELECT id FROM web_chat_sessions
-                           WHERE scope='entry' AND context_entry_id=?""",
-                        (entry_id,),
-                    ).fetchall()
-                ],
             }
 
     def delete_entry_projection(self, entry_id: str) -> dict[str, Any]:
@@ -2476,14 +2364,6 @@ class Database:
                     (entry_id, entry_id),
                 ).fetchall()
             ]
-            chat_session_ids = [
-                row["id"]
-                for row in conn.execute(
-                    """SELECT id FROM web_chat_sessions
-                       WHERE scope='entry' AND context_entry_id=?""",
-                    (entry_id,),
-                ).fetchall()
-            ]
             purposes = [
                 dict(row)
                 for row in conn.execute(
@@ -2507,12 +2387,6 @@ class Database:
                    WHERE entry_id=?""",
                 (entry_id,),
             )
-            conn.execute(
-                """UPDATE web_chat_sessions
-                   SET scope='library', context_entry_id=NULL, updated_at=?
-                   WHERE scope='entry' AND context_entry_id=?""",
-                (iso_now(), entry_id),
-            )
             conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
         return {
             "topics": topic_sources,
@@ -2520,7 +2394,6 @@ class Database:
             "reminders": reminders,
             "relations": relations,
             "purposes": purposes,
-            "chat_session_ids": chat_session_ids,
         }
 
     def restore_entry_dependencies(
@@ -2582,14 +2455,6 @@ class Database:
                     """INSERT OR REPLACE INTO purposes
                        (id, entry_id, data_json, created_at) VALUES (?, ?, ?, ?)""",
                     (item["id"], entry_id, item["data_json"], item["created_at"]),
-                )
-            session_ids = [str(value) for value in snapshot.get("chat_session_ids", [])]
-            for session_id in session_ids:
-                conn.execute(
-                    """UPDATE web_chat_sessions
-                       SET scope='entry', context_entry_id=?, updated_at=?
-                       WHERE id=? AND scope='library' AND context_entry_id IS NULL""",
-                    (entry_id, iso_now(), session_id),
                 )
         return {"creator_ids": list(dict.fromkeys(restored_creators))}
 
@@ -3583,39 +3448,22 @@ class Database:
         conn.execute(
             """INSERT INTO topic_artifacts
                (id, topic_id, kind, title, content_markdown, source_revision,
-                source_revisions_json, status, model, prompt_version, prompt_tokens,
-                completion_tokens, total_tokens, user_authored, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_revisions_json, status, prompt_version, user_authored,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title, content_markdown=excluded.content_markdown,
                 source_revision=excluded.source_revision,
                 source_revisions_json=excluded.source_revisions_json,
-                status=excluded.status, model=excluded.model,
-                prompt_version=excluded.prompt_version,
-                prompt_tokens=excluded.prompt_tokens,
-                completion_tokens=excluded.completion_tokens,
-                total_tokens=excluded.total_tokens, updated_at=excluded.updated_at""",
+                status=excluded.status, prompt_version=excluded.prompt_version,
+                updated_at=excluded.updated_at""",
             (
-                artifact.id,
-                artifact.topic_id,
-                artifact.kind,
-                artifact.title,
-                artifact.content_markdown,
-                artifact.source_revision,
-                json.dumps(
-                    [item.model_dump(mode="json") for item in artifact.source_revisions],
-                    ensure_ascii=False,
-                    default=str,
-                ),
-                artifact.status,
-                artifact.model,
-                artifact.prompt_version,
-                artifact.prompt_tokens,
-                artifact.completion_tokens,
-                artifact.total_tokens,
-                int(artifact.user_authored),
-                artifact.created_at.isoformat(),
-                artifact.updated_at.isoformat(),
+                artifact.id, artifact.topic_id, artifact.kind, artifact.title,
+                artifact.content_markdown, artifact.source_revision,
+                json.dumps([item.model_dump(mode="json") for item in artifact.source_revisions],
+                           ensure_ascii=False, default=str),
+                artifact.status, artifact.prompt_version, int(artifact.user_authored),
+                artifact.created_at.isoformat(), artifact.updated_at.isoformat(),
             ),
         )
 
@@ -3694,128 +3542,6 @@ class Database:
             ).fetchall()
         return [self._topic_artifact_from_row(row) for row in rows]
 
-    def create_chat_session(
-        self,
-        *,
-        title: str = "新对话",
-        scope: str = "library",
-        context_entry_id: str | None = None,
-        context_topic_id: str | None = None,
-    ) -> ChatSession:
-        session_id = uuid.uuid4().hex
-        now = iso_now()
-        with self.connect() as conn:
-            conn.execute(
-                """INSERT INTO web_chat_sessions
-                   (id, title, scope, context_entry_id, context_topic_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, title, scope, context_entry_id, context_topic_id, now, now),
-            )
-        return self.get_chat_session(session_id)
-
-    def get_chat_session(self, session_id: str) -> ChatSession:
-        with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM web_chat_sessions WHERE id=?", (session_id,)
-            ).fetchone()
-        if not row:
-            raise KeyError(f"对话不存在：{session_id}")
-        return self._chat_session_from_row(row)
-
-    def list_chat_sessions(self) -> list[ChatSession]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM web_chat_sessions ORDER BY updated_at DESC"
-            ).fetchall()
-        return [self._chat_session_from_row(row) for row in rows]
-
-    def update_chat_session(
-        self,
-        session_id: str,
-        *,
-        title: str | None = None,
-        scope: str | None = None,
-        context_entry_id: str | None = None,
-        context_topic_id: str | None = None,
-        update_context: bool = False,
-    ) -> ChatSession:
-        current = self.get_chat_session(session_id)
-        with self.connect() as conn:
-            conn.execute(
-                """UPDATE web_chat_sessions
-                   SET title=?, scope=?, context_entry_id=?, context_topic_id=?, updated_at=?
-                   WHERE id=?""",
-                (
-                    title if title is not None else current.title,
-                    scope if scope is not None else current.scope,
-                    context_entry_id if update_context else current.context_entry_id,
-                    context_topic_id if update_context else current.context_topic_id,
-                    iso_now(),
-                    session_id,
-                ),
-            )
-        return self.get_chat_session(session_id)
-
-    def delete_chat_session(self, session_id: str) -> bool:
-        with self.connect() as conn:
-            cursor = conn.execute("DELETE FROM web_chat_sessions WHERE id=?", (session_id,))
-        return cursor.rowcount > 0
-
-    def add_chat_message(
-        self,
-        session_id: str,
-        role: str,
-        content: str,
-        *,
-        citations: list[Citation] | None = None,
-        model: str | None = None,
-        prompt_tokens: int | None = None,
-        completion_tokens: int | None = None,
-        total_tokens: int | None = None,
-    ) -> ChatMessage:
-        now = iso_now()
-        with self.connect() as conn:
-            cursor = conn.execute(
-                """INSERT INTO web_chat_messages
-                   (session_id, role, content, citations_json, model,
-                    prompt_tokens, completion_tokens, total_tokens, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    role,
-                    content,
-                    json.dumps(
-                        [item.model_dump(mode="json") for item in (citations or [])],
-                        ensure_ascii=False,
-                    ),
-                    model,
-                    prompt_tokens,
-                    completion_tokens,
-                    total_tokens,
-                    now,
-                ),
-            )
-            message_id = int(cursor.lastrowid)
-            conn.execute(
-                "UPDATE web_chat_sessions SET updated_at=? WHERE id=?",
-                (now, session_id),
-            )
-            row = conn.execute(
-                "SELECT * FROM web_chat_messages WHERE id=?", (message_id,)
-            ).fetchone()
-        return self._chat_message_from_row(row)
-
-    def list_chat_messages(self, session_id: str, *, limit: int = 200) -> list[ChatMessage]:
-        self.get_chat_session(session_id)
-        with self.connect() as conn:
-            rows = conn.execute(
-                """SELECT * FROM (
-                       SELECT * FROM web_chat_messages WHERE session_id=?
-                       ORDER BY id DESC LIMIT ?
-                   ) ORDER BY id""",
-                (session_id, limit),
-            ).fetchall()
-        return [self._chat_message_from_row(row) for row in rows]
 
     def entries_with_expired_media(self, now: datetime | None = None) -> list[EntryRecord]:
         timestamp = (now or utc_now()).isoformat()
@@ -4019,39 +3745,8 @@ class Database:
                 for item in json.loads(row["source_revisions_json"])
             ],
             status=row["status"],
-            model=row["model"],
             prompt_version=row["prompt_version"],
-            prompt_tokens=row["prompt_tokens"],
-            completion_tokens=row["completion_tokens"],
-            total_tokens=row["total_tokens"],
             user_authored=bool(row["user_authored"]),
             created_at=parse_datetime(row["created_at"]),
             updated_at=parse_datetime(row["updated_at"]),
-        )
-
-    @staticmethod
-    def _chat_session_from_row(row: sqlite3.Row) -> ChatSession:
-        return ChatSession(
-            id=row["id"],
-            title=row["title"],
-            scope=row["scope"],
-            context_entry_id=row["context_entry_id"],
-            context_topic_id=row["context_topic_id"],
-            created_at=parse_datetime(row["created_at"]),
-            updated_at=parse_datetime(row["updated_at"]),
-        )
-
-    @staticmethod
-    def _chat_message_from_row(row: sqlite3.Row) -> ChatMessage:
-        return ChatMessage(
-            id=row["id"],
-            session_id=row["session_id"],
-            role=row["role"],
-            content=row["content"],
-            citations=[Citation.model_validate(item) for item in json.loads(row["citations_json"])],
-            model=row["model"],
-            prompt_tokens=row["prompt_tokens"],
-            completion_tokens=row["completion_tokens"],
-            total_tokens=row["total_tokens"],
-            created_at=parse_datetime(row["created_at"]),
         )

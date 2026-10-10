@@ -2,87 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
-import httpx
 import pytest
 
-from douyin_wiki.adapters.chat import OpenAICompatibleChatProvider
-from douyin_wiki.config import LLMSettings
 from douyin_wiki.errors import ExternalToolError
 from douyin_wiki.models import AuthCheckResult, CaptureRequest, JobStatus
 from douyin_wiki.webapp.app import create_app
 from scripts.verify_review_web_races import verify_case
-from tests.support.web import FakeChatProvider, _web_fixture, local_client
-
-
-def _provider(monkeypatch, response_text, requests):
-    client_type = httpx.AsyncClient
-
-    def respond(request):
-        requests.append(request)
-        return httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, text=response_text
-        )
-
-    transport = httpx.MockTransport(respond)
-    monkeypatch.setattr("douyin_wiki.adapters.chat.get_secret", lambda _: "")
-    monkeypatch.setattr(
-        "douyin_wiki.adapters.chat.httpx.AsyncClient",
-        lambda **kwargs: client_type(transport=transport, **kwargs),
-    )
-    return OpenAICompatibleChatProvider(
-        LLMSettings(base_url="http://127.0.0.1:8000/v1", model="mock", max_retries=2)
-    )
-
-
-async def test_chat_partial_upstream_eof_is_an_error_without_replaying_tokens(monkeypatch):
-    requests = []
-    provider = _provider(
-        monkeypatch, 'data: {"choices":[{"delta":{"content":"只有半句"}}]}\n\n', requests
-    )
-    pieces = []
-    with pytest.raises(ExternalToolError):
-        async for chunk in provider.stream([{"role": "user", "content": "提问"}]):
-            pieces.append(chunk.text)
-    assert pieces == ["只有半句"]
-    assert len(requests) == 1
-
-
-@pytest.mark.parametrize(
-    "ending",
-    [
-        "data: [DONE]\n\n",
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
-    ],
-    ids=["done-marker", "finish-reason"],
-)
-async def test_chat_explicit_completion_preserves_text_and_usage(monkeypatch, ending):
-    requests = []
-    provider = _provider(
-        monkeypatch,
-        'data: {"choices":[{"delta":{"content":"完整回答"}}]}\n\n'
-        'data: {"choices":[],"usage":{"total_tokens":7}}\n\n' + ending,
-        requests,
-    )
-    chunks = [chunk async for chunk in provider.stream([{"role": "user", "content": "提问"}])]
-    assert "".join(chunk.text for chunk in chunks) == "完整回答"
-    assert chunks[-1].usage == {"total_tokens": 7}
-
-
-def test_chat_partial_eof_api_emits_error_and_preserves_partial_history(tmp_path, monkeypatch):
-    config, service = _web_fixture(tmp_path)
-    provider = _provider(
-        monkeypatch, 'data: {"choices":[{"delta":{"content":"只有半句"}}]}\n\n', []
-    )
-    app = create_app(config, service=service, chat_provider=provider, start_watcher=False)
-    with local_client(app) as client:
-        session = client.post("/api/chat/sessions", json={"scope": "library"}).json()
-        response = client.post(
-            f"/api/chat/sessions/{session['id']}/messages", json={"content": "提问"}
-        )
-        history = client.get(f"/api/chat/sessions/{session['id']}").json()
-    assert "event: error" in response.text
-    assert "event: done" not in response.text
-    assert history["messages"][-1]["content"] == "只有半句"
+from tests.support.web import _web_fixture
 
 
 @pytest.mark.parametrize("channel", ["douyin", "video"])
@@ -131,7 +57,7 @@ async def test_foreign_auth_cancel_wins_at_await_boundaries(
     monkeypatch.setattr(service, "authenticate_douyin", authenticate)
     monkeypatch.setattr(service, "authenticate_video", authenticate)
     apps = [
-        create_app(config, service=service, chat_provider=FakeChatProvider(), start_watcher=False)
+        create_app(config, service=service,  start_watcher=False)
         for _ in range(2)
     ]
     first, second = (app.state.operations.auth for app in apps)
@@ -249,26 +175,3 @@ async def test_owner_close_stops_login_task_after_foreign_manager_cancels(tmp_pa
         release.set()
         await owner.close()
         await foreign.close()
-
-
-@pytest.mark.parametrize("reason", ["length", "content_filter"])
-async def test_chat_incomplete_finish_reason_is_error_without_replaying_partial(
-    monkeypatch, reason
-):
-    import json
-
-    requests = []
-    provider = _provider(
-        monkeypatch,
-        'data: {"choices":[{"delta":{"content":"只有半句"}}]}\n\n'
-        + "data: "
-        + json.dumps({"choices": [{"delta": {}, "finish_reason": reason}]})
-        + "\n\ndata: [DONE]\n\n",
-        requests,
-    )
-    pieces = []
-    with pytest.raises(ExternalToolError):
-        async for chunk in provider.stream([{"role": "user", "content": "提问"}]):
-            pieces.append(chunk.text)
-    assert pieces == ["只有半句"]
-    assert len(requests) == 1

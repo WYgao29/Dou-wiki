@@ -72,7 +72,6 @@ def test_mcp_exposes_public_tools() -> None:
         "list_topics",
         "set_topic_sources",
         "search_topic",
-        "generate_topic_artifact",
         "save_topic_note",
         "get_entry",
         "add_inspiration",
@@ -257,7 +256,6 @@ async def test_mcp_gateway_legacy_notes_do_not_require_resolution(service, monke
     completed = await Worker(service).run_once()
     assert completed.status == JobStatus.COMPLETED
     assert completed.result["warnings"] == []
-
 
 
 @pytest.mark.asyncio

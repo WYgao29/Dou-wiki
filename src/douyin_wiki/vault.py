@@ -848,8 +848,8 @@ class VaultWriter:
             f"## 自定义指令\n\n{topic.instructions or '无。'}\n\n"
             "## 来源\n\n"
             + ("\n".join(source_lines) if source_lines else "暂无来源。")
-            + "\n\n## 研究成果\n\n"
-            + ("\n".join(artifact_lines) if artifact_lines else "尚未生成成果。")
+            + "\n\n## 专题笔记\n\n"
+            + ("\n".join(artifact_lines) if artifact_lines else "暂无笔记。")
             + "\n"
         )
         self._atomic_write(index_path, index)
@@ -873,7 +873,7 @@ class VaultWriter:
             artifact_path = topic_dir / "artifacts" / f"{artifact.id}.md"
             artifact_document = self._frontmatter(
                 {
-                    "type": "topic_note" if artifact.user_authored else "topic_artifact",
+                    "type": "topic_note",
                     "topic_id": topic.id,
                     "artifact_id": artifact.id,
                     "artifact_kind": artifact.kind,
@@ -1506,7 +1506,7 @@ class VaultWriter:
                     artifact = TopicArtifact.model_validate(
                         {**metadata, "content_markdown": content}
                     )
-                    expected_type = "topic_note" if artifact.user_authored else "topic_artifact"
+                    expected_type = "topic_note"
                     if artifact_frontmatter.get("type") != expected_type:
                         raise ValueError("artifact.type 与 user_authored 不一致")
                     status_value = artifact_frontmatter.get("status")

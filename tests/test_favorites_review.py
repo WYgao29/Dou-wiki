@@ -1,6 +1,5 @@
 """Regression checks for legacy choices and stable read-only inventory baselines."""
 
-import json
 from contextlib import contextmanager
 
 from tests.test_favorites import A, B
@@ -11,16 +10,6 @@ def legacy_choices(service, job_id):
     """Emulate defaults persisted before explicit choice provenance was recorded."""
     with service.database.connect() as conn:
         conn.execute("UPDATE favorites_items SET selected=1 WHERE parent_id=?", (job_id,))
-
-
-def forget_baseline(service, job_id):
-    snapshot = service.favorites.store.load(job_id)["snapshot"]
-    snapshot.pop("_baseline_work_ids", None)
-    with service.database.connect() as conn:
-        conn.execute(
-            "UPDATE favorites_runs SET snapshot_json=? WHERE parent_id=?",
-            (json.dumps(snapshot), job_id),
-        )
 
 
 async def test_incremental_does_not_inherit_unconfirmed_legacy_defaults(service):
@@ -58,21 +47,9 @@ async def test_confirmed_legacy_choices_can_be_inherited(service):
     }
 
 
-async def test_initialize_freezes_legacy_baseline_before_older_history_is_deleted(service):
-    first = await read_inventory(service)
-    second = await read_inventory(service)
-    forget_baseline(service, second)
-    service.database.initialize()
-    assert service.favorites.store.load(second)["snapshot"].get("_baseline_work_ids") == [A, B]
-    with service.database.connect() as conn:
-        conn.execute("DELETE FROM favorites_runs WHERE parent_id=?", (first,))
-    assert service.favorites.get(second)["summary"]["new"] == 0
-
-
-async def test_legacy_inventory_detail_does_not_write_or_take_a_write_lock(service, monkeypatch):
+async def test_inventory_detail_does_not_write_or_take_a_write_lock(service, monkeypatch):
     await read_inventory(service)
     second = await read_inventory(service)
-    forget_baseline(service, second)
     statements = []
     original_connect = service.database.connect
 
@@ -87,20 +64,6 @@ async def test_legacy_inventory_detail_does_not_write_or_take_a_write_lock(servi
     assert not any(
         sql.upper().startswith(("UPDATE FAVORITES_RUNS", "BEGIN IMMEDIATE")) for sql in statements
     )
-
-
-async def test_schema_upgrade_preserves_legacy_choices_without_trusting_them(service):
-    first = await read_inventory(service)
-    legacy_choices(service, first)
-    with service.database.connect() as conn:
-        columns = {r["name"] for r in conn.execute("PRAGMA table_info(favorites_items)")}
-        if "selection_explicit" in columns:
-            conn.execute("ALTER TABLE favorites_items DROP COLUMN selection_explicit")
-        conn.execute("PRAGMA user_version=13")
-    service.database.initialize()
-    assert service.favorites.get(first)["summary"]["selected"] == 2
-    second = await read_inventory(service)
-    assert service.favorites.get(second)["summary"]["selected"] == 0
 
 
 async def test_inheritance_notice_does_not_count_work_already_in_the_library(tmp_path):

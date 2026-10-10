@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from douyin_wiki.models import CaptureRequest, JobStatus  # noqa: E402
 from douyin_wiki.webapp.app import WEB_VERSION, create_app  # noqa: E402
 from scripts.verify_readwise_cleanup import contrast  # noqa: E402
-from tests.support.web import FakeChatProvider, _web_fixture, local_client  # noqa: E402
+from tests.support.web import _web_fixture, local_client  # noqa: E402
 
 
 async def verify():
@@ -31,7 +31,7 @@ async def verify():
         )
         topic_id = service.create_topic("字体请求验证", ["dy-123"])["topic"]["id"]
         app = create_app(
-            config, service=service, chat_provider=FakeChatProvider(), start_watcher=False
+            config, service=service,  start_watcher=False
         )
         with local_client(app) as client:
             async with async_playwright() as p:

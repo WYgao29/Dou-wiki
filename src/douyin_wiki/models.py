@@ -707,20 +707,6 @@ class LibraryItem(BaseModel):
     body_markdown: str = ""
 
 
-class Citation(BaseModel):
-    entry_id: str
-    article_title: str
-    snippet: str
-    timestamp_ms: int | None = None
-    image_index: int | None = Field(default=None, ge=1)
-    original_url: str = ""
-
-    @field_validator("original_url")
-    @classmethod
-    def safe_original_url(cls, value: str) -> str:
-        return value if value.startswith(("https://", "http://")) else ""
-
-
 class SourceRevision(BaseModel):
     entry_id: str
     updated_at: datetime
@@ -735,15 +721,7 @@ class TopicSource(BaseModel):
     title: str = ""
 
 
-TopicArtifactKind = Literal[
-    "overview",
-    "comparison",
-    "evidence_map",
-    "consensus",
-    "decision_brief",
-    "faq",
-    "note",
-]
+TopicArtifactKind = Literal["note"]
 
 
 class TopicArtifact(BaseModel):
@@ -756,11 +734,11 @@ class TopicArtifact(BaseModel):
     source_revisions: list[SourceRevision] = Field(default_factory=list)
     status: Literal["current", "needs_update"] = "current"
     model: str | None = None
-    prompt_version: str = "topic-research-v1"
+    prompt_version: str = "user-note-v1"
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
-    user_authored: bool = False
+    user_authored: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -774,29 +752,6 @@ class ResearchTopic(BaseModel):
     source_revision: str
     created_at: datetime
     updated_at: datetime
-
-
-class ChatSession(BaseModel):
-    id: str
-    title: str
-    scope: Literal["library", "entry", "topic"] = "library"
-    context_entry_id: str | None = None
-    context_topic_id: str | None = None
-    created_at: datetime
-    updated_at: datetime
-
-
-class ChatMessage(BaseModel):
-    id: int | None = None
-    session_id: str
-    role: Literal["user", "assistant", "system"]
-    content: str
-    citations: list[Citation] = Field(default_factory=list)
-    model: str | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | None = None
-    created_at: datetime
 
 
 class InspirationDraft(BaseModel):

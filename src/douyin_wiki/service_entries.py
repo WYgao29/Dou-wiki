@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import uuid
@@ -9,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import (
-    ExternalToolError,
+    FeatureDisabledError,
     JobStateError,
 )
 from .models import (
@@ -293,138 +292,11 @@ class EntriesMixin:
             entry_ids=entry_ids,
         )
 
-    def _topic_context(
-        self, topic: ResearchTopic
-    ) -> tuple[list[dict[str, Any]], list[SourceRevision]]:
-        enabled_sources = [source for source in topic.sources if source.enabled]
-        if not enabled_sources:
-            raise ValueError("当前专题没有启用的来源")
-        enabled_entries = [self.database.get_entry(source.entry_id) for source in enabled_sources]
-        _, revisions = self.topic_revision([(entry, True) for entry in enabled_entries])
-        per_source_budget = max(1200, min(14_000, 52_000 // len(enabled_sources)))
-        contexts: list[dict[str, Any]] = []
-        for source, entry in zip(enabled_sources, enabled_entries, strict=True):
-            data = self.database.get_entry_data(source.entry_id)
-            analysis = data.get("analysis", {})
-            context = {
-                "entry_id": entry.id,
-                "title": entry.title,
-                "original_url": entry.original_url,
-                "inspirations": [item.model_dump(mode="json") for item in entry.inspirations],
-                "summary": analysis.get("one_liner") or entry.summary,
-                "takeaways": analysis.get("takeaways", []),
-                "content_card": analysis.get("content_card", {}),
-                "chapters": analysis.get("chapters", []),
-                "knowledge_atoms": [
-                    atom for atom in analysis.get("knowledge_atoms", []) if not atom.get("stale")
-                ],
-            }
-            serialized = json.dumps(context, ensure_ascii=False, default=str)
-            if len(serialized) > per_source_budget:
-                context = {
-                    "entry_id": entry.id,
-                    "title": entry.title,
-                    "original_url": entry.original_url,
-                    "inspirations": context["inspirations"][:3],
-                    "summary": context["summary"],
-                    "takeaways": context["takeaways"][:3],
-                    "chapters": context["chapters"][:6],
-                    "knowledge_atoms": context["knowledge_atoms"][:5],
-                }
-            contexts.append(context)
-        return contexts, revisions
 
     async def generate_topic_artifact(
-        self,
-        topic_id: str,
-        kind: TopicArtifactKind,
-        *,
-        provider: Any | None = None,
+        self, topic_id: str, kind: TopicArtifactKind, *, provider: Any | None = None,
     ) -> dict[str, Any]:
-        labels = {
-            "overview": "专题总览",
-            "comparison": "跨来源对比表",
-            "evidence_map": "证据地图",
-            "consensus": "共识与分歧",
-            "decision_brief": "决策简报",
-            "faq": "专题 FAQ",
-        }
-        if kind == "note":
-            raise ValueError("用户笔记请使用 save_topic_note 保存")
-        topic = await asyncio.to_thread(self.refresh_topic, topic_id)
-        contexts, revisions = self._topic_context(topic)
-        if provider is None:
-            from .adapters.chat import OpenAICompatibleChatProvider
-
-            provider = OpenAICompatibleChatProvider(self.config.llm)
-        system = (
-            "你是抖库的专题研究助手。只能使用给出的专题来源，不得使用外部知识或全库其他文章。"
-            "区分作品原话、作者观点、测试观察和 AI 推断。每项重要结论必须在句末使用"
-            "〔entry_id〕标注来源；证据不足时明确写“当前专题没有相关证据”。输出中文 Markdown。"
-        )
-        request = {
-            "artifact": labels[kind],
-            "topic_title": topic.title,
-            "research_goal": topic.goal,
-            "custom_instructions": topic.instructions,
-            "required_sections": {
-                "overview": ["研究问题", "来源角色", "核心结论"],
-                "comparison": ["Markdown 对比表：观点、依据、适用条件、局限"],
-                "evidence_map": ["主张", "支持来源", "反对来源", "证据不足"],
-                "consensus": ["共识", "分歧", "分歧成立的条件", "未知信息"],
-                "decision_brief": ["可选方案", "支持依据", "风险", "未知信息", "下一步行动"],
-                "faq": ["只收录来源能够回答的问题与答案"],
-            }[kind],
-            "sources": contexts,
-        }
-        messages = [
-            {"role": "system", "content": system},
-            {
-                "role": "user",
-                "content": json.dumps(request, ensure_ascii=False, default=str),
-            },
-        ]
-        answer = ""
-        usage: dict[str, int | None] = {}
-        async for chunk in provider.stream(messages):
-            answer += chunk.text
-            if chunk.usage:
-                usage = chunk.usage
-        if not answer.strip():
-            raise ExternalToolError("模型没有返回专题成果")
-        enabled_ids = {source.entry_id for source in topic.sources if source.enabled}
-        if not any(entry_id in answer for entry_id in enabled_ids):
-            raise ExternalToolError("专题成果缺少来源标注，未保存；请重试")
-
-        def publish() -> dict[str, Any]:
-            with self.vault.entry_operations_locked():
-                latest_topic = self.refresh_topic(topic_id)
-                now = utc_now()
-                artifact = TopicArtifact(
-                    id=f"{kind}-{uuid.uuid4().hex[:12]}",
-                    topic_id=topic.id,
-                    kind=kind,
-                    title=labels[kind],
-                    content_markdown=answer.strip(),
-                    source_revision=topic.source_revision,
-                    source_revisions=revisions,
-                    status=(
-                        "current"
-                        if latest_topic.source_revision == topic.source_revision
-                        else "needs_update"
-                    ),
-                    model=provider.model or None,
-                    prompt_tokens=usage.get("prompt_tokens"),
-                    completion_tokens=usage.get("completion_tokens"),
-                    total_tokens=usage.get("total_tokens"),
-                    created_at=now,
-                    updated_at=now,
-                )
-                artifact = self.database.save_topic_artifact(artifact)
-                self.persist_topic(latest_topic)
-            return artifact.model_dump(mode="json")
-
-        return await asyncio.to_thread(publish)
+        raise FeatureDisabledError("专题自动生成已停用")
 
     def save_topic_note(
         self,
@@ -446,7 +318,12 @@ class EntriesMixin:
         self, topic_id: str, literal: str, title: str
     ) -> dict[str, Any]:
         topic = self.refresh_topic(topic_id)
-        _, revisions = self._topic_context(topic)
+        sources = [source for source in topic.sources if source.enabled]
+        if not sources:
+            raise ValueError("当前专题没有启用的来源")
+        _, revisions = self.topic_revision(
+            [(self.database.get_entry(source.entry_id), True) for source in sources]
+        )
         now = utc_now()
         artifact = TopicArtifact(
             id=f"note-{uuid.uuid4().hex[:12]}",

@@ -361,7 +361,7 @@ def register_operation_routes(
 
     @app.get("/api/system/model-health")
     async def model_health():
-        return await operations.model_health()
+        raise HTTPException(status_code=410, detail="模型健康检查已停用")
 
     async def collection_call(method, *args, **kwargs):
         try:
