@@ -211,6 +211,10 @@ class DouyinWikiService(
             adapter = self.favorites.adapter
             kwargs = {}
             source = str(self.config.browser_profile_dir)
+        elif scope == "collection":
+            adapter = self.collections.adapter
+            kwargs = {}
+            source = str(self.config.browser_profile_dir)
         elif scope == "creator":
             adapter = self.creator_adapter
             kwargs = {}
@@ -262,6 +266,8 @@ class DouyinWikiService(
         self._apply_live_creator_selection(job)
         if job.kind == "favorites_import":
             job = self.favorites.refresh(job.id)
+        elif job.kind == "collection_import":
+            job = self.collections.refresh(job.id)
         if job.status == JobStatus.NEEDS_REVIEW:
             job.result["review_issues"] = [
                 issue.model_dump(mode="json")
@@ -275,6 +281,8 @@ class DouyinWikiService(
             self._apply_live_creator_selection(job)
             if job.kind == "favorites_import":
                 jobs[index] = self.favorites.refresh(job.id)
+            elif job.kind == "collection_import":
+                jobs[index] = self.collections.refresh(job.id)
         return jobs
 
     def _apply_live_creator_selection(self, job: JobRecord) -> None:
@@ -349,8 +357,7 @@ class DouyinWikiService(
             remove_artifacts={"analysis_candidate", "user_dismissed", "cancel_requested"},
             expected_updated_at=job.updated_at,
         )
-        creator_context = updated.artifacts.get("creator_context") or {}
-        self.refresh_creator_parent(str(creator_context.get("parent_job_id") or ""))
+        self.refresh_job_parents(updated.id)
         return updated
 
     def cancel_job(self, job_id: str) -> JobRecord:
@@ -359,35 +366,49 @@ class DouyinWikiService(
 
     def _cancel_job_locked(self, job_id: str) -> JobRecord:
         job = self.database.request_cancel(job_id)
-        if job.kind in {"creator_import", "favorites_import"}:
-            others = [
-                value
-                for value in self.database.list_jobs(limit=None)
-                if value.id != job_id
-                and value.status
-                not in {
-                    JobStatus.COMPLETED,
-                    JobStatus.COMPLETED_WITH_WARNINGS,
-                    JobStatus.CANCELLED,
-                    JobStatus.FAILED,
-                }
-            ]
-            shared = {child for value in others for child in value.result.get("child_job_ids", [])}
-            for child_id in job.result.get("child_job_ids", []):
-                if child_id not in shared:
-                    with suppress(JobStateError):
+        if job.kind in {"creator_import", "favorites_import", "collection_import"}:
+            terminal = {
+                JobStatus.COMPLETED,
+                JobStatus.COMPLETED_WITH_WARNINGS,
+                JobStatus.CANCELLED,
+                JobStatus.FAILED,
+            }
+            for child_id in self.database.batch_child_ids(job_id):
+                with suppress(JobStateError):
+                    child = self.database.get_job(child_id)
+                    owned_by_batch = any(
+                        (child.artifacts.get(key) or {}).get("parent_job_id")
+                        for key in ("creator_context", "favorites_context", "collection_context")
+                    )
+                    parents = [
+                        self.database.get_job(pid)
+                        for pid in self.database.capture_parent_ids(child_id)
+                        if pid != job_id
+                    ]
+                    shared = any(
+                        p.status not in terminal
+                        and not p.artifacts.get("cancel_requested")
+                        and not p.artifacts.get("user_deleted")
+                        for p in parents
+                    )
+                    if owned_by_batch and not shared:
                         self.database.request_cancel(child_id)
+                        self.refresh_job_parents(child_id)
         self.refresh_job_parents(job_id)
         if job.kind == "favorites_import":
             self.favorites.refresh(job_id)
         elif job.kind == "creator_import":
             self.refresh_creator_parent(job_id)
+        elif job.kind == "collection_import":
+            self.collections.refresh(job_id)
         return self.database.get_job(job_id)
 
     def refresh_job_parents(self, job_id: str) -> None:
         self.favorites.refresh_for_child(job_id)
-        for parent in self.database.list_jobs(limit=None):
-            if parent.kind == "creator_import" and job_id in parent.result.get("child_job_ids", []):
+        self.collections.refresh_for_child(job_id)
+        for parent_id in self.database.capture_parent_ids(job_id):
+            parent = self.database.get_job(parent_id)
+            if parent.kind == "creator_import":
                 self.refresh_creator_parent(parent.id)
 
     def delete_job(self, job_id: str) -> None:
@@ -425,13 +446,13 @@ class DouyinWikiService(
     async def process_claimed_job(self, job: JobRecord) -> JobRecord:
         cancelled = self.finish_cancel_if_requested(job)
         if cancelled is not None:
-            self.favorites.refresh_for_child(cancelled.id)
-            context = cancelled.artifacts.get("creator_context") or {}
-            self.refresh_creator_parent(str(context.get("parent_job_id") or ""))
+            self.refresh_job_parents(cancelled.id)
             return cancelled
         try:
             if job.kind == "favorites_import":
                 outcome = await self.favorites.process(job)
+            elif job.kind == "collection_import":
+                outcome = await self.collections.process(job)
             elif job.kind == "creator_import":
                 outcome = await self.process_creator_import(job)
             elif job.kind == "reanalyze":
@@ -451,6 +472,8 @@ class DouyinWikiService(
             auth_scope = "video" if is_video else ("creator" if is_creator else "image_note")
             if job.kind == "favorites_import":
                 auth_scope = "favorites"
+            elif job.kind == "collection_import":
+                auth_scope = "collection"
             outcome = self.record_job_outcome(
                 job,
                 status=JobStatus.NEEDS_AUTH,
@@ -488,7 +511,12 @@ class DouyinWikiService(
                 error_message=str(exc),
                 unlock=True,
             )
-        self.favorites.refresh_for_child(outcome.id)
+        self.refresh_job_parents(outcome.id)
+        if outcome.status in {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}:
+            entry_id = str(outcome.result.get("entry_id") or "")
+            if entry_id:
+                for creator_id in self.database.mark_capture_creator_links(outcome.id, entry_id):
+                    self.refresh_creator_documents(creator_id, action="work-imported")
         creator_context = outcome.artifacts.get("creator_context")
         if creator_context:
             if outcome.status in {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}:

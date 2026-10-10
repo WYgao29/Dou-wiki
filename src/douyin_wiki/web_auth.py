@@ -49,14 +49,20 @@ class WebAuthManager:
 
     def _update_active(self, session_id: str, **changes) -> dict[str, Any] | None:
         return self._database().compare_and_update_auth_session(
-            session_id, expected_stages=ACTIVE_STAGES, **changes,
+            session_id,
+            expected_stages=ACTIVE_STAGES,
+            **changes,
         )
 
     def _finish_active(self, session_id: str, **changes) -> dict[str, Any]:
         return self._update_active(session_id, **changes) or self.get(session_id)
 
     def affected_count(self, channel: str) -> int:
-        scopes = {"video"} if channel == "video" else {"image_note", "creator", "favorites"}
+        scopes = (
+            {"video"}
+            if channel == "video"
+            else {"image_note", "creator", "favorites", "collection"}
+        )
         return sum(
             1
             for job in self._database().list_jobs(status=JobStatus.NEEDS_AUTH, limit=None)
@@ -96,7 +102,9 @@ class WebAuthManager:
                     complete=True,
                 )
             session = await self._start_locked(
-                channel, lock, trigger_job_id=trigger_job_id,
+                channel,
+                lock,
+                trigger_job_id=trigger_job_id,
                 timeout_seconds=timeout_seconds,
             )
             return session
@@ -271,7 +279,7 @@ class WebAuthManager:
             await self.sleep(min(poll, remaining))
 
     async def _run_douyin(self, session_id: str, *, timeout_seconds: int) -> dict[str, Any]:
-        requested = {"image_note", "creator", "favorites"}
+        requested = {"image_note", "creator", "favorites", "collection"}
         ready = await self._ready_douyin_scopes(session_id, requested)
         if requested <= ready:
             return self._finish_success(session_id, ready)

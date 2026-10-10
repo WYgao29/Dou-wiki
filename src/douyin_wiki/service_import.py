@@ -414,6 +414,7 @@ class ImportMixin:
 
     def refresh_batch_parents(self) -> None:
         self.favorites.refresh_all()
+        self.collections.refresh_all()
         for parent in self.database.list_jobs(
             status=JobStatus.MONITORING,
             kinds={"creator_import"},

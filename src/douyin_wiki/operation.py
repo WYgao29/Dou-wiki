@@ -134,7 +134,12 @@ SECRET_KEY_NAMES = {
 
 
 def stage_for_status(status: JobStatus, *, auth_scope: str | None = None) -> str:
-    if status == JobStatus.NEEDS_AUTH and auth_scope in {"creator", "favorites", "image_note"}:
+    if status == JobStatus.NEEDS_AUTH and auth_scope in {
+        "creator",
+        "favorites",
+        "collection",
+        "image_note",
+    }:
         return "read_source"
     if status == JobStatus.COMPLETED_WITH_WARNINGS:
         return "done"
@@ -143,7 +148,7 @@ def stage_for_status(status: JobStatus, *, auth_scope: str | None = None) -> str
 
 def parent_job_id(job: JobRecord) -> str | None:
     artifacts = job.artifacts or {}
-    for key in ("creator_context", "favorites_context"):
+    for key in ("creator_context", "favorites_context", "collection_context"):
         value = artifacts.get(key) or {}
         parent = value.get("parent_job_id")
         if parent:
@@ -163,6 +168,7 @@ _KIND_PREFIX = {
     "capture": "单条采集",
     "creator_import": "博主批量",
     "favorites_import": "抖音收藏",
+    "collection_import": "抖音合集",
     "reanalyze": "重新分析",
     "media_restore": "媒体恢复",
 }
@@ -209,6 +215,8 @@ def job_display_title(job: JobRecord, *, hints: dict[str, str] | None = None) ->
         subject = _clean_subject(
             result.get("nickname") or artifacts.get("nickname") or hints.get("nickname")
         )
+    elif job.kind == "collection_import":
+        subject = _clean_subject(result.get("collection_name") or hints.get("collection_name"))
     else:
         metadata = artifacts.get("metadata") if isinstance(artifacts.get("metadata"), dict) else {}
         for candidate in (
@@ -292,7 +300,9 @@ def next_action_for(
         }
     if job.status == JobStatus.NEEDS_SELECTION:
         href = (
-            f"/imports/favorites?job={job.id}"
+            f"/imports/collections?job={job.id}"
+            if job.kind == "collection_import"
+            else f"/imports/favorites?job={job.id}"
             if job.kind == "favorites_import"
             else f"/imports/creators?job={job.id}"
         )

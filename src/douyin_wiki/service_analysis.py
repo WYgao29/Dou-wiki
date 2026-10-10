@@ -16,6 +16,7 @@ from .errors import (
 )
 from .gateway_protocol import (
     GatewayProtocol,
+    _batch_contexts,
     build_compact_context,
     gateway_phase,
     require_context_revision,
@@ -99,6 +100,7 @@ class AnalysisMixin:
         is_image_note = metadata.get("source_kind") == SourceKind.IMAGE_NOTE.value
         return {
             "job_id": job.id,
+            **_batch_contexts(job),
             "status": job.status.value,
             "phase": job.result.get("phase", "transcript_correction"),
             "gateway_context": job.request.gateway_context.model_dump(mode="json")

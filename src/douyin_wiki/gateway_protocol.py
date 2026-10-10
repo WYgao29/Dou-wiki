@@ -414,7 +414,7 @@ def _batch_contexts(job: JobRecord) -> dict[str, Any]:
     }
     return {
         name: {key: value for key, value in job.artifacts[name].items() if key in allowed}
-        for name in ("favorites_context", "creator_context")
+        for name in ("favorites_context", "creator_context", "collection_context")
         if job.artifacts.get(name)
     }
 

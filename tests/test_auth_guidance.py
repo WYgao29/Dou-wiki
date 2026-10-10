@@ -158,9 +158,7 @@ def make_service(
     image_note = SequenceDouyinAdapter(
         "image_note", image_checks or [auth_result("image_note", ok=False)]
     )
-    creator = SequenceDouyinAdapter(
-        "creator", creator_checks or [auth_result("creator", ok=False)]
-    )
+    creator = SequenceDouyinAdapter("creator", creator_checks or [auth_result("creator", ok=False)])
     service = DouyinWikiService(
         config,
         downloader=video,
@@ -303,9 +301,7 @@ async def test_douyin_channel_retries_only_ready_scopes(tmp_path: Path) -> None:
     creator_job = create_auth_job(service, "creator")
     dialog, lock, clock = FakeDialog(), FakeChannelLock(), FakeClock()
 
-    outcome = await make_coordinator(service, dialog, lock, clock).run(
-        "image_note", image_job.id
-    )
+    outcome = await make_coordinator(service, dialog, lock, clock).run("image_note", image_job.id)
 
     assert outcome.status == "retried"
     assert outcome.retried_job_ids == (image_job.id,)
@@ -313,6 +309,20 @@ async def test_douyin_channel_retries_only_ready_scopes(tmp_path: Path) -> None:
     assert service.database.get_job(creator_job.id).status == JobStatus.NEEDS_AUTH
     assert image_adapter.authenticate_calls == [30]
     assert dialog.confirm_calls == [("douyin", {"image_note": 1, "creator": 1})]
+
+
+async def test_douyin_channel_resumes_ready_collection_without_new_browser(tmp_path):
+    service, _, image, _ = make_service(tmp_path)
+    service.collections.adapter = SequenceDouyinAdapter(
+        "collection", [auth_result("collection", ok=True)]
+    )
+    job = create_auth_job(service, "collection")
+    dialog, lock, clock = FakeDialog(), FakeChannelLock(), FakeClock()
+    outcome = await make_coordinator(service, dialog, lock, clock).run("collection", job.id)
+    assert outcome.retried_job_ids == (job.id,)
+    assert service.database.get_job(job.id).status == JobStatus.QUEUED
+    assert dialog.confirm_calls == []
+    assert image.authenticate_calls == []
 
 
 @pytest.mark.asyncio
@@ -411,9 +421,7 @@ def test_file_channel_lock_deduplicates_douyin_scopes(tmp_path: Path) -> None:
     first = FileChannelLock(tmp_path)
     second = FileChannelLock(tmp_path)
 
-    with first.acquire("douyin") as first_acquired, second.acquire(
-        "douyin"
-    ) as second_acquired:
+    with first.acquire("douyin") as first_acquired, second.acquire("douyin") as second_acquired:
         assert first_acquired is True
         assert second_acquired is False
     with second.acquire("douyin") as acquired_after_release:

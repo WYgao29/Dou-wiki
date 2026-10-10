@@ -20,6 +20,23 @@ from douyin_wiki.models import AnalysisMode, InspirationInput, JobStatus
 from tests.support.gateway import make_gateway_job
 
 
+@pytest.mark.parametrize("protocol", [1, 2])
+def test_collection_context_survives_gateway_protocol_and_events(service, protocol):
+    context = {
+        "collection_id": "7651028428363139126",
+        "collection_name": "项目经理故事汇",
+        "parent_job_id": "parent",
+        "work_id": "7672717300746907078",
+        "ordinal": 1,
+        "batch_silent": True,
+    }
+    job = make_gateway_job(service, artifacts={"collection_context": context})
+    payload = service.get_analysis_context(job.id, gateway_protocol=protocol)
+    assert payload["collection_context"] == context
+    event = service.database.emit_job_event(job.id, JobStatus.AWAITING_AGENT_ANALYSIS, {})
+    assert event.result["collection_context"] == context
+
+
 def test_ocr_projection_filters_nearby_subtitles_and_keeps_late_material():
     artifacts = {
         "metadata": {"source_kind": "video"},

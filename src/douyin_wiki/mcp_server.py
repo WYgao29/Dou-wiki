@@ -62,7 +62,8 @@ douyin-wiki auth video 或 douyin-wiki auth douyin，并在登录后重试；
 博主批量采集调用 capture_douyin_creator。任务显示为“待选择作品”后，调用
 get_creator_inventory 一次读取并展示全部作品，再用 set_creator_work_selection 保存选择；全部作品均已
 选择或跳过后调用 confirm_creator_import；已有选择条件时直接执行，不重复确认。
-带 favorites_context.batch_silent=true 或 creator_context.batch_silent=true 的子任务仍需
+带 favorites_context.batch_silent=true、creator_context.batch_silent=true 或
+collection_context.batch_silent=true 的子任务仍需
 完成校正和分析，但不要逐条向用户发送完成消息；以父任务汇总结果为准。用户任务包含同步时调用
 sync_creator，包含定期同步时由客户端安排，普通一次性任务不扩展为长期订阅。
 专题研究必须使用 create_topic 等专题工具；search_topic 只检索当前启用来源。专题没有相关证据时

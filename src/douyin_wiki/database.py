@@ -475,6 +475,42 @@ class Database:
                     ids.add(row["id"])
         return sorted(ids)
 
+    def batch_child_ids(self, parent_id: str) -> list[str]:
+        """Read actual associations, retaining pre-migration creator snapshots."""
+        with self.connect() as conn:
+            ids = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT child_id FROM favorites_items WHERE parent_id=? "
+                    "AND child_id IS NOT NULL "
+                    "UNION SELECT child_id FROM collection_run_items WHERE parent_id=? "
+                    "AND child_id IS NOT NULL "
+                    "UNION SELECT child_job_id FROM creator_run_items WHERE job_id=? "
+                    "AND child_job_id IS NOT NULL",
+                    (parent_id, parent_id, parent_id),
+                )
+            }
+        parent = self.get_job(parent_id)
+        if parent.kind == "creator_import":
+            ids.update(parent.result.get("child_job_ids", []))
+        return sorted(ids)
+
+    def mark_capture_creator_links(self, child_id: str, entry_id: str) -> list[str]:
+        """Publish every creator relation even when another batch owns the capture."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT creator_id,work_id FROM creator_run_items WHERE child_job_id=?",
+                (child_id,),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE creator_works SET decision='imported',entry_id=?,"
+                    "availability='available' "
+                    "WHERE creator_id=? AND work_id=?",
+                    (entry_id, row[0], row[1]),
+                )
+        return sorted({r[0] for r in rows})
+
     @staticmethod
     def _rebuild_fts_conn(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM chunks_fts")
@@ -1318,6 +1354,8 @@ class Database:
                     event_result["favorites_context"] = favorites_context
                 if creator_context := merged_artifacts.get("creator_context"):
                     event_result["creator_context"] = creator_context
+                if collection_context := merged_artifacts.get("collection_context"):
+                    event_result["collection_context"] = collection_context
                 event_time = iso_now()
                 conn.execute(
                     """UPDATE job_events SET superseded_at=?
@@ -1503,6 +1541,8 @@ class Database:
             event_result["favorites_context"] = favorites_context
         if creator_context := job.artifacts.get("creator_context"):
             event_result["creator_context"] = creator_context
+        if collection_context := job.artifacts.get("collection_context"):
+            event_result["collection_context"] = collection_context
         with self.connect() as conn:
             event_time = iso_now()
             conn.execute(

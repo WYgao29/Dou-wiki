@@ -17,7 +17,7 @@ from .config import AuthGuidanceSettings
 from .errors import BrowserAuthRequiredError, JobStateError
 from .models import AuthCheckResult, JobStatus
 
-AuthScope = Literal["video", "image_note", "creator", "favorites"]
+AuthScope = Literal["video", "image_note", "creator", "favorites", "collection"]
 AuthChannel = Literal["video", "douyin"]
 
 AUTH_DIALOG_SCRIPT = """
@@ -80,11 +80,15 @@ class MacOSDialog:
             image_count = affected_counts.get("image_note", 0)
             creator_count = affected_counts.get("creator", 0)
             favorites_count = affected_counts.get("favorites", 0)
-            total = image_count + creator_count + favorites_count
+            collection_count = affected_counts.get("collection", 0)
+            total = image_count + creator_count + favorites_count + collection_count
             detail = f"图文 {image_count} 个，博主 {creator_count} 个"
             if favorites_count:
                 label = "图文、博主与收藏"
                 detail += f"，收藏 {favorites_count} 个"
+            if collection_count:
+                label = "抖音内容"
+                detail += f"，合集 {collection_count} 个"
         else:
             return False
         result = self.runner(
@@ -157,7 +161,7 @@ class SubprocessAuthGuidanceLauncher:
         if (
             not self.settings.enabled
             or self.platform_name != "darwin"
-            or scope not in {"video", "image_note", "creator", "favorites"}
+            or scope not in {"video", "image_note", "creator", "favorites", "collection"}
             or re.fullmatch(r"[0-9a-f]{32}", trigger_job_id) is None
         ):
             return False
@@ -216,7 +220,7 @@ class AuthGuidanceService(Protocol):
 def auth_channel(scope: str) -> AuthChannel:
     if scope == "video":
         return "video"
-    if scope in {"image_note", "creator", "favorites"}:
+    if scope in {"image_note", "creator", "favorites", "collection"}:
         return "douyin"
     raise ValueError(f"不支持的授权范围：{scope}")
 
@@ -254,9 +258,7 @@ class AuthGuidanceCoordinator:
             return await self._run_douyin(counts)
 
     async def _run_video(self, trigger, counts: dict[str, int]) -> AuthGuidanceOutcome:
-        video_url = str(
-            trigger.artifacts.get("resolved", {}).get("canonical_url") or ""
-        ).strip()
+        video_url = str(trigger.artifacts.get("resolved", {}).get("canonical_url") or "").strip()
         if not video_url:
             return AuthGuidanceOutcome(status="failed", message="任务缺少可验证的视频地址")
         initial = await self.service.check_auth_scope("video", video_url=video_url)
@@ -289,9 +291,7 @@ class AuthGuidanceCoordinator:
         if not self.dialog.confirm("douyin", counts):
             return AuthGuidanceOutcome(status="cancelled")
         try:
-            await self.service.authenticate_douyin(
-                timeout_seconds=self.settings.timeout_seconds
-            )
+            await self.service.authenticate_douyin(timeout_seconds=self.settings.timeout_seconds)
         except BrowserAuthRequiredError:
             self.dialog.notify("抖库授权尚未完成", "图文与博主任务仍保持暂停，可稍后重试")
             return AuthGuidanceOutcome(status="timeout")
@@ -313,7 +313,11 @@ class AuthGuidanceCoordinator:
         return ready
 
     def _affected_jobs(self, channel: AuthChannel):
-        scopes = {"video"} if channel == "video" else {"image_note", "creator", "favorites"}
+        scopes = (
+            {"video"}
+            if channel == "video"
+            else {"image_note", "creator", "favorites", "collection"}
+        )
         return [
             job
             for job in self.service.database.list_jobs(
@@ -325,12 +329,18 @@ class AuthGuidanceCoordinator:
 
     @staticmethod
     def _affected_counts(jobs, channel: AuthChannel) -> dict[str, int]:
-        scopes = ("video",) if channel == "video" else ("image_note", "creator", "favorites")
+        scopes = (
+            ("video",)
+            if channel == "video"
+            else ("image_note", "creator", "favorites", "collection")
+        )
         counts = {
             scope: sum(job.result.get("auth_scope") == scope for job in jobs) for scope in scopes
         }
         if not counts.get("favorites"):
             counts.pop("favorites", None)
+        if not counts.get("collection"):
+            counts.pop("collection", None)
         return counts
 
     @staticmethod
@@ -351,9 +361,7 @@ class AuthGuidanceCoordinator:
                 continue
             retried.append(job.id)
         message = (
-            f"授权成功，已继续 {len(retried)} 个任务"
-            if retried
-            else "授权已恢复，没有等待中的任务"
+            f"授权成功，已继续 {len(retried)} 个任务" if retried else "授权已恢复，没有等待中的任务"
         )
         self.dialog.notify("抖库授权成功", message)
         return AuthGuidanceOutcome(
@@ -395,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-path", type=Path, required=True)
     parser.add_argument(
         "--scope",
-        choices=("video", "image_note", "creator", "favorites"),
+        choices=("video", "image_note", "creator", "favorites", "collection"),
         required=True,
     )
     parser.add_argument("--job-id", type=_job_id, required=True)

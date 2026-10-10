@@ -76,6 +76,12 @@ class WebOperationService:
         hints: dict[str, str] = {}
         artifacts = job.artifacts or {}
         result = job.result or {}
+        if job.kind == "collection_import":
+            try:
+                profile = self.core.collections.store.load(job.id)["snapshot"].get("profile", {})
+                hints["collection_name"] = str(profile.get("name") or "")
+            except JobStateError:
+                pass
         if job.kind == "favorites_import":
             try:
                 snapshot = self.core.favorites.store.load(job.id).get("snapshot") or {}
@@ -208,6 +214,15 @@ class WebOperationService:
                 },
                 "imported_entry_ids": detail.get("imported_entry_ids", []),
             }
+        elif job.kind == "collection_import":
+            detail = self.core.collections.get(job_id, page=1, limit=1)
+            extra = {
+                "batch": {
+                    key: detail.get(key)
+                    for key in ("summary", "complete", "warnings", "confirmed", "profile")
+                },
+                "imported_entry_ids": detail.get("imported_entry_ids", []),
+            }
         elif job.kind == "creator_import":
             extra = {
                 "batch": {
@@ -299,7 +314,7 @@ class WebOperationService:
         recent = [
             self.present(job)
             for job in self.core.list_jobs(limit=8)
-            if job.kind in {"capture", "creator_import", "favorites_import"}
+            if job.kind in {"capture", "creator_import", "favorites_import", "collection_import"}
             and not job.artifacts.get("user_deleted")
         ]
         alerts = []
@@ -421,7 +436,12 @@ class WebOperationService:
         if other_works:
             return other_works[0]
         for job in self.core.list_jobs(limit=80):
-            if getattr(job, "kind", None) not in {"capture", "creator_import", "favorites_import"}:
+            if getattr(job, "kind", None) not in {
+                "capture",
+                "creator_import",
+                "favorites_import",
+                "collection_import",
+            }:
                 continue
             artifacts = getattr(job, "artifacts", None) or {}
             resolved = artifacts.get("resolved") or {}
@@ -694,8 +714,8 @@ class WebOperationService:
 
     def delete_import_history(self, job_id: str, *, confirmed: bool) -> dict[str, Any]:
         job = self.core.get_job(job_id)
-        if job.kind not in {"favorites_import", "creator_import"}:
-            raise JobStateError("只能删除博主或收藏导入批次的展示历史")
+        if job.kind not in {"favorites_import", "creator_import", "collection_import"}:
+            raise JobStateError("只能删除博主、收藏或合集导入批次的展示历史")
         if job.status in RUNNING_STATUSES:
             raise JobStateError("进行中的导入批次不能删除")
         child_ids = list(job.result.get("child_job_ids") or [])
