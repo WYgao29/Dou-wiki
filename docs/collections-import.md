@@ -10,7 +10,7 @@
 
 读取完成后，新作品默认“待选择”。每件可导入且未入库的作品都需要选择或跳过；“全选全部页”作用于本轮全部作品，包括没有打开的页。已有完整资料直接关联。选择保存失败时保留重试入口，确认按钮等待保存成功。刷新页面根据地址中的 `job` 恢复批次和已保存的选择。
 
-确认后页面显示新任务、复用任务、已在资料库、失败和取消的真实数量。Gateway 模式下，本地 Worker 完成转写后等待原会话 Agent 校正和分析；等待不代表整批完成。重新清点会创建新批次，不自动选择新发现作品，也不创建定期同步。
+确认前页面显示预计新建、复用、已有资料与不可导入数量，作品提供封面及独立显示的时长；选择改变后数量随之更新。确认后显示实际任务、失败和取消数量。Gateway 模式下，本地 Worker 完成转写后等待原会话 Agent 校正和分析；等待不代表整批完成。完整清单需要再次读取时创建新批次，不自动选择新发现作品，也不创建定期同步。
 
 ## CLI
 
@@ -34,7 +34,7 @@ uv run douyin-wiki collection confirm JOB_ID
 
 编号是本轮清单的 `ordinal`；界面展示的集数 `episode_label` 可能不同。也可使用重复的 `--work-id` 指定稳定作品 ID。编号、作品 ID、`--all` 必须三选一。
 
-`collection inventory` 不传 `--page/--limit` 返回全部清单；显式分页时 limit 为 1–1000。`collection retry JOB_ID` 在确认前重试失败清点，确认后只重试失败子任务。`collection list` / `show MIX_ID` 查询持久合集关系，`collection history` 查询导入历史。
+`collection inventory` 不传 `--page/--limit` 返回全部清单；显式分页时 limit 为 1–1000。`collection retry JOB_ID` 在确认前重试失败、需要登录或不完整的清点，确认后只重试失败子任务。`collection list` / `show MIX_ID` 查询持久合集关系，`collection history` 查询导入历史。
 
 ## MCP 与 Gateway
 
@@ -44,7 +44,7 @@ uv run douyin-wiki collection confirm JOB_ID
 | `get_collection_inventory` | 查询批次；不传 page/limit 返回全部作品 |
 | `set_collection_work_selection` | 保存 selected/skipped；ordinals、work_ids、all_works 三选一 |
 | `confirm_collection_import` | 根据已保存选择创建或复用 capture 子任务；重复确认不重复入队 |
-| `retry_collection_import` | 重试失败清点或失败子任务 |
+| `retry_collection_import` | 重试失败、需要登录或不完整的清点；确认后重试失败子任务 |
 | `get_collection` | 查询指定 mix_id 的持久成员与资料关联 |
 | `list_collections` | 查询全部已读取合集 |
 | `list_collection_imports` | 查询批次历史，默认最近 50 条 |
@@ -53,15 +53,17 @@ uv run douyin-wiki collection confirm JOB_ID
 
 合集新建子任务携带 `collection_context`，其中包含合集 ID、名称、父任务、作品 ID、编号和 `batch_silent=true`。Gateway 继续完成每条内容的校正和分析，父任务汇总后再回复用户。复用的独立任务或其他批次任务保留原 Gateway 与通知归属。两种 Gateway 协议都包含合集上下文，调用细节见[Gateway 指南](gateway-agents.md#合集选择式批量采集)。
 
+短链解析后才发现重复时，已经返回的两个任务 ID 均保留；重复任务进入 `monitoring`，其结果中的 `shared_capture_job_id` 指向实际执行任务。查看和提交 Gateway 校正、分析时使用执行任务 ID；重复任务跟随最终结果并使用自己的原会话完成通知，不重复下载、转写或分析。批次关联指向执行任务，同一条目保留各入口尚有效的灵感。
+
 ## 部分清单、登录与失败
 
 原生网页请求在抖库专用浏览器会话中执行；Python 读取网络原始 JSON，避免 19 位 ID 被 JavaScript 数字转换改变。分页按返回 cursor 前进，只有可信 `has_more=false` 且没有警告才表示完整。空/null 异常页、重复 cursor、数量差异或中途失败会保留已经读取的作品和原因。
 
-部分清单确认必须显式传 `accept_partial=true`，网页对应“我接受清单可能不完整”。这项决定只授权本轮已读清单；后续新增作品需要新批次选择。重试清点采用新一轮记录，不将旧轮消失的作品计入本轮。
+部分清单确认必须显式传 `accept_partial=true`，网页对应“我接受清单可能不完整”。这项决定只授权本轮已读清单。在确认前可点击“重新清点”，或调用 `retry_collection_import` / `collection retry` 重读同一批次；保留仍存在作品的明确选择，新作品仍待选择，旧轮消失的作品不计入本轮。已确认的批次再次读取需要新批次。
 
 登录失效或切换账号进入 `needs_auth`，沿用授权中心的抖音通道。恢复原账号后可重试同一批次；换账号需新建批次。普通签名/403 错误不会一律被解释为登录失效。账号身份只用于运行保护，不进入合集知识侧车。
 
-相同作品已有完整知识条目时直接关联；已有同选项活动采集时复用。处理选项冲突会拒绝整批确认，不创建一部分新任务。取消一个批次保留其他活动批次仍需要的共享任务；独立创建的任务仍按原任务执行。一个子任务失败不会删除其他已入库结果，全部结束后父任务显示 `completed` 或 `completed_with_warnings`。
+相同作品已有完整知识条目时直接关联；已有同选项活动采集时复用。处理选项冲突会拒绝整批确认，不创建一部分新任务；短链稍后解析才发现冲突时，仅该重复任务失败，原任务保留。取消一个批次保留其他活动批次或独立等待任务仍需要的执行任务；最后一个使用者取消后，停止已经无人使用的批次执行任务。独立创建的执行任务仍按原任务执行。一个子任务失败不会删除其他已入库结果，全部结束后父任务显示 `completed` 或 `completed_with_warnings`。全部已有资料或全部跳过时仍生成一次正常的批次完成事件，重复确认不重复通知。
 
 ## Vault 与维护
 

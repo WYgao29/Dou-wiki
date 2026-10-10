@@ -29,6 +29,12 @@ SQLite 写事务中校验租约，避免已失去任务所有权的执行者覆�
 
 发布清点检查点及最终知识投影时，校验当前租约、清点世代、mix_id 和稳定账号；新一轮不能被迟到结果覆盖。合集文档发布持有 `entry_operations_locked()` 和 Vault 锁，在 SQLite 写事务与 `reversible_writes()` 中一起更新索引、侧车及关系。事务成功后才提交 Vault Git；文件写入失败恢复原文件和数据库。
 
-`Database.capture_parent_ids()` 和 `batch_child_ids()` 以运行表关系为准。完成、失败、取消或恢复子任务后刷新全部关联父任务及合集知识索引；取消保护只计算仍活动的父任务。`CollectionService.refresh()` 继续使用父任务和子任务的更新时间比较，不能用迟到汇总恢复已取消或删除的父任务。
+`Database.capture_parent_ids()` 和 `batch_child_ids()` 以运行表关系为准。完成、失败、取消或恢复子任务后刷新全部关联父任务及合集知识索引；取消保护计算仍活动的父任务及独立等待任务。`CollectionService.refresh()` 继续使用父任务和子任务的更新时间比较，不能用迟到汇总恢复已取消或删除的父任务。
+
+`DouyinWikiService.capture_sharing` 在作品锁内、媒体处理前检查解析后的作品 ID。`join_if_active()` 持有条目操作锁和 SQLite 写事务，校验原 Worker 租约，保留等待任务的请求、Gateway 和 ID，并把收藏、合集及博主关联原子地改指执行任务。已经有媒体检查点的执行任务继续使用自身材料；完整条目仍优先复用。活动查重排除等待记录，避免批次再次关联到等待记录。
+
+等待关系保存在任务 artifacts 的 `shared_capture_job_id`，无需迁移 schema。执行任务发布条目前，在其有效租约内合并仍有效等待者的灵感；释放租约后的结果同步不再执行媒体或分析。Worker 刷新、Service 查询和完成刷新均恢复持久等待关系，用 `Database.update_job()` 发布等待者终态及其原 Gateway 事件，取消或删除的等待者不复活。
+
+合集确认事务先记录 `monitoring`，随后刷新通过 `Database.update_job()` 发布真实终态。即使没有子任务，也会生成包含最终汇总的完成事件并替代待选择事件；确认后进程中断可由下一次刷新接续。未确认的部分清单可通过公开重试接口进入新清点世代，已确认或完整清单遵守原有重试边界。
 
 `VaultWriter.write_collection(profile, works, entries)` 使用真实 entry 路径生成链接，`load_collections()` 验证侧车后用于知识重建。持久 `collections/collection_works` 与运行 `collection_runs/collection_run_items` 分开；重建不会恢复全部操作历史。实现及调用示例见[合集导入](collections-import.md)。

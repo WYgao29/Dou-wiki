@@ -56,6 +56,7 @@ Provider 的完整分段汇总超出模型预算时，保留各段内容与证�
 | `favorites.py`、`favorites_models.py`、`favorites_store.py` | 收藏清点、选择、幂等派发和批次汇总；数据契约及批次持久存储 |
 | `collections.py`、`collection_models.py`、`collection_store.py` | 合集清点、逐条选择、原子确认、批次状态和持久合集关系 |
 | `batch_capture.py` | 收藏、博主和合集共用的作品身份及活动任务查重 |
+| `capture_sharing.py` | 短链解析后的活动采集复用、持久等待者、批次关联重指及结果同步 |
 | `tags.py` | 标签、别名与资料关联；沿用数据库事务和解析约定 |
 | `analysis_rules.py` | 网关与 Provider 共用的内容标签规则与新分析数量上限 |
 | `adapters/favorites.py` | 收藏清点的 Profile 锁、账号保护、目录与指定夹分页、去重和检查点；全部模式的 DOM 作品读取 |
@@ -74,7 +75,7 @@ Provider 的完整分段汇总超出模型预算时，保留各段内容与证�
 
 用户 Vault 与源码仓库分离。Vault 保存不可变原始记录、可更新资料页、机器侧车和媒体；`.douyin-wiki/state.sqlite3` 保存任务、事件、授权会话、聊天及检索投影。重建知识索引不等于恢复全部操作历史。
 
-合集 schema 15 使用 `collections/collection_works` 保存知识关系，`collection_runs/collection_run_items` 保存批次世代、选择及子任务关联；博主运行项补充 `child_job_id`。`Database.capture_parent_ids()` 与 `batch_child_ids()` 查询真实关联，复用 capture 保留原 Gateway 上下文。确认先检查全部选项，再在一个写事务中发布子任务；取消保护依据其他活动父任务，完成刷新覆盖全部相关入口。
+合集 schema 15 使用 `collections/collection_works` 保存知识关系，`collection_runs/collection_run_items` 保存批次世代、选择及子任务关联；博主运行项补充 `child_job_id`。`Database.capture_parent_ids()` 与 `batch_child_ids()` 查询真实关联，复用 capture 保留原 Gateway 上下文。确认先检查全部选项，再在一个写事务中发布子任务；短链后来解析出的重复请求保留 ID 和 Gateway，进入持久等待状态，批次关联指向执行任务。取消保护依据其他活动父任务及独立等待者，完成刷新覆盖全部相关入口。
 
 合集清点只读取指定合集，不遍历博主的其他作品。稳定账号来自自身主页，Cookie 指纹只检测会话变化，不作为持久账号 ID。成员和顺序仅在完整读取后更新；部分发现另行标记。`collections/<首次名称>_<mix_id>/index.md` 与 `.data/collection.md` 保存可恢复关系，不保存账号、Cookie 或运行历史。用户删除、恢复和知识重建按作品 ID 重新关联，详情见[合集导入](collections-import.md)。
 

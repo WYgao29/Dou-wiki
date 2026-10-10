@@ -30,6 +30,8 @@
 
 [抖音合集导入方案](superpowers/specs/2026-10-10-douyin-collection-import-design.md)已获确认，Web/CLI/MCP 和持久关系已在 `codex/douyin-collection-import` 实现。正式读取器的 18 件多页清单与网页 ID、集数、顺序一致；独立 Vault 的一条真实视频已完成 Gateway 校正、分析与入库，复用及故意失败也已验证。使用规范见[合集导入](collections-import.md)，检查结果、范围与集成状态见[验收记录](superpowers/reviews/2026-10-10-douyin-collection-import-acceptance.md)。
 
+后续审查的跨入口重复采集、部分清点重试、无子任务完成事件及确认前界面差异已修复；完整非 live 回归1398项通过，开发分支仍待集成。修正行为及证据见[审查修复记录](superpowers/reviews/2026-10-10-collection-import-review-fixes.md)。
+
 [独立 AI 术语仓库与热词接入方案](superpowers/specs/2026-10-08-ai-terms-design.md)已根据当前 Qwen3 主线编写，处于方案审阅阶段。建议先建立独立词库、Agent 维护规则与确定性数据导出，再接入抖库的主识别和局部识别；当前尚未建库或修改运行代码。
 
 [Gateway token 优化规格](superpowers/specs/2026-10-03-gateway-token-optimization-design.md)与[实施计划](superpowers/plans/2026-10-03-gateway-token-optimization.md)已确认并在 `codex/gateway-token-optimization` 实现；现有四工具可显式选择协议 2，覆盖 OCR 投影、增量校正、证据引用与简短回执，默认保留旧协议。调用规范见 [Gateway 指南](gateway-agents.md#紧凑协议gateway_protocol2)；主线集成与真实客户端切换尚未执行。
