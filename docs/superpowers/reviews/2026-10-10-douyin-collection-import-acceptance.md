@@ -2,12 +2,12 @@
 
 日期：2026-10-10（Asia/Shanghai）。用户已确认[设计](../specs/2026-10-10-douyin-collection-import-design.md)并要求按其开发，当前 Agent 完成实现与整分支审查，未委派子 Agent。操作规范见[合集导入](../../collections-import.md)，任务记录见[实施计划](../plans/2026-10-10-douyin-collection-import.md)。
 
-本记录保留首次实现验收的基准、真实样本与历史判断。用户随后要求再次审查并修复，三个 P2 问题及界面差异已在 `fce0c13` 修正；最终完整回归为1398 passed / 2 deselected。当前行为、证据和修复范围见[审查修复记录](2026-10-10-collection-import-review-fixes.md)。
+本记录保留首次实现验收的基准、真实样本与历史判断。用户随后要求再次审查并修复，三个 P2 问题及界面差异已在 `fce0c13` 和 `6da7246` 修正；最终完整回归为1400 passed / 2 deselected。当前行为、证据和修复范围见[审查修复记录](2026-10-10-collection-import-review-fixes.md)。
 
 ## 交付状态
 
 - 基准：`54ae500fd3abaffaefecb2af812ec6881b1e0e35`。
-- 分支：`codex/douyin-collection-import`；首次验收运行提交 `afc2eb5`，后续审查修复运行提交 `fce0c13`。
+- 分支：`codex/douyin-collection-import`；首次验收运行提交 `afc2eb5`，后续审查修复运行提交 `fce0c13` 和 `6da7246`。
 - 隔离工作区：`/Users/weisengao/.codex/worktrees/douyin-collection-import/douyin-wiki`。
 - 已完成 Web、CLI、8 个 MCP 工具、正式读取适配器、schema15、共享 capture 关联与持久 Vault 合集索引。保持现有 CLI/MCP/Service 入口兼容；Web 静态资源版本为 `0.2.47`，Python 包仍为未发布的 `0.1.5`。
 - 本轮保留分支及工作区；尚未合并、推送或部署。检查时原 `main` 仍为上述基准且工作树干净，现用 `.venv` 未同步依赖。生产 Vault 未导入本合集。

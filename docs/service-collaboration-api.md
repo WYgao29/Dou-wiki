@@ -35,6 +35,8 @@ SQLite 写事务中校验租约，避免已失去任务所有权的执行者覆�
 
 等待关系保存在任务 artifacts 的 `shared_capture_job_id`，无需迁移 schema。执行任务发布条目前，在其有效租约内合并仍有效等待者的灵感；释放租约后的结果同步不再执行媒体或分析。Worker 刷新、Service 查询和完成刷新均恢复持久等待关系，用 `Database.update_job()` 发布等待者终态及其原 Gateway 事件，取消或删除的等待者不复活。
 
+Gateway 协议1和2的任务查询均保留结果中的 `shared_capture_job_id` 与 `shared_job_status`；简短回执不能过滤掉执行任务 ID，否则等待者所在 Agent 无法继续查询实际任务。
+
 合集确认事务先记录 `monitoring`，随后刷新通过 `Database.update_job()` 发布真实终态。即使没有子任务，也会生成包含最终汇总的完成事件并替代待选择事件；确认后进程中断可由下一次刷新接续。未确认的部分清单可通过公开重试接口进入新清点世代，已确认或完整清单遵守原有重试边界。
 
 `VaultWriter.write_collection(profile, works, entries)` 使用真实 entry 路径生成链接，`load_collections()` 验证侧车后用于知识重建。持久 `collections/collection_works` 与运行 `collection_runs/collection_run_items` 分开；重建不会恢复全部操作历史。实现及调用示例见[合集导入](collections-import.md)。

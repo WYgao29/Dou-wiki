@@ -244,7 +244,7 @@ Gateway 应先调用 `get_auth_status` 和 `get_job` 复核最新状态，不要
 4. 本地 Worker 和当前模型继续完成各 capture 的转写、校正、分析与入库。`collection_context.batch_silent=true` 的新子任务不逐条刷屏；复用任务保留原 Gateway 路由与通知行为。等待其他 Gateway 时父任务仍为 monitoring，不能提前回复整批成功。
 5. 用父任务查询汇总成功、已有、失败和取消；失败项调用 `retry_collection_import`。未确认且 `complete=false` 时也可用该工具重新清点，仍存在作品的明确选择保留，新作品待选择；已确认或完整清单需要再读取时创建新批次。
 
-短链解析后才识别出重复请求时，等待记录仍保留原任务 ID 与 Gateway，状态为 `monitoring`；结果的 `shared_capture_job_id` 指向执行任务。读取上下文和提交校正、分析使用执行任务 ID，等待记录不产生第二次待分析事件。终态与完成通知沿用各自原会话。全部已有资料或全部跳过的批次也会生成正常完成事件。
+短链解析后才识别出重复请求时，等待记录仍保留原任务 ID 与 Gateway，状态为 `monitoring`；结果的 `shared_capture_job_id` 指向执行任务，`shared_job_status` 给出执行状态。协议1和2均保留这两个字段。读取上下文和提交校正、分析使用执行任务 ID，等待记录不产生第二次待分析事件。终态与完成通知沿用各自原会话。全部已有资料或全部跳过的批次也会生成正常完成事件。
 
 `get_collection/list_collections` 查询持久知识关系，`list_collection_imports` 查询操作历史。合集索引引用已有资料目录，清理批次历史不会删除知识关系。详细参数及验证边界见[合集导入](collections-import.md)。
 

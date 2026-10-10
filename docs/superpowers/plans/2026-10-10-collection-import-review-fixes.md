@@ -20,4 +20,4 @@
 
 ## 执行结果
 
-运行代码已提交为 `fce0c13`，19项新增回归进入正式测试。最终完整非 live 回归1398 passed / 2 deselected，Ruff、相关164项、浏览器3项、发行包及新临时环境安装均通过。具体失败到通过的证据、直接复核结果与范围见[修复记录](../reviews/2026-10-10-collection-import-review-fixes.md)。开发分支保留，未合并、推送或部署。
+运行代码已提交为 `fce0c13` 和 `6da7246`，21项新增回归进入正式测试。最终完整非 live 回归1400 passed / 2 deselected，Ruff、相关164项、补充Gateway 76项、浏览器3项、发行包及新临时环境安装均通过。具体失败到通过的证据、直接复核结果与范围见[修复记录](../reviews/2026-10-10-collection-import-review-fixes.md)。开发分支保留，未合并、推送或部署。
