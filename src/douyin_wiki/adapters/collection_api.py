@@ -72,7 +72,10 @@ def _work(record, mix_id, position, episodes):
     images = record.get("images")
     image_info = record.get("image_post_info")
     image_list = image_info.get("images") if isinstance(image_info, dict) else None
-    share = urlsplit(_text(record.get("share_url")))
+    try:
+        share = urlsplit(_text(record.get("share_url")))
+    except ValueError:
+        return None, f"作品 {work_id} 的分享地址格式异常"
     kind = "unknown"
     if share.hostname in {"www.douyin.com", "douyin.com"} and share.path == f"/article/{work_id}":
         kind = "article"

@@ -60,6 +60,14 @@ def test_collection_conflicting_id_fields_make_page_partial():
     assert not result.valid
 
 
+def test_malformed_work_url_keeps_other_collection_records():
+    other = "7646239420807358282"
+    result = parse(page([work(share_url="http://["), work(aweme_id=other)]))
+    assert [row.work_id for row in result.works] == [other]
+    assert result.warnings
+    assert not result.valid
+
+
 def test_collection_contrary_membership_is_excluded():
     result = parse(page([work(mix_info={"mix_id": "7651028428363139127"})]))
     assert result.works == []

@@ -69,13 +69,17 @@ def extract_creator_sec_uid(value: str) -> str | None:
 
 
 def extract_collection_id(value: str) -> str | None:
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return None
     if (
         parsed.scheme not in {"http", "https"}
         or (parsed.hostname or "").lower() not in {"www.douyin.com", "douyin.com"}
         or parsed.username
         or parsed.password
-        or parsed.port
+        or port is not None
     ):
         return None
     match = COLLECTION_PATH_PATTERN.fullmatch(parsed.path)
@@ -205,7 +209,12 @@ class DouyinShareResolver:
             ) as client:
                 for _ in range(8):
                     extract_douyin_url(current)
-                    response = await client.get(current, follow_redirects=False)
+                    try:
+                        response = await client.get(current, follow_redirects=False)
+                    except httpx.HTTPError as exc:
+                        raise InvalidShareTextError(
+                            "无法解析抖音合集短链", details={"url": current, "cause": str(exc)}
+                        ) from exc
                     candidates = [str(response.url)]
                     location = response.headers.get("location")
                     if location:

@@ -122,3 +122,67 @@ async def test_collection_auth_failure_is_not_partial_network_error(tmp_path):
             adapter(tmp_path),
             Pages({"0": data(["30"], 2, 1), "2": BrowserAuthRequiredError("账号变化")}),
         )
+
+
+async def test_collection_account_verification_accepts_rotated_session_for_same_user(tmp_path):
+    from douyin_wiki.adapters.collection import _account_fingerprint
+
+    class Context:
+        async def cookies(self, _):
+            return [{"name": "sessionid", "value": "renewed", "domain": ".douyin.com"}]
+
+    class OwnProfile:
+        async def reload(self, **_):
+            return None
+
+        async def evaluate(self, _):
+            return {"account_id": "own-stable-sec-uid"}
+
+    original = _account_fingerprint(
+        [{"name": "sessionid", "value": "old", "domain": ".douyin.com"}]
+    )
+    current = await adapter(tmp_path).verify_account(
+        Context(), OwnProfile(), "own-stable-sec-uid", original
+    )
+    assert current and current != original
+
+
+async def test_collection_account_verification_rejects_another_user(tmp_path):
+    class Context:
+        async def cookies(self, _):
+            return [{"name": "sessionid", "value": "changed", "domain": ".douyin.com"}]
+
+    class OwnProfile:
+        async def reload(self, **_):
+            return None
+
+        async def evaluate(self, _):
+            return {"account_id": "different-user"}
+
+    with pytest.raises(BrowserAuthRequiredError):
+        await adapter(tmp_path).verify_account(
+            Context(), OwnProfile(), "original-user", "old-session"
+        )
+
+
+async def test_collection_page_limit_retains_partial_inventory(tmp_path):
+    class NeverEnding:
+        calls = 0
+
+        async def read_page(self, *, cursor, **_):
+            self.calls += 1
+            return RawCollectionPage(
+                "list",
+                MIX,
+                cursor,
+                20,
+                200,
+                json.dumps(data([str(self.calls)], self.calls, 1)).encode(),
+            )
+
+    client = NeverEnding()
+    result = await scan(adapter(tmp_path), client)
+    assert client.calls == 500
+    assert len(result.works) == 500
+    assert not result.complete
+    assert any("500" in warning for warning in result.warnings)

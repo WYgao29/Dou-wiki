@@ -249,3 +249,21 @@ async def test_single_work_is_not_expanded_to_a_collection() -> None:
         "work",
         "https://www.douyin.com/video/7644758067783852901",
     )
+
+
+@pytest.mark.asyncio
+async def test_collection_invalid_port_is_rejected_as_share_error() -> None:
+    with pytest.raises(InvalidShareTextError):
+        await DouyinShareResolver().resolve_collection(
+            "https://www.douyin.com:bad/collection/7651028428363139126"
+        )
+
+
+@pytest.mark.asyncio
+async def test_collection_short_link_network_error_is_reported_as_share_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    resolver = DouyinShareResolver(transport=httpx.MockTransport(handler))
+    with pytest.raises(InvalidShareTextError, match="无法解析抖音合集短链"):
+        await resolver.resolve_collection("https://v.douyin.com/example/")

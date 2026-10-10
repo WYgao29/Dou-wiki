@@ -11,6 +11,7 @@ from ..config import MediaSettings
 from ..errors import BrowserAuthRequiredError, ExternalToolError
 from .collection_api import parse_collection_page
 from .collection_browser import CollectionBrowserClient
+from .favorites import DouyinFavoritesAdapter
 from .image_note import PlaywrightImageNoteDownloader, _page_auth_blocked, _usable_auth_cookies
 
 Checkpoint = Callable[[CollectionInventory], Awaitable[None]]
@@ -18,7 +19,7 @@ Checkpoint = Callable[[CollectionInventory], Awaitable[None]]
 
 def _account_fingerprint(cookies):
     usable = _usable_auth_cookies(cookies)
-    # Prefer the stable session token; sid_guard includes expiry metadata.
+    # Detect session changes only; this fingerprint is never a persisted account ID.
     tokens = [c for c in usable if c["name"] in {"sessionid", "sessionid_ss"}] or usable
     if not tokens:
         return ""
@@ -33,6 +34,25 @@ class DouyinCollectionAdapter(PlaywrightImageNoteDownloader):
     async def check_auth(self):
         result = await super().check_auth()
         return result.model_copy(update={"scope": "collection"})
+
+    async def read_account(self, page):
+        account = await DouyinFavoritesAdapter(
+            self.settings, self.profile_dir
+        )._read_initial_account(page)
+        identity = str((account or {}).get("account_id") or "").strip()
+        if not identity or identity == "self":
+            raise BrowserAuthRequiredError("无法确认合集清点账号，请登录专用浏览器后重试")
+        return identity
+
+    async def verify_account(self, context, own_page, account_id, session):
+        current = _account_fingerprint(await context.cookies("https://www.douyin.com/"))
+        if not current:
+            raise BrowserAuthRequiredError("合集清点登录已失效")
+        if current != session:
+            await own_page.reload(wait_until="domcontentloaded", timeout=60_000)
+            if await self.read_account(own_page) != account_id:
+                raise BrowserAuthRequiredError("读取期间专用浏览器账号已变化")
+        return current
 
     async def inventory(
         self,
@@ -54,9 +74,16 @@ class DouyinCollectionAdapter(PlaywrightImageNoteDownloader):
             try:
                 page = context.pages[0] if context.pages else await context.new_page()
                 cookies = await context.cookies("https://www.douyin.com/")
-                account_id = _account_fingerprint(cookies)
-                if not account_id:
+                session = _account_fingerprint(cookies)
+                if not session:
                     raise BrowserAuthRequiredError("合集清点需要专用浏览器登录抖音")
+                own_page = await context.new_page()
+                await own_page.goto(
+                    "https://www.douyin.com/user/self",
+                    wait_until="domcontentloaded",
+                    timeout=60_000,
+                )
+                account_id = await self.read_account(own_page)
                 if expected_account_id and expected_account_id != account_id:
                     raise BrowserAuthRequiredError("合集清点账号已变化，请恢复原账号或新建批次")
                 async with CollectionBrowserClient(page) as client:
@@ -79,11 +106,8 @@ class DouyinCollectionAdapter(PlaywrightImageNoteDownloader):
                     profile = detail.profile.model_copy(update={"original_url": original_url})
 
                     async def checkpoint(snapshot):
-                        current = _account_fingerprint(
-                            await context.cookies("https://www.douyin.com/")
-                        )
-                        if current != account_id:
-                            raise BrowserAuthRequiredError("读取期间专用浏览器账号已变化")
+                        nonlocal session
+                        session = await self.verify_account(context, own_page, account_id, session)
                         if on_checkpoint:
                             await on_checkpoint(snapshot)
 
