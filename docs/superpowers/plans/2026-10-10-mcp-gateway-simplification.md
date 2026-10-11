@@ -10,7 +10,7 @@
 
 **Spec:** [已确认的精简方案](../../design/2026-10-10-mcp-gateway-simplification-plan.md)；[第 1 步复核记录](../reviews/2026-10-10-mcp-gateway-simplification-design-review.md)。用户已确认第 1 步及版本建议，不重做设计确认。
 
-**Status:** 第 1～9 大步骤和任务 1～10 已完成。本地 main 已集成，精简版 0.2.0 / Web 0.2.48、schema 16 空库、三个本机服务及独立 runtime 均已通过实际验证；本聊天重连后的实际 doctor、51 项工具清单和进程检查确认 MCP 已使用同一 runtime，旧环境的 MCP 进程为零。第 10 大步骤旧版归档等待用户确认，尚未执行。详见[验收及部署记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。
+**Status:** 第 1～10 大步骤和任务 1～11 已完成。精简版 0.2.0 / Web 0.2.48、schema 16 空库、独立 runtime 及当前 51 项 MCP 连接已完成本机部署验证。固定旧提交的 0.1.5 源码 ZIP、wheel、恢复说明及 SHA256 已归档并验证；本次开发 worktree 已原生归档，开发分支及两个临时构建 / 安装目录已清理，执行记录和八张忽略截图保留在仓库外。正式代码验收继续使用已验证的源码及安装包结果，没有新增运行改动。详见[验收及最终交付记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。
 
 ## Global Constraints
 
@@ -53,8 +53,8 @@
 | 6. 入口、界面与文档 | 任务 5、6、7 已完成、已获确认 | 已进入步骤 7 |
 | 7. 代码审查与修复 | 任务 8 已完成、已获确认 | 已完成步骤 8 |
 | 8. 发布前验收 | 任务 9 已完成、已获确认 | 已进入步骤 9 |
-| 9. 合并与本机部署 | 任务 10 已完成；当前 MCP 环境重连验证通过 | 等待用户确认步骤 10 |
-| 10. 旧版归档与交付 | 任务 11 | 汇总交付物与验证记录 |
+| 9. 合并与本机部署 | 任务 10 已完成、已获确认；当前 MCP 环境重连验证通过 | 已完成步骤 10 |
+| 10. 旧版归档与交付 | 任务 11 已完成 | 全流程交付，等待用户验收 |
 
 计划共 11 项执行任务，仍对应用户确认的 10 个大步骤。大步骤内部持续执行，不为每个小任务重复索要确认。每次报告必须包含改动、验证结果、实际完成范围和下一步；文件修改、包构建和生产部署分别记录。
 
@@ -268,7 +268,7 @@ assert service.get_job(owner_id).status == JobStatus.AWAITING_AGENT_ANALYSIS
 - [x] **Step 6：验证实际运行。** `launchctl` 和 HTTP 确认 Web `0.2.48`、Worker 活跃，维护登记且使用新解释器；新 MCP 的包路径和清单与安装包一致，生成工具缺席，按当前集合预期 51 项但不固定白名单。验证六类停用入口 `410` 且空库没有多出的业务任务，查询 / 页面正常。Run：`"$TASK_RUNTIME/bin/python" -B -m douyin_wiki doctor --config-path "$TASK_CONFIG"`，验证保留运行检查，无对话模型要求。识别 / 检索模型准备状态可检查，真实账号采集需另行显式选择。若当前聊天仍缓存旧 MCP 清单，明确记录待重连，不能用其他新会话的结果声称它已刷新。
 - [x] **Step 7：记录部署和发行文件。** 核对配置及包哈希后，需替换仓库 `dist/` 同名文件时先备份并检查原包成员，再放入已验证产物；不清理来源不明的 dist 文件。追加正式验收的安装路径、配置、主线提交、运行探针和实际 MCP 清单证据；仍保留旧仓库环境。提交本任务部署文档，报告后等待用户确认步骤 10。
 
-实际部署：本地 main fast-forward 集成 3f06f9e，198 项验收输入一致；独立 runtime 安装 93 个运行依赖，包 0.2.0 / Web 0.2.48、非 editable、90 个包文件校验通过。旧服务和两个 MCP 会话退出后清除已确认的十个路径，原 Vault 创建 schema 16 和新 Git；保留文件字节、原 .venv、Profile 与模型缓存保持。三项服务及目标 MCP command 已统一到新 runtime，部署当时其他 Codex 配置字节不变。实际 HTTP、16 组 410、24 个静态资源、doctor overall=true / qwen3.ok=true 和原生 MCP 51 项名称与输入 schema 通过。导入任务 / 资料 / 专题为空，仅新增正常周维护和 Worker 心跳；未做真实账号采集或模型调用。0.2.0 两份发行文件已同步至 dist，原文件保留。当前聊天曾出现清单刷新但实际解释器仍旧的情况；2026-10-11 用户继续后，实际 doctor 的三个模型准备命令均使用新 runtime 的 scripts 路径，当前 MCP 进程使用新解释器，旧环境进程为零。重连期间 Codex 其他段的字节发生变化，目标 MCP 段仍与已验证配置相同；本轮只读取并保留这些变化，不推断修改者。严格最终校验通过，Task 10 完成。详细证据见[验收及部署记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。第 10 大步骤等待用户确认。
+实际部署：本地 main fast-forward 集成 3f06f9e，198 项验收输入一致；独立 runtime 安装 93 个运行依赖，包 0.2.0 / Web 0.2.48、非 editable、90 个包文件校验通过。旧服务和两个 MCP 会话退出后清除已确认的十个路径，原 Vault 创建 schema 16 和新 Git；保留文件字节、原 .venv、Profile 与模型缓存保持。三项服务及目标 MCP command 已统一到新 runtime，部署当时其他 Codex 配置字节不变。实际 HTTP、16 组 410、24 个静态资源、doctor overall=true / qwen3.ok=true 和原生 MCP 51 项名称与输入 schema 通过。导入任务 / 资料 / 专题为空，仅新增正常周维护和 Worker 心跳；未做真实账号采集或模型调用。0.2.0 两份发行文件已同步至 dist，原文件保留。当前聊天曾出现清单刷新但实际解释器仍旧的情况；2026-10-11 用户继续后，实际 doctor 的三个模型准备命令均使用新 runtime 的 scripts 路径，当前 MCP 进程使用新解释器，旧环境进程为零。重连期间 Codex 其他段的字节发生变化，目标 MCP 段仍与已验证配置相同；本轮只读取并保留这些变化，不推断修改者。严格最终校验通过，Task 10 完成。详细证据见[验收及部署记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。第 10 大步骤已获用户确认并完成，见 Task 11。
 
 ## Task 11：旧版源码与发行包归档、最终交付（步骤 10）
 
@@ -276,12 +276,16 @@ assert service.get_job(owner_id).status == JobStatus.AWAITING_AGENT_ANALYSIS
 
 **Interfaces:** Consumes：任务 1 的完整旧版提交与 tag、已完成的精简版部署。Produces：同一旧提交的源码、wheel、恢复安装说明和校验值；旧版不启动常驻服务、不作为本机运行版本。
 
-- [ ] **Step 1：核对归档来源。** 确认 tag 仍指向 `6c4fb7b918e5b37e0faefa5fc8cbefdde82783bb`，读取该提交 pyproject / lock 中包版本为 `0.1.5`；记录完整提交和实际归档日期。核对归档目标未被其他任务占用后创建 `TASK_LEGACY`。
-- [ ] **Step 2：生成源码快照。** Run：`git archive --format=zip --output="$TASK_LEGACY/source.zip" 6c4fb7b918e5b37e0faefa5fc8cbefdde82783bb`。Expected：成员对应该提交的受 Git 管理文件，包括 src、tests、docs、scripts、pyproject、uv.lock 和许可证；不包含工作区改动、Vault、状态库、Cookie、模型密钥、Profile、模型下载或本机 `.venv`。
-- [ ] **Step 3：从该源码独立构建旧 wheel。** 在 `TASK_OUT/legacy-build/` 解压 source.zip，独立构建环境执行 `uv build --python 3.12 --wheel --out-dir "$TASK_LEGACY"`，不复用精简后的源码或现用 `.venv`。Expected：生成 `0.1.5` wheel；ZIP 内容与版本元数据、入口、字体 / 静态资源 / Swift 文件完整。
-- [ ] **Step 4：核对源码与旧包。** 将源码 ZIP 文件名 / 内容逐项与 `git ls-tree`、`git show` 比较；在独立旧版检查环境安装同提交锁定依赖和 wheel，验证 metadata、`--help` 和仅 tools/list 的 MCP 注册，名称和参数与任务 1 的快照一致，不执行业务工具或模型连接。旧版应含生成工具；精简版运行配置不受影响。
-- [ ] **Step 5：写恢复说明与校验值。** README 记录完整提交、tag、版本、归档日期、Python 与系统依赖、从源码 / wheel 重新安装方式，并说明不含旧业务数据及凭据。计算 source.zip、wheel、README 的 SHA256，写入 SHA256SUMS 并重新检查全部文件，校验文件不对自身取值。
-- [ ] **Step 6：交付和清理。** 汇总精简版本的代码、包、运行路径、验收记录与旧版归档；列明实际判断和未解决的小问题。只清理本任务确认不再需要的临时文件，保留交付物与必要证据。创建的 managed worktree 不再需要时用 `archive_worktree`，不删除旧仓库 `.venv` 或其他工作区，不新增旧版 Codex 项目。
+- [x] **Step 1：核对归档来源。** 确认 tag 仍指向 `6c4fb7b918e5b37e0faefa5fc8cbefdde82783bb`，读取该提交 pyproject / lock 中包版本为 `0.1.5`；记录完整提交和实际归档日期。核对归档目标未被其他任务占用后创建 `TASK_LEGACY`。
+- [x] **Step 2：生成源码快照。** Run：`git archive --format=zip --output="$TASK_LEGACY/source.zip" 6c4fb7b918e5b37e0faefa5fc8cbefdde82783bb`。Expected：成员对应该提交的受 Git 管理文件，包括 src、tests、docs、scripts、pyproject、uv.lock 和许可证；不包含工作区改动、Vault、状态库、Cookie、模型密钥、Profile、模型下载或本机 `.venv`。
+- [x] **Step 3：从该源码独立构建旧 wheel。** 在 `TASK_OUT/legacy-build/` 解压 source.zip，独立构建环境执行 `uv build --python 3.12 --wheel --out-dir "$TASK_LEGACY"`，不复用精简后的源码或现用 `.venv`。Expected：生成 `0.1.5` wheel；ZIP 内容与版本元数据、入口、字体 / 静态资源 / Swift 文件完整。
+- [x] **Step 4：核对源码与旧包。** 将源码 ZIP 文件名 / 内容逐项与 `git ls-tree`、`git show` 比较；在独立旧版检查环境安装同提交锁定依赖和 wheel，验证 metadata、`--help` 和仅 tools/list 的 MCP 注册，名称和参数与任务 1 的快照一致，不执行业务工具或模型连接。旧版应含生成工具；精简版运行配置不受影响。
+- [x] **Step 5：写恢复说明与校验值。** README 记录完整提交、tag、版本、归档日期、Python 与系统依赖、从源码 / wheel 重新安装方式，并说明不含旧业务数据及凭据。计算 source.zip、wheel、README 的 SHA256，写入 SHA256SUMS 并重新检查全部文件，校验文件不对自身取值。
+- [x] **Step 6：交付和清理。** 汇总精简版本的代码、包、运行路径、验收记录与旧版归档；列明实际判断和未解决的小问题。只清理本任务确认不再需要的临时文件，保留交付物与必要证据。创建的 managed worktree 不再需要时用 `archive_worktree`，不删除旧仓库 `.venv` 或其他工作区，不新增旧版 Codex 项目。
+
+实际归档：固定 tag 仍指向 6c4fb7b918e5b37e0faefa5fc8cbefdde82783bb，pyproject / lock 包版本均为 0.1.5。仓库外 `/Users/weisengao/Documents/ChatGPT/archives/douyin-wiki-legacy/` 已生成 source.zip、0.1.5 wheel、恢复 README 和 SHA256SUMS；232 个源码文件对应该提交的文件名与 blob，94 个包文件及 24 项静态资源与源码一致。独立 Python 3.12.13 安装 93 个锁定运行包，pip check、CLI --help 和实际 MCP 52 项名称 / input schema / instructions 均通过，生成工具仅存在于旧版；没有业务、模型、网络或 Keychain 调用。恢复说明使用该源码锁文件导出依赖，三份交付文件的校验通过。
+
+实际清理：本任务 managed worktree 已通过原生 archive_worktree 归档，已集成的 codex/mcp-gateway-simplification 分支用 git branch -d 删除；只移除本步创建的 legacy-build / legacy-check。执行记录、briefs、日志和八张忽略 PNG 逐字保存在 TASK_OUT/final-worktree-evidence，旧版安装文件哈希与元数据保存在 legacy-install-evidence。原仓库 .venv、其他 worktree 和现用独立 runtime 保留；生产配置字节与本步骤开始时一致，新版 Web / Worker / 维护和当前 MCP 连接正常。归档来源、校验值及完整最终结果见[验收及最终交付记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。
 
 ## 计划自查与范围映射
 

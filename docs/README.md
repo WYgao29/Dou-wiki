@@ -18,6 +18,8 @@
 
 ## 近期完成
 
+[MCP / Gateway 精简方案](design/2026-10-10-mcp-gateway-simplification-plan.md)及[实施计划](superpowers/plans/2026-10-10-mcp-gateway-simplification.md)已实现并集成本地 `main`，包 0.2.0、Web 0.2.48 已部署到仓库外独立 runtime。业务通过 MCP 创建，只使用 Gateway，Web 保留批次与知识管理；现有 Vault 已按确认范围初始化为 schema 16 空库。CLI 业务、Web 新建、聊天、模型配置和专题自动生成已停用。作者自查、1503 项非 live 回归、153 项安装包流程回归和八个浏览器入口通过；实际服务、停用路由、诊断和新 MCP 51 项工具契约验证通过，见[验收及部署记录](superpowers/reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。本聊天重连后的实际 doctor 和进程检查也确认使用新 runtime，旧环境的 MCP 进程为零；固定旧提交的 0.1.5 源码、wheel、恢复说明和 SHA256 已在仓库外归档并验证。十个大步骤全部完成，本次 worktree / 分支和临时构建环境已清理，执行记录和历史截图已另存；实际交付与恢复路径见同一验收记录。
+
 [Qwen3 ASR 单引擎替换](superpowers/specs/2026-10-07-qwen3-asr-design.md)及两项审查修复已集成本地 `main`，语音识别只使用 Qwen3，旧运行实现与依赖声明已删除。主线完整回归为 1276 passed / 2 deselected；两条真实音轨、7200 秒耐久、离线、下游回放与安装包检查的证据和范围见[验收记录](superpowers/reviews/2026-10-08-qwen3-asr-acceptance.md)及[修复与复审记录](superpowers/reviews/2026-10-08-qwen3-asr-review-fixes.md)。用户已接受新安装环境首次约 39 秒准备、首次 10 分钟任务约 93 秒；后续新进程加载约 3.6 秒、10 分钟任务约 57.6 秒，原始超时记录保留。
 
 开发分支已删除，worktree 已归档，旧草案、日志、截图和验收证据保留，执行结果见[主线集成与清理](superpowers/reviews/2026-10-08-qwen3-asr-review-fixes.md#主线集成与清理2026-10-08)。
@@ -35,7 +37,6 @@
 
 ## 开发中的功能
 
-[MCP / Gateway 精简方案](design/2026-10-10-mcp-gateway-simplification-plan.md)及[实施计划](superpowers/plans/2026-10-10-mcp-gateway-simplification.md)已实现并集成本地 `main`，包 0.2.0、Web 0.2.48 已部署到仓库外独立 runtime。业务通过 MCP 创建，只使用 Gateway，Web 保留批次与知识管理；现有 Vault 已按确认范围初始化为 schema 16 空库。CLI 业务、Web 新建、聊天、模型配置和专题自动生成已停用。作者自查、1503 项非 live 回归、153 项安装包流程回归和八个浏览器入口通过；实际服务、停用路由、诊断和新 MCP 51 项工具契约验证通过，见[验收及部署记录](superpowers/reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。本聊天重连后的实际 doctor 和进程检查也确认使用新 runtime，旧环境的 MCP 进程为零；第 9 步部署已完成，第 10 步旧版源码与包的仓库外归档等待用户确认。
 
 上述「近期完成」中的数字、52 工具和服务重启属于 0.1.5 及更早的历史部署记录；0.2.0 实际工具清单移除 `generate_topic_artifact`，客户端升级后需重新连接。历史 Qwen3、收藏与合集验收内容继续保留。
 

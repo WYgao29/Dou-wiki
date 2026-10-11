@@ -1,6 +1,6 @@
 # MCP / Gateway 精简发布前验收
 
-日期：2026-10-11。第 8/10 大步骤发布前验收（Task 9）及第 9/10 大步骤本机部署（Task 10）。结论：`0.2.0` 的源码、浏览器和独立发行包验收通过，并已在用户确认后部署到本机独立 runtime；现有 Vault 已按确认范围初始化空库。当前聊天重连后的实际 MCP 诊断与进程检查确认使用新 runtime、提供 51 项工具，旧环境的 MCP 进程为零；Task 10 完成，第 10 步旧版归档等待用户确认。
+日期：2026-10-11。第 8/10 大步骤发布前验收（Task 9）、第 9/10 大步骤本机部署（Task 10）及第 10/10 大步骤归档与最终交付（Task 11）。结论：`0.2.0` 的源码、浏览器和独立发行包验收通过，并已在用户确认后部署到本机独立 runtime；现有 Vault 已按确认范围初始化空库。当前聊天重连后的实际 MCP 诊断与进程检查确认使用新 runtime、提供 51 项工具，旧环境的 MCP 进程为零；固定旧版归档和本次工作区清理也已完成，十个大步骤全部完成。
 
 依据：[已确认设计](../../design/2026-10-10-mcp-gateway-simplification-plan.md)、[实施计划](../plans/2026-10-10-mcp-gateway-simplification.md)、[作者自查](2026-10-10-mcp-gateway-simplification-code-review.md)。由当前 Agent 执行，没有独立审查者或子 Agent。
 
@@ -109,4 +109,27 @@ Worker 按既有规则补做一次到期的空库周维护，另写入运行心�
 
 重连补验脚本首次将 doctor 的 `analysis_mode` 检查对象误作字符串，按已有 `ok` / `mode` 字段修正后通过；只修改仓库外检查，未增加 MCP 调用或产品改动。严格校验还发现 Codex 配置其他段的字节与部署当时不同；目标 MCP 段与已验证配置完全相同，本轮不修改或恢复其他段，保存当前哈希供最终复核。部署时仅改一行的证据保持不变，不能据此声称暂停期间其他配置也未变。具体见 `task-10-reconnect-validator-issue.json` 与 `task-10-post-reconnect-config.json`。
 
-严格 `verify-task-10.py` 已通过，确认当前源码 / 安装包、服务探针、配置、空业务库及保留文件符合部署结果；本轮只补连接验证和四份维护文档，没有重复主线集成、安装、清除或初始化。第 9/10 步完成；旧版固定提交、tag 和原环境保留，第 10/10 步归档等待用户确认，尚未执行。
+严格 `verify-task-10.py` 已通过，确认当前源码 / 安装包、服务探针、配置、空业务库及保留文件符合部署结果；本轮只补连接验证和四份维护文档，没有重复主线集成、安装、清除或初始化。第 9/10 步完成；旧版固定提交、tag 和原环境保留，第 10/10 步随后已获用户确认并完成，结果见下一节。
+
+## 旧版归档与最终交付（2026-10-11，第 10/10 步）
+
+用户确认后从固定提交 `6c4fb7b918e5b37e0faefa5fc8cbefdde82783bb` 生成旧版归档，标签 `legacy/douyin-wiki-0.1.5-2026-10-10` 未改变。源码和锁文件均声明 `0.1.5`，旧 wheel 仅由该源码独立构建。归档目录为 `/Users/weisengao/Documents/ChatGPT/archives/douyin-wiki-legacy/`，包含以下四个文件：
+
+| 文件 | SHA256 / 用途 |
+| --- | --- |
+| `source.zip` | `58a27fc5b640a16334354681a8ddbf0ba470dcc379f6499745031233399af79b` |
+| `douyin_wiki-0.1.5-py3-none-any.whl` | `71831c8bad71cc4c5812a33b4c5de43736bc42baa501e10231cd34f6e4e31950` |
+| `README.md` | `164bec10072135f37e8c021c566b18fd6aa1c36e12c5225610988039a7144e41` |
+| `SHA256SUMS` | 校验上述三份文件，不包含自身；实际 shasum 校验全部通过 |
+
+源码 ZIP 的 232 个文件名及内容逐项对应固定提交；包括 src、tests、docs、scripts、pyproject、uv.lock 与许可证，没有业务库、凭据、Profile、模型或本机环境。旧包的 94 个文件与源码及独立安装字节一致，24 项静态资源、字体、Swift 资源、许可证和两个 console scripts 完整。独立 Python 3.12.13 使用同提交带哈希依赖清单，93 个运行包兼容，非 editable；CLI --help 和 pip check 通过。
+
+实际旧版 STDIO initialize / tools/list 返回 52 项，名称、input schema 和 instructions 与 Task 1 基准逐项一致，包含 generate_topic_artifact。只读元数据检查没有创建 Vault 或 Profile，没有业务、模型、网络或 Keychain 调用，四个记录进程的 guard 阻断为零。首次 Requires-Python 文本比较失败来自等价约束的排序差异，改为 SpecifierSet 比较后通过；只修正仓库外检查，源码 / wheel 不变。恢复 README 写明系统条件、从原锁文件安装依赖、wheel / 源码安装方法及独立配置 / 空库路径；本轮没有执行旧版初始化或账号采集。
+
+清理前的完整核对返回 PRE_CLEANUP_PASS，确认旧版归档、新版源码 / 包、51 项当前 MCP、实际服务、schema 16 空业务库和生产配置均有效。该检查未提前标记 Task 11 完成。本任务 worktree 已通过原生 archive_worktree 归档，平台附件记录为 archived_worktree；已集成的 codex/mcp-gateway-simplification 分支使用 git branch -d 删除。只移除本轮新建、确认未被修改的 legacy-build 和 legacy-check，原仓库 .venv 与其他 worktree 继续保留。
+
+本计划的 ledger、briefs 和日志，以及忽略的八张 PNG，逐字保存在 TASK_OUT/final-worktree-evidence；旧版安装的 94 文件哈希、metadata、纯测试配置及环境说明保存在 legacy-install-evidence。当前源码、0.2.0 wheel / sdist 和独立 runtime 保持已验收版本，本步不增加运行代码或测试改动，未推送。生产配置字节与本步骤开始时一致；当前 MCP 的实际 doctor 使用新 runtime，51 项工具与新原生清单相同，Web 0.2.48、Worker 及维护服务正常。
+
+最终完成校验从 main 执行，task-done 使用仓库外已保存且 plan-path 相符的执行目录，避免在主仓库生成临时执行材料。完整记录见 TASK_OUT/task-11-verification.json、task-11-cleanup.json 与 final-delivery.json；构建、旧版安装、工具清单、进程记录及保留材料分别见 task-11-build.json、task-11-legacy-check.json、task-11-legacy-mcp-tools.json、task-11-process-audits/ 和 task-11-preserved-evidence.json。
+
+全流程由当前 Agent 执行及作者自查，没有独立审查者。正式 1503 项非 live 回归、八个浏览器入口及 153 项安装包流程验收的输入仍有效，本步只补归档安装和实际运行检查，未重复完整回归；真实账号采集不在本轮验证范围。当前没有未解决的实现问题。下一步为用户最终验收。
