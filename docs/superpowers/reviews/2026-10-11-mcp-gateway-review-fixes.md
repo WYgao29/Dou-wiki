@@ -47,4 +47,11 @@
 - `requirements-runtime.txt`、`requirements-check.txt`、`verified-inputs.json`、`repair-ledger.json`：锁定依赖、运行与测试输入哈希及执行记录。
 - `production-before-update.json`：只读生产探针，HTTP 200、Web 0.2.48、Worker 运行且队列为零，安装包仍是 0.2.0。
 
-修复 wheel 已构建并通过安装验证。源码包及最终本地 main 集成结果将在完成后追加。下一步是确认更新本机 runtime，使用现有配置及 schema 16 新库，重启 Worker、维护和 Web，再重新连接 MCP 并核对实际解释器和版本。
+修复源码提交为 `9b41b08e6ba4934dd63475ba561ceb529ff9f9da`，之后只更新本记录。wheel 的 90 个运行文件与源码及安装目录逐字一致，包含 24 个静态资源和 Vision OCR 资源；源码包的 236 个文件逐项等于该提交，90 个运行源码文件齐全。独立环境的 100 个包依赖检查通过，除抖库版本外与原安装验证环境完全一致。安装及回归的 10 个受记录进程均无禁止操作尝试。
+
+两份发行物位于本轮材料的 `dist/`，SHA256 为：
+
+- `douyin_wiki-0.2.1-py3-none-any.whl`：`18ece3b8adcad1ad7ded2d1a91a0e92dab0c1a71e5a2043d1cd673954f65cfcd`。
+- `douyin_wiki-0.2.1.tar.gz`：`b0bfcafa47909aa571172217516543310a1f92b52bbdbbebe7ec034ac09cf0c7`。
+
+包成员及源码比较见 `package-files-check.json`、`release-files.json` 和 `dist/SHA256SUMS`；最终 main 集成、证据校验及交付路径见 `final-delivery.json`。下一步是确认更新本机 runtime，使用现有配置及 schema 16 新库，重启 Worker、维护和 Web，再重新连接 MCP 并核对实际解释器和版本。
