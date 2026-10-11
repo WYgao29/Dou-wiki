@@ -35,7 +35,7 @@
 
 ## 开发中的功能
 
-[MCP / Gateway 精简方案](design/2026-10-10-mcp-gateway-simplification-plan.md)及[实施计划](superpowers/plans/2026-10-10-mcp-gateway-simplification.md)已确认，当前在 `codex/mcp-gateway-simplification` 实施。包 0.2.0、Web 0.2.48 的当前文档描述该分支：业务通过 MCP 创建，只使用 Gateway，Web 保留已有批次与知识管理，新库为 schema 16。CLI 业务、Web 新建、聊天、模型配置和专题自动生成已停用。尚未完成全分支审查、发行包验收或生产部署，现用服务状态以实际配置和探针为准。
+[MCP / Gateway 精简方案](design/2026-10-10-mcp-gateway-simplification-plan.md)及[实施计划](superpowers/plans/2026-10-10-mcp-gateway-simplification.md)已实现并集成本地 `main`，包 0.2.0、Web 0.2.48 已部署到仓库外独立 runtime。业务通过 MCP 创建，只使用 Gateway，Web 保留批次与知识管理；现有 Vault 已按确认范围初始化为 schema 16 空库。CLI 业务、Web 新建、聊天、模型配置和专题自动生成已停用。作者自查、1503 项非 live 回归、153 项安装包流程回归和八个浏览器入口通过；实际服务、停用路由、诊断和新 MCP 51 项工具契约验证通过，见[验收及部署记录](superpowers/reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。当前工具清单已为 51 项，但本聊天 MCP 实际连接仍引用原仓库解释器，须重连后验证运行环境；部署步骤尚未记为完成，旧版源码与包的仓库外归档未执行。
 
 上述「近期完成」中的数字、52 工具和服务重启属于 0.1.5 及更早的历史部署记录；0.2.0 实际工具清单移除 `generate_topic_artifact`，客户端升级后需重新连接。历史 Qwen3、收藏与合集验收内容继续保留。
 

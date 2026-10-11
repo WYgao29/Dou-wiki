@@ -1,6 +1,6 @@
 # MCP / Gateway 精简发布前验收
 
-日期：2026-10-11。第 8/10 大步骤、Task 9。结论：`0.2.0` 的源码、浏览器和独立发行包验收通过，可以在用户确认后执行第 9 步本地主线集成与部署。本步没有切换生产入口或清除用户 Vault。
+日期：2026-10-11。第 8/10 大步骤发布前验收（Task 9）及第 9/10 大步骤本机部署（Task 10）。结论：`0.2.0` 的源码、浏览器和独立发行包验收通过，并已在用户确认后部署到本机独立 runtime；现有 Vault 已按确认范围初始化空库。当前聊天 MCP 虽已提供 51 项工具，实际连接环境仍待重连验证；Task 10 未记为完成，旧版归档尚未执行。
 
 依据：[已确认设计](../../design/2026-10-10-mcp-gateway-simplification-plan.md)、[实施计划](../plans/2026-10-10-mcp-gateway-simplification.md)、[作者自查](2026-10-10-mcp-gateway-simplification-code-review.md)。由当前 Agent 执行，没有独立审查者或子 Agent。
 
@@ -74,4 +74,32 @@ wheel 和 sdist 中 90 个包文件均与源码逐字一致。检查包括全部
 
 关键证据：`task-9-checks.json`、`task-9-browser-checks.json`、`task-9-browser-screenshots.json`、`task-9-package-audit.json`、`task-9-release-commands.json`、`task-9-pip-check.json`、`task-9-wheel-check.json`、`task-9-installed-tests.json`、`task-9-verification.json` 及 `major-step-8-delivery.json`。`release-SHA256SUMS` 汇总两份发行包、两份依赖清单和配置候选的校验值。测试、报告和产物均记录 SHA256；原始失败材料保留，只有成功记录用于验收结论。
 
-没有未处理的严重或重要问题。本步验收完成后等待用户确认第 9/10 步：本地主线集成、现有 Vault 空库初始化和四个运行入口切换。旧版源码与 wheel 归档仍留在第 10 步。
+以上是第 8/10 步发布前验收记录；用户随后已确认第 9 步的主线集成、空库初始化和四入口切换，实际结果见下节。旧版源码与 wheel 归档仍留在第 10 步。
+
+## 本机部署结果（2026-10-11，第 9/10 步）
+
+用户确认上述部署清单后，由当前 Agent 执行 Task 10。已在本地 `main` fast-forward 集成 `3f06f9eaa5f1001a6ada4b75e5091d47b2d04c48`，没有推送；198 项源码、测试、脚本、构建及现行说明输入与 Task 9 验收相同，没有新增运行改动。主工作区原四份任务文档、工作 diff、空暂存补丁及演进 diff 保存到 `TASK_OUT/integration/`；设计与复核记录逐字相同，早期计划与索引使用已确认的新版本。原暂存为空，集成后仍为空。后续提交只更新部署文档、索引与维护规则中的实际环境说明。
+
+从已验收 wheel 和带哈希 runtime 清单安装 `/Users/weisengao/Library/Application Support/douyin-wiki/runtime/.venv/`。Python `3.12.13`，包 `0.2.0`，93 个运行依赖兼容；包和 metadata 均来自该环境的 site-packages，非 editable，全部 90 个包文件逐字对应 wheel。未同步、删除或移动原仓库 `.venv`。
+
+停止旧 Web、Worker、维护调度，终止两个旧 MCP 会话，确认旧解释器的业务进程和旧状态库文件句柄均为零后，在原 Vault 路径清除清单中的七个管理目录及三个重新生成的文件。没有导出或迁回旧业务数据。新配置的哈希与候选配置相同，没有 `[llm]`；保留有效识别、检索和运行设置。实际 `init` 退出 0，创建 schema 16、无聊天表的新状态库和新 Vault Git；`.obsidian`、`.gitignore`、`.DS_Store` 原有文件内容校验通过，Profile 与模型缓存保留。
+
+三个 LaunchAgent 均使用新解释器和有效 config；Worker / Web 实际进程命令符合配置，维护调度登记正常。Codex 配置只改变 `mcp_servers.douyin-wiki.command` 一行，原 args、cwd、全部三个环境字段及其他配置字节不变。五份无密钥运行配置保存在仓库外 `TASK_OUT/deployment-config-backups/`；未备份 `[llm]`、Keychain 或其他 Codex 配置段。
+
+| 实际运行检查 | 结果 |
+| --- | --- |
+| HTTP health | `200`，Web `0.2.48`，Gateway，Worker 活跃、队列为零 |
+| 页面与空库查询 | 11 个页面 / 查询入口 `200`；旧模型设置页面跳转到分析设置 |
+| 静态资源 | 24 个文件全部 `200`，响应字节与安装包一致 |
+| 停用接口 | 16 组方法 / 路径实际返回 `410`，业务任务与资料未增加 |
+| 新库 | schema 16，无聊天表，导入任务、资料、专题及其他业务表为空 |
+| 实际 doctor CLI | 退出 0，与既有中文展示一致；`overall=true`、`qwen3.ok=true`，无对话模型要求 |
+| 新 MCP 连接 | 按当前配置使用新 runtime 完成实际 STDIO initialize / tools/list，51 项名称和输入 schema 与发布前验收一致；stderr 为空，业务调用为零 |
+
+Worker 按既有规则补做一次到期的空库周维护，另写入运行心跳；它们是本轮新运行记录。搜索索引内部初始化记录与独立空库相同，不能将这些内部记录当作旧业务残留。没有执行真实账号采集、模型下载或推理。九个受记录的验收进程均使用新 runtime，外部网络、Keychain 和旧模型模块的阻断尝试为零。
+
+部署脚本检查中修正五个验收假设：保留既有 `PYTHONDONTWRITEBYTECODE` 环境字段；等待 `launchctl bootout` 后进程实际退出；用 SQLite 表类型识别空索引内部记录；按当前 MCP SDK 的序列化别名读取输入 schema；将旧版附注 tag 解析到实际提交再比较。这些修正仅涉及仓库外验收脚本，未改变产品或配置契约。实际问题与处理记录见 `TASK_OUT/task-10-validator-issues.json`。
+
+已将同哈希 `0.2.0` wheel / sdist 放入主仓库 `dist/`。目标文件原先不存在，未替换其他包，原三个 dist 文件原样保留。部署说明见 `TASK_OUT/deployment.md`；核心证据为 `task-10-integration.json`、`task-10-runtime-origin.json`、`task-10-stop.json`、`task-10-reset.json`、`task-10-mcp-config-change.json`、`task-10-live-check.json`、`task-10-dist.json` 与 `task-10-verification.json`。
+
+当前聊天起初仍显示旧缓存的 52 项工具；平台随后自动刷新为 51 项、生成工具缺席，但最终实际 connector doctor 的模型准备命令仍指向原仓库 `.venv/bin/hf`。该命令由运行进程的 sysconfig scripts 路径生成，证明本聊天实际连接仍使用原环境；两个缓存旧命令的 MCP 会话也重新出现。按新版文件配置建立的原生新连接正确，不能替代本聊天的运行环境验证。界面控制工具返回 `Computer Use is not allowed to use the app 'com.openai.codex' for safety reasons.`，无法代用户操作 Codex 重连；没有绕过该限制。已通过异步问题请用户重新建立当前连接；界面重连无法由 Agent 完成。当前 Task 10 继续保持进行中，未写 task-done；记录已经完成的服务部署与发行材料，待实际 MCP 使用新 runtime 后再完成最终确认。旧版固定提交、tag 和原环境保留，第 10/10 步归档尚未执行。
