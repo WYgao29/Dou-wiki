@@ -1,6 +1,6 @@
 # MCP / Gateway 精简发布前验收
 
-日期：2026-10-11。第 8/10 大步骤发布前验收（Task 9）及第 9/10 大步骤本机部署（Task 10）。结论：`0.2.0` 的源码、浏览器和独立发行包验收通过，并已在用户确认后部署到本机独立 runtime；现有 Vault 已按确认范围初始化空库。当前聊天 MCP 虽已提供 51 项工具，实际连接环境仍待重连验证；Task 10 未记为完成，旧版归档尚未执行。
+日期：2026-10-11。第 8/10 大步骤发布前验收（Task 9）及第 9/10 大步骤本机部署（Task 10）。结论：`0.2.0` 的源码、浏览器和独立发行包验收通过，并已在用户确认后部署到本机独立 runtime；现有 Vault 已按确认范围初始化空库。当前聊天重连后的实际 MCP 诊断与进程检查确认使用新 runtime、提供 51 项工具，旧环境的 MCP 进程为零；Task 10 完成，第 10 步旧版归档等待用户确认。
 
 依据：[已确认设计](../../design/2026-10-10-mcp-gateway-simplification-plan.md)、[实施计划](../plans/2026-10-10-mcp-gateway-simplification.md)、[作者自查](2026-10-10-mcp-gateway-simplification-code-review.md)。由当前 Agent 执行，没有独立审查者或子 Agent。
 
@@ -95,6 +95,7 @@ wheel 和 sdist 中 90 个包文件均与源码逐字一致。检查包括全部
 | 新库 | schema 16，无聊天表，导入任务、资料、专题及其他业务表为空 |
 | 实际 doctor CLI | 退出 0，与既有中文展示一致；`overall=true`、`qwen3.ok=true`，无对话模型要求 |
 | 新 MCP 连接 | 按当前配置使用新 runtime 完成实际 STDIO initialize / tools/list，51 项名称和输入 schema 与发布前验收一致；stderr 为空，业务调用为零 |
+| 当前聊天重连补验 | 实际 doctor 的三个模型准备可执行路径均来自新 runtime；当前进程命令正确，旧环境 MCP 进程为零；51 项工具名称与原生连接一致 |
 
 Worker 按既有规则补做一次到期的空库周维护，另写入运行心跳；它们是本轮新运行记录。搜索索引内部初始化记录与独立空库相同，不能将这些内部记录当作旧业务残留。没有执行真实账号采集、模型下载或推理。九个受记录的验收进程均使用新 runtime，外部网络、Keychain 和旧模型模块的阻断尝试为零。
 
@@ -102,4 +103,10 @@ Worker 按既有规则补做一次到期的空库周维护，另写入运行心�
 
 已将同哈希 `0.2.0` wheel / sdist 放入主仓库 `dist/`。目标文件原先不存在，未替换其他包，原三个 dist 文件原样保留。部署说明见 `TASK_OUT/deployment.md`；核心证据为 `task-10-integration.json`、`task-10-runtime-origin.json`、`task-10-stop.json`、`task-10-reset.json`、`task-10-mcp-config-change.json`、`task-10-live-check.json`、`task-10-dist.json` 与 `task-10-verification.json`。
 
-当前聊天起初仍显示旧缓存的 52 项工具；平台随后自动刷新为 51 项、生成工具缺席，但最终实际 connector doctor 的模型准备命令仍指向原仓库 `.venv/bin/hf`。该命令由运行进程的 sysconfig scripts 路径生成，证明本聊天实际连接仍使用原环境；两个缓存旧命令的 MCP 会话也重新出现。按新版文件配置建立的原生新连接正确，不能替代本聊天的运行环境验证。界面控制工具返回 `Computer Use is not allowed to use the app 'com.openai.codex' for safety reasons.`，无法代用户操作 Codex 重连；没有绕过该限制。已通过异步问题请用户重新建立当前连接；界面重连无法由 Agent 完成。当前 Task 10 继续保持进行中，未写 task-done；记录已经完成的服务部署与发行材料，待实际 MCP 使用新 runtime 后再完成最终确认。旧版固定提交、tag 和原环境保留，第 10/10 步归档尚未执行。
+部署过程中，当前聊天曾显示旧缓存的 52 项工具；平台随后自动刷新为 51 项、生成工具缺席，但当时实际 connector doctor 的模型准备命令仍指向原仓库 `.venv/bin/hf`，两个缓存旧命令的 MCP 会话也重新出现。该命令由运行进程的 sysconfig scripts 路径生成，工具清单刷新不能代替实际连接验证。界面控制工具因安全限制拒绝访问 Codex，没有绕过限制；当时保留完成材料并请用户重连，未提前将 Task 10 记为完成。
+
+2026-10-11 用户继续后，对本聊天调用一次只读 doctor，三个模型的准备可执行路径均为独立 runtime 的 `bin/hf`，`overall=true`、`qwen3.ok=true`；读取的 51 项工具名称与原生新连接一致。实际 MCP 进程使用新 runtime，旧解释器的业务进程为零。原始回执、清单和进程证据保存在 `task-10-current-chat-doctor-after-reconnect.json`、`task-10-current-chat-tools-after-reconnect.json`、`task-10-reconnect-processes-after-reconnect.json`；最新结论见 `task-10-reconnect-diagnosis.json`，重连前证据单独保留。
+
+重连补验脚本首次将 doctor 的 `analysis_mode` 检查对象误作字符串，按已有 `ok` / `mode` 字段修正后通过；只修改仓库外检查，未增加 MCP 调用或产品改动。严格校验还发现 Codex 配置其他段的字节与部署当时不同；目标 MCP 段与已验证配置完全相同，本轮不修改或恢复其他段，保存当前哈希供最终复核。部署时仅改一行的证据保持不变，不能据此声称暂停期间其他配置也未变。具体见 `task-10-reconnect-validator-issue.json` 与 `task-10-post-reconnect-config.json`。
+
+严格 `verify-task-10.py` 已通过，确认当前源码 / 安装包、服务探针、配置、空业务库及保留文件符合部署结果；本轮只补连接验证和四份维护文档，没有重复主线集成、安装、清除或初始化。第 9/10 步完成；旧版固定提交、tag 和原环境保留，第 10/10 步归档等待用户确认，尚未执行。

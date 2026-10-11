@@ -10,7 +10,7 @@
 
 **Spec:** [已确认的精简方案](../../design/2026-10-10-mcp-gateway-simplification-plan.md)；[第 1 步复核记录](../reviews/2026-10-10-mcp-gateway-simplification-design-review.md)。用户已确认第 1 步及版本建议，不重做设计确认。
 
-**Status:** 第 1～8 大步骤和任务 1～9 已完成。第 9 大步骤 Task 10 正在完成客户端连接验证：本地 main 已集成，精简版 0.2.0 / Web 0.2.48、schema 16 空库、三个本机服务及独立 runtime 均已通过实际验证；Codex MCP 文件配置已切换，新 STDIO 连接 51 项契约正确，但当前聊天的实际连接仍引用原仓库解释器。工具清单虽已自动刷新为 51 项，运行环境仍需用户重连后验证；不将它记为已完成。第 10 大步骤旧版归档未执行。详见[验收及部署记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。
+**Status:** 第 1～9 大步骤和任务 1～10 已完成。本地 main 已集成，精简版 0.2.0 / Web 0.2.48、schema 16 空库、三个本机服务及独立 runtime 均已通过实际验证；本聊天重连后的实际 doctor、51 项工具清单和进程检查确认 MCP 已使用同一 runtime，旧环境的 MCP 进程为零。第 10 大步骤旧版归档等待用户确认，尚未执行。详见[验收及部署记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。
 
 ## Global Constraints
 
@@ -53,7 +53,7 @@
 | 6. 入口、界面与文档 | 任务 5、6、7 已完成、已获确认 | 已进入步骤 7 |
 | 7. 代码审查与修复 | 任务 8 已完成、已获确认 | 已完成步骤 8 |
 | 8. 发布前验收 | 任务 9 已完成、已获确认 | 已进入步骤 9 |
-| 9. 合并与本机部署 | 任务 10 进行中；当前 MCP 环境待重连验证 | 完成当前连接验证后确认步骤 10 |
+| 9. 合并与本机部署 | 任务 10 已完成；当前 MCP 环境重连验证通过 | 等待用户确认步骤 10 |
 | 10. 旧版归档与交付 | 任务 11 | 汇总交付物与验证记录 |
 
 计划共 11 项执行任务，仍对应用户确认的 10 个大步骤。大步骤内部持续执行，不为每个小任务重复索要确认。每次报告必须包含改动、验证结果、实际完成范围和下一步；文件修改、包构建和生产部署分别记录。
@@ -264,11 +264,11 @@ assert service.get_job(owner_id).status == JobStatus.AWAITING_AGENT_ANALYSIS
 - [x] **Step 2：准备独立 runtime。** 目标目前不存在，执行前重新核对；执行 `uv venv --python 3.12 "$TASK_RUNTIME"`、`uv pip sync --python "$TASK_RUNTIME/bin/python" --require-hashes "$TASK_OUT/requirements-runtime.txt"`、`uv pip install --python "$TASK_RUNTIME/bin/python" --no-deps "$TASK_OUT/dist/douyin_wiki-0.2.0-py3-none-any.whl"`。不从源码 editable 安装、不访问或同步旧 `.venv`。检查 package version `0.2.0`、origin / metadata / console scripts 为目标环境；现用四个入口此时仍不切换。
 - [x] **Step 3：核对并停止旧业务入口。** 再读取三份 LaunchAgent、Codex 配置和 Vault 顶层路径；保存安装配置备份，不读取或备份密钥。停止旧 Web、Worker 与维护调度，关闭指向旧库的 MCP 会话，确认旧解释器没有这些活动进程或库访问，再处理业务目录。独立模型服务保持当前状态。
 - [x] **Step 4：在现有 Vault 路径初始化空库。** 根目录为 `TASK_VAULT`。根据 2026-10-10 只读清单，清除其 `raw/`、`wiki/`、`creators/`、`collections/`、`topics/`、`.douyin-wiki/`、保存旧业务历史的 `.git/`，以及将重新生成的 `AGENTS.md`、`index.md`、`log.md`；不导出旧数据。`.obsidian/`、`.gitignore` 和 `.DS_Store` 保留，浏览器 Profile 与模型缓存位于此路径之外。操作前重新核对目录真实路径、符号链接和管理归属；新出现的来源不明路径不纳入清除。使用保留字段构造新版 AppConfig，并用 `render_default_config` 写入 `TASK_CONFIG`，仅显式保留实际仍有效的 Vault、Web、识别、检索和运行设置，不复制 `[llm]` 或旧模式。Run：`"$TASK_RUNTIME/bin/python" -B -m douyin_wiki init --vault "$TASK_VAULT" --config-path "$TASK_CONFIG" --overwrite-config`，创建 schema 16 和新 Vault Git。
-- [ ] **Step 5：切换四个入口。** Run：`"$TASK_RUNTIME/bin/python" -B -m douyin_wiki service install --config-path "$TASK_CONFIG"`，重新生成 Worker / 维护 plist；`"$TASK_RUNTIME/bin/python" -B -m douyin_wiki web install --config-path "$TASK_CONFIG"`，重新生成 Web plist。更新 Codex 指定 MCP 的 command 为新 `.venv/bin/python`，保留 `-B -m douyin_wiki.mcp_server` 及当前有效配置 / Profile 环境值，不修改其他 MCP 或 Hermes 文件。Codex 重新连接后读取实际 tools/list。
-- [ ] **Step 6：验证实际运行。** `launchctl` 和 HTTP 确认 Web `0.2.48`、Worker 活跃，维护登记且使用新解释器；新 MCP 的包路径和清单与安装包一致，生成工具缺席，按当前集合预期 51 项但不固定白名单。验证六类停用入口 `410` 且空库没有多出的业务任务，查询 / 页面正常。Run：`"$TASK_RUNTIME/bin/python" -B -m douyin_wiki doctor --config-path "$TASK_CONFIG"`，验证保留运行检查，无对话模型要求。识别 / 检索模型准备状态可检查，真实账号采集需另行显式选择。若当前聊天仍缓存旧 MCP 清单，明确记录待重连，不能用其他新会话的结果声称它已刷新。
-- [ ] **Step 7：记录部署和发行文件。** 核对配置及包哈希后，需替换仓库 `dist/` 同名文件时先备份并检查原包成员，再放入已验证产物；不清理来源不明的 dist 文件。追加正式验收的安装路径、配置、主线提交、运行探针和实际 MCP 清单证据；仍保留旧仓库环境。提交本任务部署文档，报告后等待用户确认步骤 10。
+- [x] **Step 5：切换四个入口。** Run：`"$TASK_RUNTIME/bin/python" -B -m douyin_wiki service install --config-path "$TASK_CONFIG"`，重新生成 Worker / 维护 plist；`"$TASK_RUNTIME/bin/python" -B -m douyin_wiki web install --config-path "$TASK_CONFIG"`，重新生成 Web plist。更新 Codex 指定 MCP 的 command 为新 `.venv/bin/python`，保留 `-B -m douyin_wiki.mcp_server` 及当前有效配置 / Profile 环境值，不修改其他 MCP 或 Hermes 文件。Codex 重新连接后读取实际 tools/list。
+- [x] **Step 6：验证实际运行。** `launchctl` 和 HTTP 确认 Web `0.2.48`、Worker 活跃，维护登记且使用新解释器；新 MCP 的包路径和清单与安装包一致，生成工具缺席，按当前集合预期 51 项但不固定白名单。验证六类停用入口 `410` 且空库没有多出的业务任务，查询 / 页面正常。Run：`"$TASK_RUNTIME/bin/python" -B -m douyin_wiki doctor --config-path "$TASK_CONFIG"`，验证保留运行检查，无对话模型要求。识别 / 检索模型准备状态可检查，真实账号采集需另行显式选择。若当前聊天仍缓存旧 MCP 清单，明确记录待重连，不能用其他新会话的结果声称它已刷新。
+- [x] **Step 7：记录部署和发行文件。** 核对配置及包哈希后，需替换仓库 `dist/` 同名文件时先备份并检查原包成员，再放入已验证产物；不清理来源不明的 dist 文件。追加正式验收的安装路径、配置、主线提交、运行探针和实际 MCP 清单证据；仍保留旧仓库环境。提交本任务部署文档，报告后等待用户确认步骤 10。
 
-实际部署：本地 main fast-forward 集成 3f06f9e，198 项验收输入一致；独立 runtime 安装 93 个运行依赖，包 0.2.0 / Web 0.2.48、非 editable、90 个包文件校验通过。旧服务和两个 MCP 会话退出后清除已确认的十个路径，原 Vault 创建 schema 16 和新 Git；保留文件字节、原 .venv、Profile 与模型缓存保持。三项服务及目标 MCP command 已统一到新 runtime，其他 Codex 配置字节不变。实际 HTTP、16 组 410、24 个静态资源、doctor overall=true / qwen3.ok=true 和原生 MCP 51 项名称与输入 schema 通过。导入任务 / 资料 / 专题为空，仅新增正常周维护和 Worker 心跳；未做真实账号采集或模型调用。0.2.0 两份发行文件已同步至 dist，原文件保留。当前工具清单已自动刷新为 51 项，但本聊天实际 doctor 仍报告原仓库 scripts 路径；旧缓存启动了两个原解释器 MCP 会话。文件配置与新 STDIO 连接正确，当前运行环境切换尚待用户重连验证。工具安全限制拒绝访问 Codex UI，无法代用户操作。详细证据见[验收及部署记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。当前 Task 10 保持进行中，不进入第 10 大步骤。
+实际部署：本地 main fast-forward 集成 3f06f9e，198 项验收输入一致；独立 runtime 安装 93 个运行依赖，包 0.2.0 / Web 0.2.48、非 editable、90 个包文件校验通过。旧服务和两个 MCP 会话退出后清除已确认的十个路径，原 Vault 创建 schema 16 和新 Git；保留文件字节、原 .venv、Profile 与模型缓存保持。三项服务及目标 MCP command 已统一到新 runtime，部署当时其他 Codex 配置字节不变。实际 HTTP、16 组 410、24 个静态资源、doctor overall=true / qwen3.ok=true 和原生 MCP 51 项名称与输入 schema 通过。导入任务 / 资料 / 专题为空，仅新增正常周维护和 Worker 心跳；未做真实账号采集或模型调用。0.2.0 两份发行文件已同步至 dist，原文件保留。当前聊天曾出现清单刷新但实际解释器仍旧的情况；2026-10-11 用户继续后，实际 doctor 的三个模型准备命令均使用新 runtime 的 scripts 路径，当前 MCP 进程使用新解释器，旧环境进程为零。重连期间 Codex 其他段的字节发生变化，目标 MCP 段仍与已验证配置相同；本轮只读取并保留这些变化，不推断修改者。严格最终校验通过，Task 10 完成。详细证据见[验收及部署记录](../reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。第 10 大步骤等待用户确认。
 
 ## Task 11：旧版源码与发行包归档、最终交付（步骤 10）
 
