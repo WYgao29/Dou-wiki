@@ -2,7 +2,7 @@
 
 日期：2026-10-11。基准提交：`eedab69d9b099bc28ae94c2103c185c86a008179`。用户以“sp 修复”确认修复整体复核中的两处问题；本轮复用已确认设计和复现材料，由当前 Agent 执行，没有子 Agent 或独立审查者。
 
-结论：旧库拒绝前的 Vault 写入和收藏目录提示均已修复，修复 wheel 为包 `0.2.1` / Web `0.2.49`。源码行为、实际安装包、Web / Worker / MCP 启动及保留接口已验证。用户随后确认本机更新，现用独立 runtime 已安装包 `0.2.1`，Web / Worker 已重启，维护定时任务已重新注册；新 MCP 连接验收通过，当前聊天仍需客户端重连。
+结论：旧库拒绝前的 Vault 写入和收藏目录提示均已修复，修复 wheel 为包 `0.2.1` / Web `0.2.49`。源码行为、实际安装包、Web / Worker / MCP 启动及保留接口已验证。用户随后确认本机更新，现用独立 runtime 已安装包 `0.2.1`，Web / Worker 已重启，维护定时任务已重新注册；新 MCP 连接及当前聊天重连验收均通过，本轮修复与部署完成。
 
 ## 修复及原因
 
@@ -47,7 +47,7 @@
 - `requirements-runtime.txt`、`requirements-check.txt`、`verified-inputs.json`、`repair-ledger.json`：锁定依赖、运行与测试输入哈希及执行记录。
 - `production-before-update.json`：只读生产探针，HTTP 200、Web 0.2.48、Worker 运行且队列为零，安装包仍是 0.2.0。
 
-修复源码提交为 `9b41b08e6ba4934dd63475ba561ceb529ff9f9da`，之后只更新本记录。wheel 的 90 个运行文件与源码及安装目录逐字一致，包含 24 个静态资源和 Vision OCR 资源；源码包的 236 个文件逐项等于该提交，90 个运行源码文件齐全。独立环境的 100 个包依赖检查通过，除抖库版本外与原安装验证环境完全一致。安装及回归的 10 个受记录进程均无禁止操作尝试。
+修复源码提交为 `9b41b08e6ba4934dd63475ba561ceb529ff9f9da`，后续提交只更新验收记录和文档索引。wheel 的 90 个运行文件与源码及安装目录逐字一致，包含 24 个静态资源和 Vision OCR 资源；源码包的 236 个文件逐项等于该提交，90 个运行源码文件齐全。独立环境的 100 个包依赖检查通过，除抖库版本外与原安装验证环境完全一致。安装及回归的 10 个受记录进程均无禁止操作尝试。
 
 两份发行物位于本轮材料的 `dist/`，SHA256 为：
 
@@ -77,4 +77,14 @@
 
 本次材料单独保存在修复目录的 `deployment-2026-10-11/`，没有覆盖之前的 61 份证据。主要记录为 `preflight.json`、`stop.json`、`install.log`、`install-check.json`、`start.json`、`live-check.json`、`mcp-initialize.json`、`mcp-tools.json` 和 `mcp-doctor.json`，数据库备份为 `state-before.sqlite3`。原 0.2.0 wheel 保留在上一轮材料的 `dist/`，不涉及旧库迁移。
 
-当前聊天的旧 MCP 连接在进程退出后调用 doctor 返回 `Transport closed`，工具元数据仍标识 0.2.0；不能把单独创建的新连接验收当作本聊天已经重连。已请用户在 Codex 重新连接后回复，再核对本聊天的实际 doctor、runtime 路径和 0.2.1 instructions。此前界面控制的自动安全审查拒绝访问 Codex（`Computer Use is not allowed to use the app 'com.openai.codex' for safety reasons.`），没有再次尝试该界面操作。
+升级刚完成时，当前聊天的旧 MCP 连接在进程退出后调用 doctor 返回 `Transport closed`，工具元数据仍标识 0.2.0；当时没有把单独创建的新连接验收当作本聊天已经重连。已请用户在 Codex 重新连接后回复，再核对本聊天的实际 doctor、runtime 路径和 0.2.1 instructions。此前界面控制的自动安全审查拒绝访问 Codex（`Computer Use is not allowed to use the app 'com.openai.codex' for safety reasons.`），没有再次尝试该界面操作。这是客户端重连之前的历史状态，后续完成结果见下节。
+
+## 当前聊天重连与最终验收：2026-10-11
+
+用户回复“已重连”后，当前聊天实际提供的 51 个 MCP 工具均标识 0.2.1，名称逐项等于既有基准，不含 `generate_topic_artifact`。从本聊天调用 doctor 成功，`isError=false`、overall 与 Qwen3 均可用，Gateway 配置正确，Vault 和数据库路径一致。
+
+该 doctor 根据实际进程的 `sysconfig` 目录生成三个模型的准备命令，三个可执行文件均为独立 runtime 的 `bin/hf`。结合本聊天的新版本工具元数据和成功 RPC，确认本聊天已使用新 runtime；不依赖单独启动的验收客户端来声明聊天重连。实际安装目录的 90 个运行文件仍等于已验证的 0.2.1 wheel；Web 健康探针继续返回 0.2.49，新 Worker 正常心跳，队列为空，旧仓库 `.venv` 的抖库进程为零。
+
+应用配置、Codex 配置、三个 plist、运行依赖及 Vault 内容复核通过，数据库保持 schema 16。修复阶段的 61 份证据和部署阶段的 39 份证据哈希重新校验通过，未覆盖此前的未重连状态。新增材料保存在 `deployment-2026-10-11/current-chat-reconnect-2026-10-11/`，包含本聊天的 `doctor.json`、完整工具元数据 `tools.json`、实际验证脚本 `verify.py` 与 `verification.json`；本轮最终状态、文档提交及证据入口为同目录的 `final-acceptance.json`。
+
+本轮只调用一次只读 doctor，没有创建业务任务或执行模型推理。两处审查问题的修复、源码集成、发行包验收、现用 runtime 更新、服务重启和当前聊天 MCP 重连全部完成；没有剩余必须由用户完成的操作，Superpowers 在本任务完成后恢复默认关闭。
