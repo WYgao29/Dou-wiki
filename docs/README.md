@@ -18,7 +18,7 @@
 
 ## 近期完成
 
-[MCP / Gateway 精简审查修复](superpowers/reviews/2026-10-11-mcp-gateway-review-fixes.md)已修正旧状态库拒绝前的 Vault 写入和收藏目录接续提示。包 0.2.1 / Web 0.2.49 的实际 wheel 验证通过，沿用现有配置、schema 16 和运行依赖；完整初次回归的环境版本失败已在新安装环境复验，141 项安装包回归通过。现用服务仍为 0.2.0 / Web 0.2.48，本机更新等待用户确认。
+[MCP / Gateway 精简审查修复](superpowers/reviews/2026-10-11-mcp-gateway-review-fixes.md)已修正旧状态库拒绝前的 Vault 写入和收藏目录接续提示。包 0.2.1 / Web 0.2.49 的实际 wheel 验证通过，沿用现有配置、schema 16 和运行依赖；完整初次回归的环境版本失败已在新安装环境复验，141 项安装包回归通过。用户确认后，独立 runtime 已更新为 0.2.1，Web / Worker 已重启，维护定时任务已重新注册；24 个静态资源、16 组停用路由和新 MCP 51 项工具契约通过。当前聊天的旧 MCP 连接已关闭，等待用户在客户端重新连接并核对。
 
 [MCP / Gateway 精简方案](design/2026-10-10-mcp-gateway-simplification-plan.md)及[实施计划](superpowers/plans/2026-10-10-mcp-gateway-simplification.md)已实现并集成本地 `main`，包 0.2.0、Web 0.2.48 已部署到仓库外独立 runtime。业务通过 MCP 创建，只使用 Gateway，Web 保留批次与知识管理；现有 Vault 已按确认范围初始化为 schema 16 空库。CLI 业务、Web 新建、聊天、模型配置和专题自动生成已停用。作者自查、1503 项非 live 回归、153 项安装包流程回归和八个浏览器入口通过；实际服务、停用路由、诊断和新 MCP 51 项工具契约验证通过，见[验收及部署记录](superpowers/reviews/2026-10-10-mcp-gateway-simplification-acceptance.md)。本聊天重连后的实际 doctor 和进程检查也确认使用新 runtime，旧环境的 MCP 进程为零；固定旧提交的 0.1.5 源码、wheel、恢复说明和 SHA256 已在仓库外归档并验证。十个大步骤全部完成，本次 worktree / 分支和临时构建环境已清理，执行记录和历史截图已另存；实际交付与恢复路径见同一验收记录。
 
