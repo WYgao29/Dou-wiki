@@ -119,12 +119,13 @@ class DouyinWikiService(
         self.media_semaphore = asyncio.Semaphore(config.worker.media_concurrency)
 
     def initialize(self, *, initialize_git: bool = True) -> None:
+        # Reject unsupported state before any Vault files or Git history are changed.
+        self.database.initialize()
         with self.vault.entry_operations_locked():
             self.vault.initialize(initialize_git=initialize_git)
             branding = self.vault.migrate_branding()
             statuses = self.vault.migrate_visible_status_labels()
             times = self.vault.migrate_visible_times_to_beijing()
-            self.database.initialize()
             self.recover_entry_trash_operations_locked()
             creator_views = self._migrate_creator_views()
             if initialize_git:
@@ -134,14 +135,14 @@ class DouyinWikiService(
                 )
 
     def initialize_runtime(self) -> None:
-        """Ensure older Vaults receive safe, additive layout migrations on every entrypoint."""
+        """Check state compatibility before applying Vault layout migrations."""
+        self.database.initialize()
         with self.vault.entry_operations_locked():
             with self.vault.locked():
                 changed = self.vault.initialize(initialize_git=False)
                 branding = self.vault.migrate_branding()
                 statuses = self.vault.migrate_visible_status_labels()
                 times = self.vault.migrate_visible_times_to_beijing()
-            self.database.initialize()
             self.recover_entry_trash_operations_locked()
             with self.vault.locked():
                 creator_views = self._migrate_creator_views()

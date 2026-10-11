@@ -287,7 +287,7 @@
       row.append(input, content, meta); $("items").append(row);
       if (focused === item.work_id) input.focus({preventScroll: true});
     }
-    if (!data.items?.length) $("items").append(node("p", data.directory_only ? "目录已读取。选择上方范围与收藏夹后更新作品。" : "当前筛选下暂无作品。"));
+    if (!data.items?.length) $("items").append(node("p", data.directory_only ? "目录已读取。请让 Agent 根据目录选择收藏夹并发起作品读取。" : "当前筛选下暂无作品。"));
     page = data.page || page;
     const totalPages = Math.max(1, Math.ceil((data.total || 0) / Number($("limit").value)));
     $("page").textContent = "第 " + page + " / " + totalPages + " 页 · 匹配 " + (data.total || 0) + " 件";

@@ -1,5 +1,7 @@
 # MCP / Gateway 精简发布前验收
 
+2026-10-11 后续整体复核确认了旧库检查顺序和收藏目录提示两处问题，修复及本轮验证见[0.2.1 审查修复记录](2026-10-11-mcp-gateway-review-fixes.md)。下文保留 0.2.0 的实际验收与部署记录。
+
 日期：2026-10-11。第 8/10 大步骤发布前验收（Task 9）、第 9/10 大步骤本机部署（Task 10）及第 10/10 大步骤归档与最终交付（Task 11）。结论：`0.2.0` 的源码、浏览器和独立发行包验收通过，并已在用户确认后部署到本机独立 runtime；现有 Vault 已按确认范围初始化空库。当前聊天重连后的实际 MCP 诊断与进程检查确认使用新 runtime、提供 51 项工具，旧环境的 MCP 进程为零；固定旧版归档和本次工作区清理也已完成，十个大步骤全部完成。
 
 依据：[已确认设计](../../design/2026-10-10-mcp-gateway-simplification-plan.md)、[实施计划](../plans/2026-10-10-mcp-gateway-simplification.md)、[作者自查](2026-10-10-mcp-gateway-simplification-code-review.md)。由当前 Agent 执行，没有独立审查者或子 Agent。

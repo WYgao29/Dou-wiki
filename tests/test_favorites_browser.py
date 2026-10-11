@@ -139,6 +139,9 @@ async def test_work_search_waits_for_work_inventory(favorites_ui, job_id):
     if job_id:
         assert "收藏夹目录已读取" in await page.locator("#favorites-status").inner_text()
         assert "尚未读取作品" in await page.locator("#favorites-summary").inner_text()
+        assert "Agent" in await page.locator("#favorites-items").inner_text()
+        for control in ("scope", "folder-list", "scan"):
+            assert await page.locator("#favorites-" + control).count() == 0
 
 
 @pytest.mark.parametrize("action", ["direct", "history"])

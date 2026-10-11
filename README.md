@@ -9,13 +9,13 @@
 
 ## 业务入口与任务管理
 
-0.2.0 的日常业务通过 MCP（Agent 调用本地工具的接口）执行。Agent 接收单条作品、博主、收藏或合集请求，创建持久任务并继续完成校正、分析和结果回复。`job_id` 是中间回执，收到它后继续跟进。
+0.2 系列的日常业务通过 MCP（Agent 调用本地工具的接口）执行。Agent 接收单条作品、博主、收藏或合集请求，创建持久任务并继续完成校正、分析和结果回复。`job_id` 是中间回执，收到它后继续跟进。
 
 本机 Web 仅绑定 `127.0.0.1`，用于授权、阅读与筛选、管理已有批次和任务、灵感、专题笔记、重新分析及系统维护。Web 不再创建作品或批次请求，也不提供 AI 聊天、模型设置或专题自动生成。CLI 保留安装、授权、运行和维护，业务命令返回明确的停用提示。
 
 收藏与合集由 Agent 开始清点，已有批次仍可在 Web 中选择、确认、取消和重试。使用方式与真实验证范围见[收藏导入](docs/favorites-import.md)、[合集导入](docs/collections-import.md)和[文档索引](docs/README.md)。
 
-## 0.2.0 能力
+## 0.2 系列能力
 
 - 从整段抖音分享文案提取短链，自动识别视频或静态图文作品。
 - 从博主主页或任意单条作品反查博主，先清点全部公开作品，再由用户选择后批量采集。
@@ -40,7 +40,7 @@
   侧栏只提供标签管理入口，文章、信息面板和筛选保留标签；旧文章不自动回写。
 - 按用户任务和已有授权创建 macOS 提醒事项。
 - 每周标记过期内容、检查孤立页面，并把到期媒体移入系统废纸篓。
-- Web 0.2.48 以资料库为首页，支持授权、已有导入记录、任务管理、信息 / 灵感 / 专题来源面板和维护预览。
+- Web 0.2.49 以资料库为首页，支持授权、已有导入记录、任务管理、信息 / 灵感 / 专题来源面板和维护预览。
 
 ## 安装
 
@@ -350,12 +350,12 @@ uv export --frozen --no-dev --no-emit-project --extra embeddings --extra asr --e
   --format requirements.txt --output-file "$DOUKU_RELEASE_DIR/requirements-runtime.txt"
 uv venv --python 3.12 "$DOUKU_RUNTIME"
 uv pip sync --python "$DOUKU_RUNTIME/bin/python" --require-hashes "$DOUKU_RELEASE_DIR/requirements-runtime.txt"
-uv pip install --python "$DOUKU_RUNTIME/bin/python" --no-deps "$DOUKU_RELEASE_DIR/douyin_wiki-0.2.0-py3-none-any.whl"
+uv pip install --python "$DOUKU_RUNTIME/bin/python" --no-deps "$DOUKU_RELEASE_DIR/douyin_wiki-0.2.1-py3-none-any.whl"
 ```
 
 `asr` 仍是 Qwen3 的安装兼容别名，锁定依赖不含旧语音引擎。wheel 从该独立环境的 `site-packages` 加载，不使用源码 editable 安装。开发环境的 `.venv` 与旧已安装环境保留。
 
-先在仓库外工作目录核对版本、来源、CLI、空库 Web / Worker 和实际 MCP 连接；配置必须指向已准备的 0.2.0 新库与正确 Profile。通过安装验收后，按已确认的部署范围把 Worker、定期维护、Web 和 MCP 四个入口统一改到 `$DOUKU_RUNTIME/bin/python`，再重启并重连客户端。只修改文档或构建包不表示已部署。
+先在仓库外工作目录核对版本、来源、CLI、空库 Web / Worker 和实际 MCP 连接；配置必须指向已准备的 schema 16 新库与正确 Profile。0.2.1 沿用 0.2.0 的配置和新库。通过安装验收后，按已确认的部署范围把 Worker、定期维护、Web 和 MCP 四个入口统一改到 `$DOUKU_RUNTIME/bin/python`，再重启并重连客户端。只修改文档或构建包不表示已部署。
 
 MCP 使用 `-B -m douyin_wiki.mcp_server`、仓库外 cwd、`DOUYIN_WIKI_CONFIG` 和 `DOUYIN_WIKI_BROWSER_PROFILE`，完整模板见[接入契约](docs/agents/integration-contract.md#stdio-启动契约)。服务配置变化需创建新进程；不要在正在使用的旧环境中同步开发依赖。
 

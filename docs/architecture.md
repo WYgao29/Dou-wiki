@@ -58,6 +58,8 @@ flowchart TD
 
 ## 状态与数据
 
+`DouyinWikiService.initialize()` 与 `initialize_runtime()` 先由 `Database.initialize()` 检查状态库版本，再进入 Vault 初始化、文件迁移及 Git 操作。数据库仍在取得 SQLite 写锁后再次检查版本；不受支持的状态库在任何 Vault 文件和目录被修改前拒绝。
+
 用户 Vault 与源码仓库分离。Vault 保存不可变原始记录、可更新资料页、机器侧车和媒体；`.douyin-wiki/state.sqlite3` 保存任务、事件、授权会话及检索投影，没有聊天表。重建知识索引不等于恢复全部操作历史。
 
 0.2.0 仅创建原生 schema 16 新库，旧版状态库明确拒绝，不自动迁移旧业务数据。新 schema 使用 `collections/collection_works` 保存知识关系，`collection_runs/collection_run_items` 保存批次世代、选择及子任务关联；博主运行项补充 `child_job_id`。`Database.capture_parent_ids()` 与 `batch_child_ids()` 查询真实关联，复用 capture 保留原 Gateway 上下文。确认先用 `CaptureOptions.processing_key()` 检查所有候选的有效处理选项，再在一个写事务中发布子任务；短链后来解析出的重复请求保留 ID 和 Gateway，进入持久等待状态，批次关联指向执行任务。取消保护依据其他活动父任务及独立等待者，完成刷新覆盖全部相关入口。

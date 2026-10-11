@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sysconfig
 from pathlib import Path
@@ -25,6 +26,69 @@ from douyin_wiki.setup import (
 from douyin_wiki.vault import VaultWriter
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("version", [0, 15, 17])
+@pytest.mark.parametrize(
+    "entrypoint", ["initialize", "initialize_without_git", "initialize_runtime"]
+)
+def test_service_rejects_unsupported_state_before_touching_vault(
+    config: AppConfig, version: int, entrypoint: str
+) -> None:
+    from douyin_wiki.adapters.embeddings import EmbeddingService
+    from douyin_wiki.errors import JobStateError
+    from douyin_wiki.service import DouyinWikiService
+    from tests.conftest import (
+        FakeDownloader,
+        FakeMediaProcessor,
+        FakeOCR,
+        FakeReminderAdapter,
+        FakeResolver,
+        FakeTranscriber,
+    )
+
+    service = DouyinWikiService(
+        config,
+        resolver=FakeResolver(),
+        downloader=FakeDownloader(),
+        media=FakeMediaProcessor(),
+        transcriber=FakeTranscriber(),
+        ocr=FakeOCR(),
+        embeddings=EmbeddingService(config.embeddings),
+        reminders=FakeReminderAdapter(),
+    )
+    config.database_path.parent.mkdir(parents=True)
+    with sqlite3.connect(config.database_path) as conn:
+        conn.execute("CREATE TABLE legacy_business (id TEXT PRIMARY KEY, payload TEXT)")
+        conn.execute("INSERT INTO legacy_business VALUES ('old-record', '保留旧业务数据')")
+        conn.execute(f"PRAGMA user_version={version}")
+    conn.close()
+    for relative, content in {
+        ".gitignore": ".douyin-wiki/\n",
+        "AGENTS.md": "# Douyin Wiki 维护规则\n\n用户追加规则\n",
+        "index.md": "# 抖音知识库\n\n用户内容\n",
+        "wiki/sources/legacy.md": (
+            "---\nstatus: active\nmedia_status: present\nmedia_retention: temporary\n---\n"
+            "\n旧版作品正文\n"
+        ),
+    }.items():
+        path = config.vault_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    def snapshot() -> dict[str, bytes | None]:
+        return {
+            str(path.relative_to(config.vault_path)): path.read_bytes() if path.is_file() else None
+            for path in config.vault_path.rglob("*")
+        }
+
+    before = snapshot()
+    with pytest.raises(JobStateError, match="只接受空库或版本 16"):
+        if entrypoint == "initialize_without_git":
+            service.initialize(initialize_git=False)
+        else:
+            getattr(service, entrypoint)()
+    assert snapshot() == before
 
 
 def test_default_config_contains_no_llm_settings(tmp_path: Path) -> None:

@@ -26,7 +26,7 @@ from .models import (
 )
 from .service import DouyinWikiService
 
-INSTRUCTIONS = """这是抖库 0.2.0，本地知识库只由当前 Gateway Agent 完成 AI 校正与分析，\
+INSTRUCTIONS = """这是抖库 0.2.1，本地知识库只由当前 Gateway Agent 完成 AI 校正与分析，\
 业务请求通过 MCP 创建。
 使用 tools/list 返回的全部工具，按用户任务和已有授权执行，不逐项重复审批。
 源码仓库由 Codex 维护，外部 Agent 对仓库只读，不修改源码、项目配置、依赖或 Git 状态；
