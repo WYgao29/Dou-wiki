@@ -15,7 +15,11 @@ from ..config import MediaSettings
 from ..errors import ExternalToolError
 from ..models import TranscriptSegment
 from .asr_segments import (
+    ALIGNMENT_LIMIT_MS,
+    MIN_ANCHOR_CHARS,
+    SAMPLE_RATE,
     AsrSegmentationError,
+    RecognitionWindow,
     iter_recognition_windows,
     samples_to_ms,
     segment_recognition_window,
@@ -37,6 +41,22 @@ class _WindowRuntime:
 
     def align(self, audio, text):
         return self.runtime.align(audio, text, language=self.language)
+
+
+def _sparse_alignment_window(window: RecognitionWindow, text: str, runtime) -> RecognitionWindow:
+    """Keep recognition whole; trim only long outside silence before alignment."""
+    if not (
+        30 * SAMPLE_RATE < len(window.audio) <= ALIGNMENT_LIMIT_MS * SAMPLE_RATE // 1000
+        and len(text) < MIN_ANCHOR_CHARS
+    ):
+        return window
+    ranges = runtime.speech_ranges(window.audio, complete=True)
+    if not ranges:
+        raise ExternalToolError("Silero 完整扫描未找到已识别的语音")
+    start, end = min(item[0] for item in ranges), max(item[1] for item in ranges)
+    if end - start >= len(window.audio) // 2:
+        return window
+    return RecognitionWindow(window.start_sample + start, window.audio[start:end])
 
 
 class Qwen3Transcriber:
@@ -98,12 +118,13 @@ class Qwen3Transcriber:
                     full = self.runtime.recognize(window.audio, max_tokens=8192)
                     text = clean_qwen_text(full.text)
                     scoped = _WindowRuntime(self.runtime, full.language)
+                    alignment_window = _sparse_alignment_window(window, text, self.runtime)
                     aligned = segment_recognition_window(
-                        window.audio,
+                        alignment_window.audio,
                         text,
                         recognizer=scoped,
                         aligner=scoped,
-                        start_sample=window.start_sample,
+                        start_sample=alignment_window.start_sample,
                         segment_seconds=self.settings.asr_segment_seconds,
                     )
                     rendered = render_normalized_slices(
@@ -128,6 +149,8 @@ class Qwen3Transcriber:
                             "samples": len(window.audio),
                             "silent": False,
                             "raw_text": text,
+                            "alignment_start_sample": alignment_window.start_sample,
+                            "alignment_samples": len(alignment_window.audio),
                             "language": full.language,
                             "generation_tokens": full.generation_tokens,
                             "internal_segments": full.internal_segments,
@@ -170,7 +193,7 @@ class Qwen3Transcriber:
                 "vad_revision": self.settings.vad_model_revision,
                 "alignment_model": self.settings.alignment_model,
                 "alignment_revision": self.settings.alignment_model_revision,
-                "segmentation": "qwen3-anchored-alignment-v1",
+                "segmentation": "qwen3-anchored-alignment-v2",
                 "timestamp_kind": "forced-alignment",
                 "recognition_window_seconds": 600,
                 "alignment_target_seconds": 150,

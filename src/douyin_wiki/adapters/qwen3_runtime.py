@@ -266,9 +266,10 @@ class Qwen3Runtime:
             self.pending_import_seconds += time.perf_counter() - started
         return QwenEnergySplitter().split_audio(audio, window_seconds=window_seconds)
 
-    def speech_ranges(self, audio: np.ndarray) -> list[tuple[int, int]]:
-        """Return first detected speech; scan silence fully with overlapping 16s probes."""
+    def speech_ranges(self, audio: np.ndarray, *, complete: bool = False) -> list[tuple[int, int]]:
+        """Probe speech cheaply, or collect its full extent for sparse alignment."""
         step, size = 15 * SAMPLE_RATE, 16 * SAMPLE_RATE
+        found: list[tuple[int, int]] = []
         for start in range(0, len(audio), step):
             probe = audio[start : start + size]
             ranges = self._vad.get_speech_timestamps(
@@ -295,10 +296,21 @@ class Qwen3Runtime:
                 ):
                     raise ExternalToolError("Silero 返回越界语音区间")
             if ranges:
-                return [(start + int(item["start"]), start + int(item["end"])) for item in ranges]
+                detected = [
+                    (start + int(item["start"]), start + int(item["end"])) for item in ranges
+                ]
+                if not complete:
+                    return detected
+                found.extend(detected)
             if start + size >= len(audio):
                 break
-        return []
+        merged: list[tuple[int, int]] = []
+        for begin, end in sorted(found):
+            if merged and begin <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((begin, end))
+        return merged
 
     def recognize(
         self,

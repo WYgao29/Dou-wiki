@@ -260,6 +260,27 @@ def test_silence_probe_covers_edges_and_stops_after_speech() -> None:
         runtime.speech_ranges(audio)
 
 
+def test_complete_speech_scan_merges_overlap_and_keeps_later_speech() -> None:
+    runtime = Qwen3Runtime(settings())
+    seen = []
+    detections = [
+        [{"start": 14 * 16000, "end": 16 * 16000}],
+        [{"start": 0, "end": 2 * 16000}],
+        [{"start": 8 * 16000, "end": 9 * 16000}],
+    ]
+
+    def vad(probe, **kwargs):
+        seen.append(len(probe))
+        return detections.pop(0)
+
+    runtime._vad = SimpleNamespace(get_speech_timestamps=vad)
+    assert runtime.speech_ranges(np.zeros(40 * 16000), complete=True) == [
+        (14 * 16000, 17 * 16000),
+        (38 * 16000, 39 * 16000),
+    ]
+    assert seen == [16 * 16000, 16 * 16000, 10 * 16000]
+
+
 class FakeRuntime:
     def __init__(self, text="Fable五点六。一分为二。", fail=False):
         self.text = text
@@ -273,7 +294,7 @@ class FakeRuntime:
     def ensure_ready(self):
         self.initializations += 1
 
-    def speech_ranges(self, audio):
+    def speech_ranges(self, audio, *, complete=False):
         return [(0, len(audio))] if np.any(audio) else []
 
     def recognize(self, audio, *, max_tokens, language=None):

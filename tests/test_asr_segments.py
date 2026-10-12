@@ -593,7 +593,9 @@ def test_match_does_not_normalize_numbers(monkeypatch: pytest.MonkeyPatch) -> No
         (369_779, (150_000, 300_000)),
         (397_038, (150_000, 300_000)),
         (200_000, (150_000,)),
-        (165_000, (150_000,)),
+        (165_000, ()),
+        (180_000, ()),
+        (180_001, (150_000,)),
         (164_999, ()),
         (600_000, (150_000, 300_000, 450_000)),
     ],
@@ -1042,12 +1044,18 @@ def test_local_realign_failure_keeps_the_whole_task_failed(failure: str) -> None
         local[14] = _token(source[54], 15_000, 15_000, raw=(15_000, 11_000))
     else:
         local[14] = _token(source[54], 10_000, 10_500)
+    predictions = {source: broken, query: local}
+    if failure == "still_invalid":
+        context = source[46:63]
+        context_tokens = [_token(char, i * 500, i * 500 + 400) for i, char in enumerate(context)]
+        context_tokens[8] = _token(source[54], 4000, 4400, raw=(4000, 0))
+        predictions[context] = context_tokens
     with pytest.raises(AsrSegmentationError) as failed:
         segment_recognition_window(
             np.zeros(150 * SAMPLE_RATE),
             source,
             recognizer=ScriptedRecognizer([query]),
-            aligner=ScriptedAligner({source: broken, query: local}),
+            aligner=ScriptedAligner(predictions),
         )
     expected = {
         "unmatched": "anchor_no_match",
@@ -1058,20 +1066,31 @@ def test_local_realign_failure_keeps_the_whole_task_failed(failure: str) -> None
 
 
 def test_local_realign_budget_is_bounded_and_invalid_values_do_not_retry() -> None:
-    source, broken, query, local = _anomalous_alignment()
-    for index in range(5):
-        broken[index] = _token(source[index], 0, 0, raw=(0, 3000))
-    recognizer = ScriptedRecognizer([])
+    source = "".join(chr(0x4E80 + i) for i in range(600))
+    broken = [_token(char, i * 240, i * 240 + 200) for i, char in enumerate(source)]
+    predictions = {source: broken}
+    queries = []
+    for index in (80, 190, 300, 410, 520):
+        offset = index * 240 - 15000
+        query = source[index - 20 : index + 20]
+        queries.append(query)
+        predictions[query] = [
+            _token(source[i], i * 240 - offset, i * 240 - offset + 200)
+            for i in range(index - 20, index + 20)
+        ]
+        broken[index] = _token(source[index], index * 240, index * 240 + 200, raw=(index * 240, 0))
+    recognizer = ScriptedRecognizer(queries)
     with pytest.raises(AsrSegmentationError) as failed:
         segment_recognition_window(
             np.zeros(150 * SAMPLE_RATE),
             source,
             recognizer=recognizer,
-            aligner=ScriptedAligner({source: broken, query: local}),
+            aligner=ScriptedAligner(predictions),
         )
     assert failed.value.reason == "realign_budget"
-    assert recognizer.calls == []
+    assert len(recognizer.calls) == 4
     broken[0] = _token(source[0], 0, 0, raw=(-1, 0))
+    recognizer = ScriptedRecognizer([])
     with pytest.raises(AsrSegmentationError) as failed:
         segment_recognition_window(
             np.zeros(150 * SAMPLE_RATE),

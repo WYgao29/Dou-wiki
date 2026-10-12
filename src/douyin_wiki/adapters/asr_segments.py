@@ -49,6 +49,16 @@ class AsrSegmentationError(Exception):
         self.reason = reason
 
 
+@dataclass
+class _RealignBudget:
+    attempts: int = 0
+
+    def take(self) -> None:
+        if self.attempts >= MAX_LOCAL_REALIGNS:
+            raise AsrSegmentationError("局部对齐重试预算耗尽", reason="realign_budget")
+        self.attempts += 1
+
+
 @dataclass(frozen=True)
 class RecognitionWindow:
     start_sample: int
@@ -238,7 +248,9 @@ def samples_to_ms(samples: int) -> int:
 
 
 def nominal_boundary_ms(duration_ms: int) -> tuple[int, ...]:
-    """Return k*150s while that boundary still leaves a 15s tail."""
+    """Keep one legal alignment window whole; otherwise leave a 15s tail."""
+    if duration_ms <= ALIGNMENT_LIMIT_MS:
+        return ()
     bounds: list[int] = []
     step = 1
     while True:
@@ -367,8 +379,9 @@ def choose_shared_boundary(
     protected_spans: Sequence[tuple[int, int]] = (),
     previous_sample: int = 0,
     audio_end_sample: int,
+    prefer_pause: bool = False,
 ) -> BoundaryTrace:
-    """Pick an edge within 15s, preferring punctuation or pause when equally close."""
+    """Pick a legal edge; main alignment can prioritize sentence gaps."""
     sequence = tuple(tokens)
     nominal = int(nominal_ms)
     previous = _as_sample(previous_sample)
@@ -377,7 +390,9 @@ def choose_shared_boundary(
     for index in range(len(sequence) - 1):
         left = sequence[index]
         right = sequence[index + 1]
-        end_ms = int(left.end_ms)
+        preference, rank = _cut_preference(source, left, right)
+        gap_ms = max(0, int(right.start_ms) - int(left.end_ms))
+        end_ms = int(left.end_ms) + (gap_ms // 2 if prefer_pause else 0)
         delta_ms = abs(end_ms - nominal)
         if delta_ms > ALIGNMENT_SLACK_MS:
             continue
@@ -389,13 +404,19 @@ def choose_shared_boundary(
             continue
         if cut_sample - previous > _LIMIT_SAMPLES or audio_end - cut_sample > _LIMIT_SAMPLES:
             continue
-        preference, rank = _cut_preference(source, left, right)
-        candidate = (delta_ms, rank, index, cut_sample, char_index, preference)
+        if prefer_pause:
+            rank = 0 if preference == "punctuation" else 1 if gap_ms >= 160 else 2
+        candidate = (
+            (rank, delta_ms, index, cut_sample, char_index, preference)
+            if prefer_pause
+            else (delta_ms, rank, index, cut_sample, char_index, preference)
+        )
         if best is None or candidate[:3] < best[:3]:
             best = candidate
     if best is None:
         raise AsrSegmentationError("没有落在 15 秒内且短于 180 秒的切点", reason="no_legal_cut")
-    delta_ms, _rank, index, cut_sample, char_index, preference = best
+    first, second, index, cut_sample, char_index, preference = best
+    delta_ms = second if prefer_pause else first
     return BoundaryTrace(nominal, cut_sample, char_index, delta_ms, preference, index)
 
 
@@ -443,7 +464,8 @@ def segment_recognition_window(
     if not any(_is_match_char(char) for char in text):
         raise AsrSegmentationError("原文没有可对齐的字符", reason="no_kept_characters")
     protected = tuple(protected_number_spans(text))
-    duration_ms = samples_to_ms(len(waveform))
+    # Round up so even one sample beyond 180s still requires a legal cut.
+    duration_ms = (len(waveform) * 1000 + SAMPLE_RATE - 1) // SAMPLE_RATE
     nominals = nominal_boundary_ms(duration_ms)
     boundaries, anchor_limits = _cut_anchors(
         waveform,
@@ -1023,6 +1045,7 @@ def _cut_anchors(
             protected_spans=protected,
             previous_sample=previous_sample,
             audio_end_sample=horizon,
+            prefer_pause=True,
         )
         traces.append(
             BoundaryTrace(
@@ -1088,6 +1111,7 @@ def _align_pieces(
     display: list[OperationalToken] = []
     limits: list[TimeLimit] = []
     retry_records = [] if retries is None else retries
+    budget = _RealignBudget()
     pieces = zip(sample_edges[:-1], sample_edges[1:], char_edges[:-1], char_edges[1:], strict=True)
     for sample_start, sample_end, char_start, char_end in pieces:
         if sample_end <= sample_start or sample_end - sample_start > _LIMIT_SAMPLES:
@@ -1119,6 +1143,7 @@ def _align_pieces(
                 origin + sample_start,
                 char_start,
                 retry_records,
+                budget,
             )
             operational, piece_limits = bound_alignment_times(
                 aligned,
@@ -1167,13 +1192,13 @@ def _realign_anomalies(
     origin: int,
     char_origin: int,
     retries: list[AlignmentRetry],
+    budget: _RealignBudget,
 ) -> tuple[tuple[AlignedToken, ...], tuple[TimeLimit, ...]]:
     """Reject gross predictions; merge the smallest consistent local word group.
 
-    The anchor still locates the unchanged source. Only identical word positions
-    may receive a new prediction. Conflicting neighbors use the same local
-    prediction until its edges join the retained times. All local and combined
-    times pass the original guards; no interpolation or threshold relaxation.
+    Count inference attempts, not words. One prediction can repair disjoint
+    groups; unrelated local mistakes leave valid source words untouched.
+    All replacements retain the source and pass the original timestamp guards.
     """
     anomalies = []
     for index, token in enumerate(tokens):
@@ -1190,10 +1215,6 @@ def _realign_anomalies(
             raise AsrSegmentationError("对齐时间倒序", reason="disordered")
         if max(abs(raw_start - start), abs(raw_end - end)) > MAX_REPAIR_MS:
             anomalies.append(index)
-    if len(anomalies) + len(retries) > MAX_LOCAL_REALIGNS:
-        raise AsrSegmentationError("局部对齐重试预算耗尽", reason="realign_budget")
-    if len(audio) < _ANCHOR_SAMPLES:
-        raise AsrSegmentationError("异常片段不足 30 秒，无法局部对齐", reason="gross_repair")
     replacements = list(tokens)
     source_indexes = {
         (span[0], token.text): index
@@ -1204,54 +1225,51 @@ def _realign_anomalies(
     for index in anomalies:
         if index in updated:
             continue
-        original = tokens[index]
-        center = min(
-            max(int(original.native_start_ms), ALIGNMENT_SLACK_MS),
-            len(audio) * 1000 // SAMPLE_RATE - ALIGNMENT_SLACK_MS,
-        )
-        offset_ms = center - ALIGNMENT_SLACK_MS
-        offset = offset_ms * SAMPLE_RATE // 1000
-        clip = np.array(audio[offset : offset + _ANCHOR_SAMPLES], dtype=np.float32, copy=True)
-        query = getattr(recognizer.recognize(clip, max_tokens=max_tokens), "text", None)
-        if not isinstance(query, str):
-            raise AsrSegmentationError("识别结果缺少文本", reason="recognizer_result")
-        match = locate_anchor(text, query)
-        local_text = text[match.source_start : match.source_end]
-        local = aligner.align(clip, local_text)
-        local_spans = map_source_spans(local_text, [item.text for item in local])
-        _, local_limits = bound_alignment_times(
-            local,
-            local_spans,
-            window_limit_ms=samples_to_ms(len(clip)),
-            audio_start_sample=origin + offset,
-        )
-        predictions: dict[int, AlignedToken] = {}
-        for token, span in zip(local, local_spans, strict=True):
-            source_index = source_indexes.get((match.source_start + span[0], token.text))
-            if source_index is not None:
-                predictions[source_index] = AlignedToken(
-                    token.text,
-                    int(token.raw_start_ms) + offset_ms,
-                    int(token.raw_end_ms) + offset_ms,
-                    int(token.native_start_ms) + offset_ms,
-                    int(token.native_end_ms) + offset_ms,
+        strategy = "anchor-30s" if len(audio) >= _ANCHOR_SAMPLES else "source-context"
+        while True:
+            budget.take()
+            try:
+                if strategy == "source-context":
+                    offset, clip, local_start, local_text = _source_context(
+                        audio, text, tokens, spans, index, set(anomalies)
+                    )
+                else:
+                    seconds = 30 if strategy == "anchor-30s" else 60
+                    size = min(seconds * SAMPLE_RATE, len(audio))
+                    center = int(tokens[index].native_start_ms) * SAMPLE_RATE // 1000
+                    offset = max(0, min(center - size // 2, len(audio) - size))
+                    clip = np.array(audio[offset : offset + size], dtype=np.float32, copy=True)
+                    query = getattr(recognizer.recognize(clip, max_tokens=max_tokens), "text", None)
+                    if not isinstance(query, str):
+                        raise AsrSegmentationError("识别结果缺少文本", reason="recognizer_result")
+                    match = locate_anchor(text, query)
+                    local_start = match.source_start
+                    local_text = text[local_start : match.source_end]
+                local = aligner.align(clip, local_text)
+                predictions, prediction_errors, prediction_limits = _local_predictions(
+                    local, local_text, local_start, source_indexes, offset, len(clip), origin
                 )
-        if index not in predictions:
-            raise AsrSegmentationError("局部对齐没有定位异常词", reason="anchor_token_missing")
-
-        left = right = index
-        while left > 0 and replacements[left - 1].native_end_ms > predictions[left].native_start_ms:
-            left -= 1
-            if left not in predictions:
-                raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
-        while (
-            right + 1 < len(replacements)
-            and predictions[right].native_end_ms > replacements[right + 1].native_start_ms
-        ):
-            right += 1
-            if right not in predictions:
-                raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
-
+                if index in prediction_errors:
+                    raise prediction_errors[index]
+                merged, changed = _merge_local_predictions(
+                    replacements,
+                    predictions,
+                    [i for i in anomalies if i not in updated],
+                    spans,
+                    index,
+                    samples_to_ms(len(audio)),
+                )
+                break
+            except AsrSegmentationError as exc:
+                if strategy == "anchor-30s" and exc.reason in {
+                    "anchor_too_short",
+                    "anchor_distance",
+                }:
+                    strategy = "anchor-60s"
+                elif strategy != "source-context" and exc.reason == "gross_repair":
+                    strategy = "source-context"
+                else:
+                    raise
         neighbors = tuple(
             AlignmentReplacement(
                 neighbor,
@@ -1259,25 +1277,144 @@ def _realign_anomalies(
                 replacements[neighbor],
                 predictions[neighbor],
             )
-            for neighbor in range(left, right + 1)
+            for neighbor in sorted(changed)
             if neighbor != index
         )
-        for neighbor in range(left, right + 1):
-            replacements[neighbor] = predictions[neighbor]
-            updated.add(neighbor)
         retries.append(
             AlignmentRetry(
                 index,
                 char_origin + spans[index][0],
                 origin + offset,
                 len(clip),
-                original,
+                replacements[index],
                 predictions[index],
                 neighbors,
             )
         )
-        limits.extend(local_limits)
+        replacements = merged
+        updated.update(changed)
+        limits.extend(item for i in changed for item in prediction_limits.get(i, ()))
     return tuple(replacements), tuple(limits)
+
+
+def _source_context(
+    audio: np.ndarray,
+    text: str,
+    tokens: Sequence[AlignedToken],
+    spans: Sequence[tuple[int, int]],
+    index: int,
+    anomalies: set[int],
+) -> tuple[int, np.ndarray, int, str]:
+    """Crop unchanged text using the surrounding retained word times."""
+    left, right = max(0, index - 8), min(len(tokens) - 1, index + 8)
+    while left > 0 and left in anomalies:
+        left -= 1
+    while right + 1 < len(tokens) and right in anomalies:
+        right += 1
+    start_ms = 0 if left == 0 else max(0, int(tokens[left].native_start_ms) - 500)
+    end_ms = (
+        samples_to_ms(len(audio))
+        if right == len(tokens) - 1
+        else (int(tokens[right].native_end_ms) + 500)
+    )
+    start = start_ms * SAMPLE_RATE // 1000
+    end = min(len(audio), end_ms * SAMPLE_RATE // 1000)
+    if end <= start or end - start > _ANCHOR_SAMPLES:
+        raise AsrSegmentationError("异常词没有可信的短上下文", reason="gross_repair")
+    char_start, char_end = spans[left][0], spans[right][1]
+    return (
+        start,
+        np.array(audio[start:end], dtype=np.float32, copy=True),
+        char_start,
+        text[char_start:char_end],
+    )
+
+
+def _local_predictions(
+    local: Sequence[AlignedToken],
+    text: str,
+    char_start: int,
+    source_indexes: dict[tuple[int, str], int],
+    offset: int,
+    samples: int,
+    origin: int,
+) -> tuple[
+    dict[int, AlignedToken], dict[int, AsrSegmentationError], dict[int, tuple[TimeLimit, ...]]
+]:
+    spans = map_source_spans(text, [item.text for item in local])
+    predictions, errors, limits = {}, {}, {}
+    offset_ms = samples_to_ms(offset)
+    for token, span in zip(local, spans, strict=True):
+        index = source_indexes.get((char_start + span[0], token.text))
+        if index is None:
+            continue
+        try:
+            _, bounded = bound_alignment_times(
+                [token],
+                [span],
+                window_limit_ms=samples_to_ms(samples),
+                audio_start_sample=origin + offset,
+            )
+        except AsrSegmentationError as exc:
+            errors[index] = exc
+            continue
+        predictions[index] = AlignedToken(
+            token.text,
+            int(token.raw_start_ms) + offset_ms,
+            int(token.raw_end_ms) + offset_ms,
+            int(token.native_start_ms) + offset_ms,
+            int(token.native_end_ms) + offset_ms,
+        )
+        limits[index] = tuple(
+            TimeLimit(
+                index,
+                item.edge,
+                item.original_ms,
+                item.bounded_ms,
+                item.delta_ms,
+                item.threshold_ms,
+                item.audio_start_sample,
+            )
+            for item in bounded
+        )
+    return predictions, errors, limits
+
+
+def _merge_local_predictions(
+    replacements: Sequence[AlignedToken],
+    predictions: dict[int, AlignedToken],
+    anomalies: Sequence[int],
+    spans: Sequence[tuple[int, int]],
+    primary: int,
+    duration_ms: int,
+) -> tuple[list[AlignedToken], set[int]]:
+    if primary not in predictions:
+        raise AsrSegmentationError("局部对齐没有定位异常词", reason="anchor_token_missing")
+    merged = list(replacements)
+    changed = set()
+    for index in anomalies:
+        if index in changed or index not in predictions:
+            continue
+        left = right = index
+        while left > 0 and merged[left - 1].native_end_ms > predictions[left].native_start_ms:
+            left -= 1
+            if left not in predictions:
+                raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
+        while (
+            right + 1 < len(merged)
+            and predictions[right].native_end_ms > merged[right + 1].native_start_ms
+        ):
+            right += 1
+            if right not in predictions:
+                raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
+        group = range(left, right + 1)
+        bound_alignment_times(
+            [predictions[i] for i in group], [spans[i] for i in group], window_limit_ms=duration_ms
+        )
+        for neighbor in group:
+            merged[neighbor] = predictions[neighbor]
+            changed.add(neighbor)
+    return merged, changed
 
 
 def _ms_on_slice(origin_sample: int, local_ms: int, end_sample: int) -> int:
