@@ -386,6 +386,16 @@ def choose_shared_boundary(
     nominal = int(nominal_ms)
     previous = _as_sample(previous_sample)
     audio_end = _as_sample(audio_end_sample)
+    # Cuts are integer milliseconds; round inward to keep sample limits exact.
+    earliest_ms = max(
+        nominal - ALIGNMENT_SLACK_MS,
+        (max(previous + 1, audio_end - _LIMIT_SAMPLES) * 1000 + SAMPLE_RATE - 1)
+        // SAMPLE_RATE,
+    )
+    latest_ms = min(
+        nominal + ALIGNMENT_SLACK_MS,
+        min(audio_end - 1, previous + _LIMIT_SAMPLES) * 1000 // SAMPLE_RATE,
+    )
     best: tuple[int, int, int, int, int, str] | None = None
     for index in range(len(sequence) - 1):
         left = sequence[index]
@@ -393,6 +403,12 @@ def choose_shared_boundary(
         preference, rank = _cut_preference(source, left, right)
         gap_ms = max(0, int(right.start_ms) - int(left.end_ms))
         end_ms = int(left.end_ms) + (gap_ms // 2 if prefer_pause else 0)
+        if prefer_pause:
+            gap_start = max(int(left.end_ms), earliest_ms)
+            gap_end = min(int(left.end_ms) + gap_ms, latest_ms)
+            if gap_start > gap_end:
+                continue
+            end_ms = min(max(end_ms, gap_start), gap_end)
         delta_ms = abs(end_ms - nominal)
         if delta_ms > ALIGNMENT_SLACK_MS:
             continue
@@ -1392,25 +1408,34 @@ def _merge_local_predictions(
         raise AsrSegmentationError("局部对齐没有定位异常词", reason="anchor_token_missing")
     merged = list(replacements)
     changed = set()
-    for index in anomalies:
+    # The primary group is required. Extra groups are committed independently.
+    for index in (primary, *(i for i in anomalies if i != primary)):
         if index in changed or index not in predictions:
             continue
-        left = right = index
-        while left > 0 and merged[left - 1].native_end_ms > predictions[left].native_start_ms:
-            left -= 1
-            if left not in predictions:
-                raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
-        while (
-            right + 1 < len(merged)
-            and predictions[right].native_end_ms > merged[right + 1].native_start_ms
-        ):
-            right += 1
-            if right not in predictions:
-                raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
-        group = range(left, right + 1)
-        bound_alignment_times(
-            [predictions[i] for i in group], [spans[i] for i in group], window_limit_ms=duration_ms
-        )
+        try:
+            left = right = index
+            while left > 0 and merged[left - 1].native_end_ms > predictions[left].native_start_ms:
+                left -= 1
+                if left not in predictions:
+                    raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
+            while (
+                right + 1 < len(merged)
+                and predictions[right].native_end_ms > merged[right + 1].native_start_ms
+            ):
+                right += 1
+                if right not in predictions:
+                    raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
+            group = range(left, right + 1)
+            bound_alignment_times(
+                [predictions[i] for i in group],
+                [spans[i] for i in group],
+                window_limit_ms=duration_ms,
+            )
+        except AsrSegmentationError:
+            if index == primary:
+                raise
+            # Leave an unusable extra group pending for its own inference.
+            continue
         for neighbor in group:
             merged[neighbor] = predictions[neighbor]
             changed.add(neighbor)
