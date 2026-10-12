@@ -108,6 +108,62 @@ async def test_timestamped_inspiration_remains_readable_without_chat(ui):
     await page.locator("#panel-tab-inspiration").click()
     await expect(page.locator("#inspiration-pane")).to_contain_text("保留时间定位")
     await expect(page.locator("#inspiration-pane")).to_contain_text("00:01")
+
+
+@pytest.mark.parametrize("width", [1440, 390])
+async def test_video_detail_has_collapsed_complete_transcript_and_copyable_video_url(ui, width):
+    page, service, _client, _calls = ui
+    video = service.config.vault_path / "raw/assets/123/本地 视频.mp4"
+    video.write_bytes(b"local video")
+    entry = service.database.get_entry("dy-123")
+    data = service.database.get_entry_data(entry.id)
+    data["metadata"]["media_path"] = str(video)
+    rows = [
+        {"id": i, "start_ms": i * 2000, "end_ms": (i + 1) * 2000, "text": f"第 {i} 段全文"}
+        for i in range(31)
+    ]
+    rows[0]["text"] = '<img src=x onerror="window.transcriptExecuted=true">校正后的原话'
+    data["transcript_raw"] = [{**rows[0], "text": "旧识别文字"}]
+    data["transcript_corrected"] = rows
+    service.database.upsert_entry(entry, data)
+    await page.set_viewport_size({"width": width, "height": 900})
+    await page.goto("http://testserver/articles/dy-123")
+    folded = page.locator(".article-transcript")
+    await expect(folded.locator("summary")).to_contain_text("校正稿 · 31 段")
+    assert not await folded.evaluate("node => node.open")
+    await expect(folded.locator(".transcript-text").first).not_to_be_visible()
+    await folded.locator("summary").click()
+    await expect(folded.locator(".transcript-segment")).to_have_count(31)
+    await expect(folded.locator(".transcript-text").last).to_have_text("第 30 段全文")
+    await expect(folded.locator("img")).to_have_count(0)
+    assert not await page.evaluate("Boolean(window.transcriptExecuted)")
+    await expect(page.locator(".reader-local-video")).to_have_attribute(
+        "href", "/api/articles/dy-123/video"
+    )
+    await page.keyboard.press("Shift+i")
+    await expect(page.locator(".local-video-url a")).to_have_text(
+        "http://testserver/api/articles/dy-123/video"
+    )
+    await page.evaluate("""Object.defineProperty(navigator, 'clipboard', {
+        configurable: true, value: {writeText: async text => {window.copiedVideoUrl = text}}
+    })""")
+    await page.locator(".copy-video-url").click()
+    await page.wait_for_function(
+        "window.copiedVideoUrl === 'http://testserver/api/articles/dy-123/video'"
+    )
+    assert await page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+
+
+async def test_video_detail_handles_missing_transcript_and_video(ui):
+    page, _service, _client, _calls = ui
+    await page.goto("http://testserver/articles/dy-123")
+    folded = page.locator(".article-transcript")
+    await folded.locator("summary").click()
+    await expect(folded).to_contain_text("暂无可用逐字稿")
+    await expect(page.locator(".reader-local-video")).to_have_count(0)
+    await page.keyboard.press("Shift+i")
+    await expect(page.locator("#info-pane")).to_contain_text("文件不存在或已清理")
+    await expect(page.locator(".copy-video-url")).to_have_count(0)
     await expect(page.locator("#chat-panel")).to_have_count(0)
 
 

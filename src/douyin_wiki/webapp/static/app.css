@@ -697,6 +697,8 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 .add-inspiration { width: 100%; justify-content: center; }
 .add-inspiration svg { width: 16px; height: 16px; }
 .source-file { overflow-wrap: anywhere; }
+.local-video-url { display: grid; gap: var(--space-1); overflow-wrap: anywhere; }
+.local-video-url .copy-video-url { justify-self: start; }
 .reader-loading {
   max-inline-size: var(--measure); margin: var(--space-12) auto; font-size: var(--fs-reading);
 }
@@ -979,6 +981,28 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   font-family: var(--font-reading);
 }
 .article-body > h1:first-child { display: none; }
+.article-transcript {
+  margin: var(--space-8) 0; padding: var(--space-4);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+}
+.article-transcript summary {
+  cursor: pointer; font: var(--fw-regular) var(--fs-14)/24px var(--font-ui);
+}
+.article-transcript summary::marker { color: var(--text-2); }
+.transcript-title { font-weight: var(--fw-semibold); }
+.transcript-meta { margin-left: var(--space-3); color: var(--text-2); font-size: var(--fs-12); }
+.article-transcript .transcript-segments {
+  list-style: none; margin: var(--space-4) 0 0; padding: 0;
+}
+.article-transcript .transcript-segment {
+  margin: 0; padding: var(--space-3) 0; border-top: 1px solid var(--border);
+}
+.transcript-time {
+  display: block; margin-bottom: var(--space-1); color: var(--text-2);
+  font: var(--fw-regular) var(--fs-12)/20px var(--font-mono);
+}
+.article-transcript .transcript-text { margin: 0; white-space: pre-wrap; }
+.article-transcript > .hint-copy { margin: var(--space-4) 0 0; }
 .article-body h2 {
   margin: var(--space-12) 0 var(--space-4); color: var(--text);
   font: var(--fw-semibold) var(--fs-20)/28px var(--font-ui); scroll-margin-top: 64px;

@@ -606,14 +606,24 @@ def create_app(
         item = catalog.get(entry_id)
         if item is None:
             raise HTTPException(status_code=404, detail="文章不存在")
+        materials = await asyncio.to_thread(catalog.article_materials, item)
         return {
-            "item": _item_payload(item),
+            "item": {**_item_payload(item), "local_video_url": materials["local_video_url"]},
             "html": render_article(
                 item.body_markdown,
                 source_path=item.source_path,
                 catalog=catalog,
             ),
+            "transcript": materials["transcript"],
         }
+
+    @app.api_route("/api/articles/{entry_id}/video", methods=["GET", "HEAD"])
+    async def article_video(entry_id: str):
+        item = catalog.get(entry_id)
+        target = await asyncio.to_thread(catalog.local_video_path, item) if item else None
+        if target is None:
+            raise HTTPException(status_code=404, detail="本地视频不存在或已清理")
+        return FileResponse(target, headers={"Cache-Control": "private, no-cache"})
 
     @app.put("/api/articles/{entry_id}/favorite")
     async def set_article_favorite(entry_id: str, payload: SetFavoriteRequest):

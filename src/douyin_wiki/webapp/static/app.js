@@ -1461,6 +1461,32 @@ async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
   }
 }
 
+function makeArticleTranscript(transcript, {open = false} = {}) {
+  if (!transcript) return null;
+  const rows = transcript.segments || [];
+  const details = window.Douku.node("details", null, "article-transcript");
+  details.open = open;
+  const summary = window.Douku.node("summary");
+  const source = transcript.source === "corrected" ? "校正稿" : "原始识别稿";
+  summary.append(window.Douku.node("span", "完整逐字稿", "transcript-title"),
+    window.Douku.node("span", `${source} · ${rows.length} 段`, "transcript-meta"));
+  details.append(summary);
+  if (rows.length) {
+    const list = window.Douku.node("ol", null, "transcript-segments");
+    rows.forEach((row) => {
+      const segment = window.Douku.node("li", null, "transcript-segment");
+      const start = formatLocation({timestamp_ms: row.start_ms});
+      const end = formatLocation({timestamp_ms: row.end_ms});
+      segment.append(window.Douku.node("span", `${start}–${end}`, "transcript-time"),
+        window.Douku.node("p", row.text, "transcript-text"));
+      list.append(segment);
+    });
+    details.append(list);
+  } else details.append(window.Douku.node("p", "暂无可用逐字稿。", "hint-copy"));
+  details.addEventListener("toggle", updateReadingMetrics);
+  return details;
+}
+
 function makeArticleHeader(item) {
   const hero = window.Douku.node("header", null, "article-hero");
   const cover = makeCover(item, "article-cover");
@@ -1505,6 +1531,13 @@ function renderArticleToolbar(item) {
     original.target = "_blank"; original.rel = "noopener noreferrer";
     original.setAttribute("aria-label", "打开原作品"); original.title = "打开原作品（Shift O）";
     nodes.push(original);
+  }
+  if (item.local_video_url) {
+    const video = window.Douku.node("a", "本地视频", "text-button reader-local-video");
+    video.prepend(svgIcon("video")); video.href = item.local_video_url;
+    video.target = "_blank"; video.rel = "noopener noreferrer";
+    video.setAttribute("aria-label", "打开本地视频");
+    nodes.push(video);
   }
   const more = window.Douku.node("button", null, "icon-button entry-more is-sm");
   more.type = "button"; more.append(svgIcon("more-horizontal"));
@@ -1673,12 +1706,19 @@ function prefersReducedMotion() {
 
 function renderArticleData(data, entryId, push) {
   const root = $("#article-content");
+  const transcriptOpen = state.currentEntry === entryId
+    && Boolean(root.querySelector(".article-transcript")?.open);
   state.currentEntry = entryId;
   state.currentArticleItem = data.item;
   state.currentTopic = "";
   const body = document.createElement("div");
   body.className = "article-body";
   body.innerHTML = data.html;
+  const transcript = makeArticleTranscript(data.transcript, {open: transcriptOpen});
+  if (transcript) {
+    const source = [...body.querySelectorAll(":scope > h2")].find(node => node.textContent.trim() === "来源");
+    body.insertBefore(transcript, source || null);
+  }
   clearReader();
   const hero = makeArticleHeader(data.item);
   root.replaceChildren(hero, body);
@@ -1722,6 +1762,8 @@ function focusCitation(citation) {
     range.setStart(textNode, start);
     range.setEnd(textNode, start + match.length);
     range.surroundContents(mark);
+    const folded = mark.closest("details");
+    if (folded) folded.open = true;
     const block = state.readingBlocks.findIndex((node) => node.contains(mark));
     focusReadingBlock(block, {scroll: false});
     mark.scrollIntoView({behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center"});
@@ -2009,6 +2051,18 @@ function renderInfoPanel(item, {context = "library"} = {}) {
   if (!tags.childNodes.length) tags.textContent = "—";
   addDetail("标签", tags);
   addDetail("媒体", isDatabaseManaged(item) ? mediaSentence(item) : "只读 Markdown，没有随库管理的媒体文件");
+  if (context === "article" && item.source_kind === "video") {
+    if (item.local_video_url) {
+      const url = new URL(item.local_video_url, location.origin).href;
+      const value = window.Douku.node("dd", null, "local-video-url");
+      const link = window.Douku.node("a", url); link.href = url;
+      link.target = "_blank"; link.rel = "noopener noreferrer";
+      const copy = window.Douku.node("button", "复制 URL", "text-button copy-video-url");
+      copy.type = "button"; copy.setAttribute("aria-label", "复制本地视频 URL");
+      copy.addEventListener("click", () => copyText(url, "已复制本地视频 URL"));
+      value.append(link, copy); addDetail("本地视频", value);
+    } else addDetail("本地视频", "文件不存在或已清理");
+  }
   addDetail("状态", item.status || "—");
   const actions = window.Douku.node("div", null, "info-actions");
   if (context === "library") {

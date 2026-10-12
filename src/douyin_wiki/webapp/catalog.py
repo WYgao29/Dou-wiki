@@ -10,6 +10,7 @@ from urllib.parse import quote
 import yaml
 
 from ..database import Database
+from ..errors import EntryNotFoundError
 from ..models import InspirationInput, LibraryItem, SourceKind
 from ..tags import TagManager
 from ..time_utils import parse_datetime
@@ -312,6 +313,59 @@ class LibraryCatalog:
         except (OSError, ValueError):
             return None
         if target.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}:
+            return None
+        return target if target.is_file() else None
+
+    def article_materials(self, item: LibraryItem) -> dict[str, Any]:
+        result: dict[str, Any] = {"transcript": None, "local_video_url": None}
+        if not item.database_managed or item.source_kind != SourceKind.VIDEO:
+            return result
+        try:
+            data = self.database.get_entry_data(item.entry_id)
+        except EntryNotFoundError:
+            return result
+        corrected = data.get("transcript_corrected")
+        rows = corrected or data.get("transcript_raw") or []
+        result["transcript"] = {
+            "source": "corrected" if corrected else "raw",
+            "segments": [
+                {key: row[key] for key in ("id", "start_ms", "end_ms", "text")}
+                for row in rows
+            ],
+        }
+        if self.local_video_path(item, data=data) is not None:
+            result["local_video_url"] = f"/api/articles/{quote(item.entry_id, safe='')}/video"
+        return result
+
+    def local_video_path(
+        self, item: LibraryItem, *, data: dict[str, Any] | None = None
+    ) -> Path | None:
+        if not item.database_managed or item.source_kind != SourceKind.VIDEO:
+            return None
+        try:
+            entry = self.database.get_entry(item.entry_id)
+            saved = data if data is not None else self.database.get_entry_data(item.entry_id)
+            metadata = saved.get("metadata") or {}
+            media_path = metadata.get("media_path")
+            if (
+                entry.media_status != "present"
+                or metadata.get("source_kind") == SourceKind.IMAGE_NOTE.value
+                or not media_path
+            ):
+                return None
+            target = Path(media_path)
+            if not target.is_absolute():
+                target = self.vault_path / target
+            target = target.resolve()
+            target.relative_to(self.vault_path)
+            raw_parent = (self.vault_path / entry.raw_path).parent
+            raw_root = raw_parent.parent if raw_parent.name == "records" else raw_parent
+            assets = (raw_root / "assets" / entry.video_id).resolve()
+            assets.relative_to(self.vault_path)
+            target.relative_to(assets)
+        except (EntryNotFoundError, OSError, RuntimeError, ValueError):
+            return None
+        if target.suffix.lower() not in {".mp4", ".m4v", ".mov", ".webm", ".mkv"}:
             return None
         return target if target.is_file() else None
 
