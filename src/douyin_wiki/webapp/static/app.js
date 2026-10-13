@@ -1364,6 +1364,9 @@ function renderTopicData(value) {
     sourceList.append(label);
   });
   sourceList.addEventListener("change", async (event) => {
+    const navigationId = state.navigationRequestId;
+    const isCurrent = () => navigationId === state.navigationRequestId
+      && state.currentTopic === topic.id && !$("#topic-view").classList.contains("hidden");
     const sourceFocus = event.target.dataset.entryId;
     const sources = $$("input[type='checkbox']", sourceList).map((node) => ({
       entry_id: node.dataset.entryId, enabled: node.checked,
@@ -1373,9 +1376,11 @@ function renderTopicData(value) {
       await api(`/api/topics/${encodeURIComponent(topic.id)}/sources`, {
         method: "PUT", body: JSON.stringify({sources}),
       });
-      await openTopic(topic.id, false, {sourceFocus});
+      if (!isCurrent()) return;
       toast("专题来源已更新");
+      await openTopic(topic.id, false, {sourceFocus});
     } catch (error) {
+      if (!isCurrent()) return;
       toast(error.message);
       await openTopic(topic.id, false, {sourceFocus});
     }

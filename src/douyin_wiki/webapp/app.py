@@ -422,7 +422,7 @@ def create_app(
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+            "default-src 'self'; img-src 'self' data: https:; style-src 'self'; "
             "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
         )
         return response

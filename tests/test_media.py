@@ -34,6 +34,14 @@ from douyin_wiki.errors import (
 )
 
 
+@pytest.fixture(autouse=True)
+def offline_media_http(monkeypatch):
+    def unavailable(_transport, request):
+        raise httpx.ConnectError("媒体单元测试不访问真实网络", request=request)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", unavailable)
+
+
 def test_external_tool_success_is_noop() -> None:
     result = subprocess.CompletedProcess(["yt-dlp"], 0, stdout="ok", stderr="")
     _require_success(result, "yt-dlp")

@@ -117,6 +117,74 @@ def test_queue_claim_and_recovery(tmp_path: Path) -> None:
     assert database.claim_next_job() is not None
 
 
+@pytest.mark.parametrize(
+    "status", [JobStatus.NEEDS_SELECTION, JobStatus.AWAITING_AGENT_ANALYSIS]
+)
+@pytest.mark.parametrize(
+    "context_key", ["creator_context", "favorites_context", "collection_context"]
+)
+def test_immediate_cancel_replaces_pending_event_and_keeps_context(tmp_path, status, context_key):
+    database = Database(tmp_path / "state.sqlite3")
+    database.initialize()
+    gateway = GatewayContext(gateway="test", conversation_id="cancel-task")
+    batch = {"parent_job_id": "parent", "batch_silent": True}
+    job = database.create_job(
+        CaptureRequest(share_text="https://www.douyin.com/video/123", gateway_context=gateway),
+        artifacts={context_key: batch},
+    )
+    result = {"phase": "analysis", "work_id": "123"}
+    database.update_job(job.id, status=status, result=result)
+    previous = database.list_job_events()[0]
+
+    cancelled = database.request_cancel(job.id)
+
+    events = database.list_job_events()
+    assert [event.status for event in events] == [JobStatus.CANCELLED]
+    assert database.get_job_event(previous.id).superseded_at is not None
+    assert events[0].gateway_context == gateway
+    assert events[0].result == {**result, context_key: batch}
+    assert cancelled.result == result
+    assert database.request_cancel(job.id).status == JobStatus.CANCELLED
+    assert database.list_job_events() == events
+    assert len(database.list_job_timeline(job.id)) == 2
+
+
+def test_immediate_cancel_without_gateway_route_does_not_emit_event(tmp_path):
+    database = Database(tmp_path / "state.sqlite3")
+    database.initialize()
+    job = database.create_job(CaptureRequest(share_text="https://www.douyin.com/video/123"))
+
+    assert database.request_cancel(job.id).status == JobStatus.CANCELLED
+
+    assert database.list_job_events(unacknowledged_only=False) == []
+
+
+def test_immediate_cancel_event_failure_rolls_back_transition(tmp_path):
+    database = Database(tmp_path / "state.sqlite3")
+    database.initialize()
+    job = database.create_job(
+        CaptureRequest(
+            share_text="https://www.douyin.com/video/123",
+            gateway_context=GatewayContext(gateway="test"),
+        )
+    )
+    database.update_job(job.id, status=JobStatus.NEEDS_SELECTION)
+    pending = database.list_job_events()
+    with database.connect() as conn:
+        conn.execute(
+            """CREATE TRIGGER fail_cancel_event BEFORE INSERT ON job_events
+               WHEN NEW.status='cancelled' BEGIN
+                 SELECT RAISE(ABORT, 'event insert failed');
+               END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="event insert failed"):
+        database.request_cancel(job.id)
+
+    assert database.get_job(job.id).status == JobStatus.NEEDS_SELECTION
+    assert database.list_job_events() == pending
+
+
 def test_replace_knowledge_cache_rolls_back_every_projection_on_restore_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

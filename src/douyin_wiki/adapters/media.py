@@ -423,10 +423,12 @@ def _find_video_aweme_detail(
     return None
 
 
-def _cover_urls_from_aweme(detail: dict[str, Any]) -> list[str]:
+def _cover_urls_from_aweme(
+    detail: dict[str, Any], *, kind: str | None = None
+) -> list[str]:
     video = detail.get("video") if isinstance(detail.get("video"), dict) else {}
     urls: list[str] = []
-    for key in ("origin_cover", "cover", "dynamic_cover"):
+    for key in (kind,) if kind else ("cover", "origin_cover", "dynamic_cover"):
         node = video.get(key) if video else None
         if isinstance(node, dict):
             for item in node.get("url_list") or []:
@@ -450,7 +452,11 @@ def _info_from_aweme_detail(detail: dict[str, Any]) -> dict[str, Any]:
             duration = float(duration_ms) / 1000.0
         except (TypeError, ValueError):
             duration = None
-    cover_urls = _cover_urls_from_aweme(detail)
+    thumbnails = [
+        {"id": kind, "url": url}
+        for kind in ("cover", "origin_cover", "dynamic_cover")
+        for url in _cover_urls_from_aweme(detail, kind=kind)
+    ]
     return {
         "id": str(detail.get("aweme_id") or "") or None,
         "title": (description.splitlines()[0][:120] if description else None),
@@ -462,7 +468,7 @@ def _info_from_aweme_detail(detail: dict[str, Any]) -> dict[str, Any]:
         "uploader_url": f"https://www.douyin.com/user/{sec_uid}" if sec_uid else None,
         "timestamp": detail.get("create_time"),
         "duration": duration,
-        "thumbnails": [{"id": "cover", "url": url} for url in cover_urls],
+        "thumbnails": thumbnails,
         "creator_sec_uid": sec_uid,
     }
 
@@ -648,8 +654,41 @@ def _preferred_cover_urls(info: dict[str, Any]) -> list[str]:
 
 def download_preferred_cover(info: dict[str, Any], target_dir: Path) -> Path | None:
     """Download Douyin's separately configured static cover when available."""
-    urls = _preferred_cover_urls(info)
-    if not urls:
+    downloaded = _download_cover_candidates(info, target_dir, kinds=("cover",))
+    return downloaded[0] if downloaded else None
+
+
+def _cached_cover(target_dir: Path, kind: str) -> tuple[Path, str] | None:
+    prefixes = ("origin_cover", "original") if kind == "origin_cover" else (kind,)
+    for prefix in prefixes:
+        paths = [
+            path for path in target_dir.glob(f"{prefix}.*")
+            if path.is_file()
+            and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+            and path.stat().st_size > 0
+        ]
+        if paths:
+            return max(paths, key=lambda path: path.stat().st_size), (
+                "douyin_cover" if kind == "cover" else kind
+            )
+    return None
+
+
+def _download_cover_candidates(
+    info: dict[str, Any],
+    target_dir: Path,
+    *,
+    kinds: tuple[str, ...] = ("cover", "origin_cover", "dynamic_cover"),
+    reuse_cache: bool = False,
+) -> tuple[Path, str] | None:
+    """Try each cover type in priority order and retain its actual provenance."""
+    candidates = [
+        (kind, item["url"])
+        for kind in kinds
+        for item in info.get("thumbnails", [])
+        if isinstance(item, dict) and item.get("id") == kind and item.get("url")
+    ]
+    if not candidates:
         return None
     headers = {
         "Referer": "https://www.douyin.com/",
@@ -659,22 +698,32 @@ def download_preferred_cover(info: dict[str, Any], target_dir: Path) -> Path | N
         ),
     }
     with httpx.Client(follow_redirects=True, timeout=60, headers=headers) as client:
-        for url in urls:
-            try:
-                response = client.get(url)
-                response.raise_for_status()
-            except httpx.HTTPError:
-                continue
-            content = response.content
-            content_type = response.headers.get("content-type", "").lower()
-            if not content or (content_type and not content_type.startswith("image/")):
-                continue
-            suffix = ".png" if content.startswith(b"\x89PNG") else ".jpg"
-            target = target_dir / f"cover{suffix}"
-            temporary = target.with_suffix(target.suffix + ".part")
-            temporary.write_bytes(content)
-            temporary.replace(target)
-            return target
+        for kind in kinds:
+            for candidate_kind, url in candidates:
+                if candidate_kind != kind:
+                    continue
+                try:
+                    response = client.get(url)
+                    response.raise_for_status()
+                except httpx.HTTPError:
+                    continue
+                content = response.content
+                content_type = response.headers.get("content-type", "").lower()
+                if not content or (content_type and not content_type.startswith("image/")):
+                    continue
+                if content.startswith(b"\x89PNG"):
+                    suffix = ".png"
+                elif content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+                    suffix = ".webp"
+                else:
+                    suffix = ".jpg"
+                target = target_dir / f"{kind}{suffix}"
+                temporary = target.with_suffix(target.suffix + ".part")
+                temporary.write_bytes(content)
+                temporary.replace(target)
+                return target, "douyin_cover" if kind == "cover" else kind
+            if reuse_cache and (cached := _cached_cover(target_dir, kind)):
+                return cached
     return None
 
 
@@ -1625,32 +1674,22 @@ class YtDlpDownloader:
             ):
                 secondary = await self._fetch_info_json(url, target_dir)
                 info = _merge_info(info, secondary)
-        preferred_cover = download_preferred_cover(info, target_dir)
+        downloaded_cover = await asyncio.to_thread(
+            _download_cover_candidates, info, target_dir, reuse_cache=True
+        )
         candidates = media_files("original")
         if not candidates:
             raise ExternalToolError("yt-dlp 未生成视频文件")
         media_path = max(candidates, key=lambda path: path.stat().st_size)
-        thumbnails = [
-            path
-            for path in target_dir.glob("original.*")
-            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-        ]
-        # Also accept cover.* written by download_preferred_cover.
-        thumbnails.extend(
-            path
-            for path in target_dir.glob("cover.*")
-            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-        )
-        fallback_thumbnail = max(thumbnails, key=lambda path: path.stat().st_size, default=None)
-        thumbnail_path = preferred_cover or fallback_thumbnail
+        if downloaded_cover is None:
+            for kind in ("cover", "origin_cover", "dynamic_cover"):
+                if downloaded_cover := _cached_cover(target_dir, kind):
+                    break
+        thumbnail_path = downloaded_cover[0] if downloaded_cover else None
         timestamp = info.get("timestamp") or info.get("release_timestamp")
         published_at = datetime.fromtimestamp(timestamp, UTC) if timestamp else None
         duration = info.get("duration")
-        thumbnail_kind = None
-        if preferred_cover:
-            thumbnail_kind = "douyin_cover"
-        elif fallback_thumbnail:
-            thumbnail_kind = "origin_cover"
+        thumbnail_kind = downloaded_cover[1] if downloaded_cover else None
         channel_url = str(info.get("channel_url") or info.get("uploader_url") or "")
         creator_sec_uid = info.get("creator_sec_uid") or extract_creator_sec_uid(channel_url)
         return VideoMetadata(

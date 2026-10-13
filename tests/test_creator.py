@@ -13,6 +13,7 @@ from douyin_wiki.models import (
     CreatorInventoryWork,
     CreatorProfile,
     CreatorWorkDecision,
+    GatewayContext,
     JobStatus,
     SourceKind,
 )
@@ -335,6 +336,67 @@ async def test_manual_sync_only_lists_new_works(creator_service) -> None:
     inventory = service.get_creator_inventory(sync.id)
     assert inventory["total"] == 1
     assert inventory["items"][0]["work"]["work_id"] == "7677077378468957668"
+
+
+@pytest.mark.parametrize("already_imported", [False, True])
+async def test_creator_without_children_emits_completion_once(creator_service, already_imported):
+    from douyin_wiki.errors import JobStateError
+
+    service, adapter, _ = creator_service
+    adapter.inventory_result = inventory_result("7676706580084141163")
+    if already_imported:
+        child = service.capture_douyin(adapter.inventory_result.works[0].canonical_url)
+        await service.process_claimed_job(service.database.claim_next_job())
+        await complete_gateway_job(service, child.id)
+    context = GatewayContext(gateway="test", conversation_id="creator-finish")
+    parent = service.capture_douyin_creator(
+        "https://www.douyin.com/user/example-sec-uid", gateway_context=context
+    )
+    await service.process_claimed_job(service.database.claim_next_job())
+    if not already_imported:
+        service.set_creator_work_selection(parent.id, CreatorWorkDecision.SKIPPED)
+
+    completed = service.confirm_creator_import(parent.id)
+
+    assert completed.status == JobStatus.COMPLETED
+    assert completed.result["child_job_ids"] == []
+    events = service.database.list_job_timeline(parent.id)
+    assert [event.status for event in events] == [JobStatus.NEEDS_SELECTION, JobStatus.COMPLETED]
+    assert events[0].superseded_at is not None
+    assert events[-1].result == completed.result
+    assert events[-1].result["selection"]["imported"] == int(already_imported)
+    assert events[-1].gateway_context == context
+    assert service.list_job_events() == [events[-1]]
+    with pytest.raises(JobStateError, match="待选择作品"):
+        service.confirm_creator_import(parent.id)
+    service.get_job(parent.id)
+    assert len(service.database.list_job_timeline(parent.id)) == 2
+
+
+async def test_creator_completion_event_failure_rolls_back_confirmation(creator_service):
+    import sqlite3
+
+    service, _, _ = creator_service
+    parent = service.capture_douyin_creator(
+        "https://www.douyin.com/user/example-sec-uid",
+        gateway_context=GatewayContext(gateway="test"),
+    )
+    await service.process_claimed_job(service.database.claim_next_job())
+    service.set_creator_work_selection(parent.id, CreatorWorkDecision.SKIPPED)
+    pending = service.list_job_events()
+    with service.database.connect() as conn:
+        conn.execute(
+            """CREATE TRIGGER fail_completion_event BEFORE INSERT ON job_events
+               WHEN NEW.status='completed' BEGIN
+                 SELECT RAISE(ABORT, 'event insert failed');
+               END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="event insert failed"):
+        service.confirm_creator_import(parent.id)
+
+    assert service.get_job(parent.id).status == JobStatus.NEEDS_SELECTION
+    assert service.list_job_events() == pending
 
 
 @pytest.mark.asyncio

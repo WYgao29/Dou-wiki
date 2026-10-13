@@ -56,6 +56,8 @@
 
 ## 维护记录
 
+[2026-10-13 项目与 Web 审查](maintenance/2026-10-13-project-review.md)记录 20 个页面的逐页检查、对齐修复和七项已复现的功能问题；后续七项修复、59 项新增行为回归、1610 项完整离线回归、212 项独立 wheel 测试及本机部署状态见[修复与复审记录](maintenance/2026-10-13-project-review-fixes.md)。
+
 [2026-10-01 仓库审计](audits/2026-10-01-repository-audit.md)与[文件清单](audits/2026-10-01-repository-inventory.json)记录审计开始时的基准和判断依据；后续改动不覆盖原清单。[清理与 Agent 规则实施计划](superpowers/plans/2026-10-01-repository-cleanup.md)记录所选范围、验证与回退；首批及通用接入框架已提交为 `7ccfba3`，O1–O6 及仓库外回退工具的两项修复已验收。[2026-10-02 收尾记录](superpowers/plans/2026-10-01-repository-cleanup.md#提交收尾2026-10-02)说明本轮提交、发行包同步、证据位置和提交后的回退边界。
 
 [本地残留清理](superpowers/plans/2026-10-01-repository-cleanup.md#本地残留清理2026-10-02)记录随后确认并完成的 Pi 旧提示、源码缓存、首批材料外置与空目录清理；历史清单保留，现用环境及其他 worktree 不动。首批归档的现行位置和恢复入口以该节所链接的仓库外执行记录为准。

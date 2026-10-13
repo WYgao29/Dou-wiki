@@ -66,6 +66,8 @@ flowchart TD
 
 用户 Vault 与源码仓库分离。Vault 保存不可变原始记录、可更新资料页、机器侧车和媒体；`.douyin-wiki/state.sqlite3` 保存任务、事件、授权会话及检索投影，没有聊天表。重建知识索引不等于恢复全部操作历史。
 
+专题笔记的历史来源和资料关系可以引用已合法删除的资料。重建根据已完成的废纸篓日志识别这些引用；彻底删除前将精简身份凭据保存到 `wiki/.data/deleted-entries/<entry_id>.json`，不保留正文或媒体。历史关系留在侧车，目标不存在时不写入 SQL 关系表；当前专题来源仍须存在，未有合法删除证据的缺失或损坏资料仍拒绝重建。重新采集同一资料时移除旧的永久删除凭据。该可选目录兼容现有 Vault，无 schema 变更。
+
 0.2.0 仅创建原生 schema 16 新库，旧版状态库明确拒绝，不自动迁移旧业务数据。新 schema 使用 `collections/collection_works` 保存知识关系，`collection_runs/collection_run_items` 保存批次世代、选择及子任务关联；博主运行项补充 `child_job_id`。`Database.capture_parent_ids()` 与 `batch_child_ids()` 查询真实关联，复用 capture 保留原 Gateway 上下文。确认先用 `CaptureOptions.processing_key()` 检查所有候选的有效处理选项，再在一个写事务中发布子任务；短链后来解析出的重复请求保留 ID 和 Gateway，进入持久等待状态，批次关联指向执行任务。取消保护依据其他活动父任务及独立等待者，完成刷新覆盖全部相关入口。
 
 取消批次先按原 `creator/favorites/collection_context.parent_job_id` 撤销其共享等待记录，再依据实际父任务关系决定是否停止执行者；共享结果刷新不会恢复已取消的记录。等待者单独重试在同一状态更新事务中移除 artifacts 和 result 的旧执行者关联，普通重试保留检查点。Web 保留等待记录自身状态和请求，用实际执行者展示阶段、进度、授权范围及跳转入口；进行中与需要用户操作筛选依据当前共享执行状态。

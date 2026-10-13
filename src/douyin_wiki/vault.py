@@ -120,6 +120,10 @@ class VaultWriter:
         self.last_topic_load_errors: list[dict[str, str]] = []
         self.last_artifact_load_errors: list[dict[str, str]] = []
 
+    @property
+    def deleted_entry_receipts_root(self) -> Path:
+        return self.vault_path / "wiki" / ".data" / "deleted-entries"
+
     @contextmanager
     def reversible_writes(self) -> Iterator[None]:
         """Restore all documents if their SQLite transaction cannot be published."""
@@ -483,6 +487,15 @@ class VaultWriter:
             raise
 
         changed.extend(self.restore_entry_links(entry, data))
+        # Re-capturing the same work makes an earlier permanent-deletion proof
+        # obsolete. A later loss of its current documents must remain an error.
+        entry_id = self._safe_id(entry.id, field="entry.id")
+        receipt = self.deleted_entry_receipts_root / f"{entry_id}.json"
+        self._reject_vault_symlinks(receipt, field="deleted_entry_receipt")
+        if receipt.exists():
+            self._remember_write(receipt)
+            receipt.unlink()
+            changed.append(receipt)
         return WrittenEntry(
             raw_path=raw_path,
             source_path=source_path,

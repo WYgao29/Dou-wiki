@@ -4,6 +4,8 @@
   if (!D) return;
   let pollTimer = null;
   let events = null;
+  let navigationEpoch = 0;
+  let requestEpoch = 0;
   const childPages = new Map();
   const terminal = new Set(["completed", "completed_with_warnings", "failed", "cancelled"]);
 
@@ -17,8 +19,10 @@
   }
 
   function schedule(path) {
+    if (location.pathname !== path || !path.startsWith("/jobs")) return;
     stop();
     events = new EventSource("/api/events");
+    const stream = events;
     const reload = () => {
       if (location.pathname === path || location.pathname.startsWith("/jobs")) {
         window.dispatchEvent(new CustomEvent("douku:route", {detail: {path: location.pathname}}));
@@ -26,14 +30,29 @@
     };
     ["jobs", "auth", "library"].forEach((name) => events.addEventListener(name, reload));
     events.addEventListener("error", () => {
+      if (events !== stream) return;
       events?.close();
       events = null;
-      pollTimer = setTimeout(() => { loadFromPath(location.pathname); schedule(path); }, 8000);
+      pollTimer = setTimeout(async () => {
+        if (location.pathname !== path) return;
+        try {
+          if (await loadFromPath(path)) schedule(path);
+        } catch (error) {
+          if (location.pathname === path) D.toast(error.message);
+        }
+      }, 8000);
     });
   }
 
   function routePath(value) {
     return String(value || "").split("?")[0];
+  }
+
+  function requestScope(viewId) {
+    const request = ++requestEpoch, navigation = navigationEpoch;
+    const path = location.pathname + location.search;
+    return () => request === requestEpoch && navigation === navigationEpoch
+      && location.pathname + location.search === path && !D.$(viewId).classList.contains("hidden");
   }
 
   function clockFromMs(ms) {
@@ -313,12 +332,20 @@
   }
 
   async function loadList() {
+    const isCurrent = requestScope("jobs-view");
     const params = new URLSearchParams(location.search);
     const query = new URLSearchParams();
     if (params.get("kind")) query.set("kind", params.get("kind"));
     if (params.get("status")) query.set("status", params.get("status"));
     if (params.get("requires_user_action") === "1") query.set("requires_user_action", "true");
-    const data = await D.api(`/api/jobs?${query}`);
+    let data;
+    try {
+      data = await D.api(`/api/jobs?${query}`);
+    } catch (error) {
+      if (isCurrent()) throw error;
+      return false;
+    }
+    if (!isCurrent()) return false;
     renderList(data);
     D.$("jobs-count").textContent = String(data.total);
     const kind = D.$("jobs-filter-kind");
@@ -333,11 +360,22 @@
           : status;
       }
     }
+    return true;
   }
 
   async function loadDetail(jobId) {
+    const match = location.pathname.match(/^\/jobs\/([^/]+)$/);
+    if (!match || decodeURIComponent(match[1]) !== jobId || D.$("job-detail-view").classList.contains("hidden")) return false;
+    const isCurrent = requestScope("job-detail-view");
     const root = D.$("job-detail-content");
-    const job = await D.api(`/api/jobs/${encodeURIComponent(jobId)}`);
+    let job;
+    try {
+      job = await D.api(`/api/jobs/${encodeURIComponent(jobId)}`);
+    } catch (error) {
+      if (isCurrent()) throw error;
+      return false;
+    }
+    if (!isCurrent()) return false;
     document.title = `${jobTitle(job)} · 抖库`;
     const header = D.node("header", null, "job-detail-summary");
     D.$("job-detail-title").textContent = jobTitle(job);
@@ -544,10 +582,13 @@
     if (warningsPanel.childNodes.length) parts.push(warningsPanel);
     if (review.childNodes.length) parts.push(review);
     if (evidenceAudit.childNodes.length) parts.push(evidenceAudit);
+    if (!isCurrent()) return false;
     root.replaceChildren(...parts);
+    return true;
   }
 
   async function loadFromPath(path) {
+    if (location.pathname !== path || (path !== "/jobs" && !path.startsWith("/jobs/"))) return false;
     const match = path.match(/^\/jobs\/([^/]+)$/);
     D.hideAllViews();
     D.setNav("jobs-nav");
@@ -555,11 +596,11 @@
       D.setPage("job-detail");
       D.$("job-detail-view").classList.remove("hidden");
       try {
-        await loadDetail(decodeURIComponent(match[1]));
+        if (!await loadDetail(decodeURIComponent(match[1]))) return false;
       } catch (error) {
         if (error.status === 404) {
           D.showMissing();
-          return;
+          return false;
         }
         throw error;
       }
@@ -568,22 +609,25 @@
       D.setPage("jobs");
       D.$("jobs-view").classList.remove("hidden");
       document.title = "任务中心 · 抖库";
-      await loadList();
+      if (!await loadList()) return false;
       D.warnIfWorkerDown("jobs-view");
     }
+    return true;
   }
 
   window.addEventListener("douku:route", async (event) => {
+    const navigation = ++navigationEpoch;
+    ++requestEpoch;
+    stop();
     const path = routePath(event.detail.path);
     if (path !== "/jobs" && !path.startsWith("/jobs/")) {
       stop();
       return;
     }
     try {
-      await loadFromPath(path);
-      schedule(path);
+      if (await loadFromPath(path) && navigation === navigationEpoch) schedule(path);
     } catch (error) {
-      D.toast(error.message);
+      if (navigation === navigationEpoch) D.toast(error.message);
     }
   });
 

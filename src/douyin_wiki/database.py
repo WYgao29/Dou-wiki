@@ -801,13 +801,12 @@ class Database:
                     (JobStatus.CANCELLED.value, "已取消", now, job_id, row["status"]),
                 ).rowcount
                 if changed:
-                    conn.execute(
-                        """INSERT INTO job_events(job_id, status, result_json, created_at)
-                           VALUES (?, ?, '{}', ?)""",
-                        (job_id, JobStatus.CANCELLED.value, now),
-                    )
                     updated = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-                    return self._job_from_row(updated)
+                    cancelled = self._job_from_row(updated)
+                    self._emit_job_event_conn(
+                        conn, cancelled, JobStatus.CANCELLED, cancelled.result
+                    )
+                    return cancelled
                 row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
                 if row["status"] not in active:
                     raise JobStateError("这个任务不能取消")
@@ -1257,28 +1256,12 @@ class Database:
                     JobStatus.CANCELLED,
                 }
             ):
-                event_result = dict(result if result is not None else current.result)
-                if favorites_context := merged_artifacts.get("favorites_context"):
-                    event_result["favorites_context"] = favorites_context
-                if creator_context := merged_artifacts.get("creator_context"):
-                    event_result["creator_context"] = creator_context
-                if collection_context := merged_artifacts.get("collection_context"):
-                    event_result["collection_context"] = collection_context
-                event_time = iso_now()
-                conn.execute(
-                    """UPDATE job_events SET superseded_at=?
-                       WHERE job_id=? AND acknowledged_at IS NULL AND superseded_at IS NULL""",
-                    (event_time, job_id),
-                )
-                conn.execute(
-                    """INSERT INTO job_events(job_id, status, result_json, created_at)
-                       VALUES (?, ?, ?, ?)""",
-                    (
-                        job_id,
-                        status.value,
-                        json.dumps(event_result, ensure_ascii=False),
-                        event_time,
-                    ),
+                self._emit_job_event_conn(
+                    conn,
+                    current,
+                    status,
+                    result if result is not None else current.result,
+                    artifacts=merged_artifacts,
                 )
             updated_row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return self._job_from_row(updated_row)
@@ -1440,35 +1423,48 @@ class Database:
             superseded_at=parse_datetime(row["superseded_at"]) if row["superseded_at"] else None,
         )
 
-    def emit_job_event(
-        self, job_id: str, status: JobStatus, result: dict[str, Any]
-    ) -> JobEvent | None:
-        job = self.get_job(job_id)
+    @staticmethod
+    def _emit_job_event_conn(
+        conn: sqlite3.Connection,
+        job: JobRecord,
+        status: JobStatus,
+        result: dict[str, Any],
+        *,
+        artifacts: dict[str, Any] | None = None,
+    ) -> int | None:
+        """Replace pending delivery with this routed event in the caller's transaction."""
         if job.request.gateway_context is None:
             return None
         event_result = dict(result)
-        if favorites_context := job.artifacts.get("favorites_context"):
-            event_result["favorites_context"] = favorites_context
-        if creator_context := job.artifacts.get("creator_context"):
-            event_result["creator_context"] = creator_context
-        if collection_context := job.artifacts.get("collection_context"):
-            event_result["collection_context"] = collection_context
-        with self.connect() as conn:
-            event_time = iso_now()
-            conn.execute(
-                """UPDATE job_events SET superseded_at=?
-                   WHERE job_id=? AND acknowledged_at IS NULL AND superseded_at IS NULL""",
-                (event_time, job_id),
-            )
-            cursor = conn.execute(
-                """INSERT INTO job_events(job_id, status, result_json, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (job_id, status.value, json.dumps(event_result, ensure_ascii=False), event_time),
-            )
-            event_id = cursor.lastrowid
-        if event_id is None:  # pragma: no cover - SQLite always provides this value
+        event_artifacts = job.artifacts if artifacts is None else artifacts
+        for key in ("favorites_context", "creator_context", "collection_context"):
+            if context := event_artifacts.get(key):
+                event_result[key] = context
+        event_time = iso_now()
+        conn.execute(
+            """UPDATE job_events SET superseded_at=?
+               WHERE job_id=? AND acknowledged_at IS NULL AND superseded_at IS NULL""",
+            (event_time, job.id),
+        )
+        cursor = conn.execute(
+            """INSERT INTO job_events(job_id, status, result_json, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (job.id, status.value, json.dumps(event_result, ensure_ascii=False), event_time),
+        )
+        if cursor.lastrowid is None:  # pragma: no cover - SQLite always provides this value
             raise JobStateError("job event could not be created")
-        return self.get_job_event(event_id)
+        return cursor.lastrowid
+
+    def emit_job_event(
+        self, job_id: str, status: JobStatus, result: dict[str, Any]
+    ) -> JobEvent | None:
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise JobStateError(f"job not found: {job_id}")
+            event_id = self._emit_job_event_conn(conn, self._job_from_row(row), status, result)
+        return self.get_job_event(event_id) if event_id is not None else None
 
     def find_entry_by_video_id(self, video_id: str) -> EntryRecord | None:
         with self.connect() as conn:
@@ -2108,6 +2104,8 @@ class Database:
                     job_id,
                 ),
             )
+            if not child_ids:
+                self._emit_job_event_conn(conn, parent, JobStatus.COMPLETED, result)
         return self.get_job(job_id)
 
     def creator_inventory_summary(self, job_id: str) -> dict[str, int]:

@@ -153,6 +153,7 @@ class MaintenanceMixin:
         loaded_topics = self.vault.load_topics()
         entry_ids = [entry.id for entry, _ in loaded]
         entry_id_set = set(entry_ids)
+        deleted_entry_ids = self._load_deleted_entry_ids()
 
         def entry_sidecar_path(entry: EntryRecord, data: dict[str, Any]) -> Path:
             creator_folder = str(data.get("creator", {}).get("folder_path") or "")
@@ -215,7 +216,9 @@ class MaintenanceMixin:
                         )
                         continue
                     target_id = relation.get("target_entry_id")
-                    if target_id not in entry_id_set or target_id == entry.id:
+                    if (
+                        target_id not in entry_id_set and target_id not in deleted_entry_ids
+                    ) or target_id == entry.id:
                         append_error(
                             self.vault.last_entry_load_errors,
                             sidecar_path,
@@ -236,7 +239,10 @@ class MaintenanceMixin:
                             f"关系 confidence 超出范围：{confidence}",
                         )
                         continue
-                    relations.append(relation)
+                    # Keep the original relation in the document/data history;
+                    # the current SQL relation needs both entries to exist.
+                    if target_id in entry_id_set:
+                        relations.append(relation)
 
             reminders: list[ReminderCandidate] = []
             raw_reminders = data.get("analysis", {}).get("reminders", [])
@@ -330,7 +336,10 @@ class MaintenanceMixin:
                         "artifact.topic_id 与 topic.id 不一致",
                     )
                 for revision in artifact.source_revisions:
-                    if revision.entry_id not in entry_id_set:
+                    if (
+                        revision.entry_id not in entry_id_set
+                        and revision.entry_id not in deleted_entry_ids
+                    ):
                         append_error(
                             self.vault.last_artifact_load_errors,
                             artifact_path,

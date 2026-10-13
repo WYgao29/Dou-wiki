@@ -6,6 +6,7 @@ import re
 import shutil
 import uuid
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,91 @@ class TrashMixin:
     @property
     def _entry_trash_root(self) -> Path:
         return self.config.vault_path / ".douyin-wiki" / "trash" / "entries"
+
+    @property
+    def _deleted_entry_receipts_root(self) -> Path:
+        # Identity-only history belongs with the rebuildable Vault metadata,
+        # so a backup can preserve it after the trash contents are removed.
+        return self.vault.deleted_entry_receipts_root
+
+    def _deleted_entry_receipt(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        entry = EntryRecord.model_validate(manifest["entry"])
+        entry_id = self.vault._safe_id(entry.id, field="deleted_entry.entry_id")
+        video_id = self.vault._safe_id(entry.video_id, field="deleted_entry.video_id")
+        trash_id = manifest["trash_id"]
+        if not isinstance(trash_id, str) or not re.fullmatch(r"[0-9a-f]{32}", trash_id):
+            raise ValueError("删除凭据的废纸篓编号无效")
+        deleted_at = manifest["deleted_at"]
+        if not isinstance(deleted_at, str) or datetime.fromisoformat(deleted_at).tzinfo is None:
+            raise ValueError("删除凭据的删除时间无效")
+        return {
+            "version": 1,
+            "entry_id": entry_id,
+            "video_id": video_id,
+            "trash_id": trash_id,
+            "deleted_at": deleted_at,
+        }
+
+    def _persist_deleted_entry_receipt(self, manifest: dict[str, Any]) -> None:
+        if self._trash_phase(manifest) not in {"completed", "purging"}:
+            raise ValueError("仅已完成删除的资料可以保存删除凭据")
+        receipt = self._deleted_entry_receipt(manifest)
+        target = self._deleted_entry_receipts_root / f"{receipt['entry_id']}.json"
+        with self.vault.locked():
+            self.vault._atomic_write(
+                target, json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
+            )
+            directory_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            self.vault.commit(
+                [target], f"trash: retain deleted entry identity {receipt['entry_id']}"
+            )
+
+    def _load_deleted_entry_ids(self) -> set[str]:
+        """Allow historical references only when a valid deletion record remains."""
+        deleted_ids: set[str] = set()
+        for path in self._entry_trash_root.glob("*/manifest.json"):
+            try:
+                self.vault._reject_vault_symlinks(path, field="trash_manifest")
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict):
+                    continue
+                if manifest.get("version") != 1 or self._trash_phase(manifest) not in {
+                    "completed", "database_deleted", "purging"
+                }:
+                    continue
+                receipt = self._deleted_entry_receipt(manifest)
+                if path.parent.name == receipt["trash_id"]:
+                    deleted_ids.add(receipt["entry_id"])
+            except (KeyError, OSError, TypeError, ValueError):
+                continue
+        for path in self._deleted_entry_receipts_root.glob("*.json"):
+            try:
+                self.vault._reject_vault_symlinks(path, field="deleted_entry_receipt")
+                receipt = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(receipt, dict) or receipt.get("version") != 1:
+                    continue
+                # Reuse the same identity/time validation as a complete journal,
+                # without keeping the deleted body or recoverable media.
+                entry_id = self.vault._safe_id(
+                    receipt["entry_id"], field="deleted_entry.entry_id"
+                )
+                self.vault._safe_id(receipt["video_id"], field="deleted_entry.video_id")
+                if (
+                    path.stem != entry_id
+                    or not isinstance(receipt["trash_id"], str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", receipt["trash_id"])
+                    or not isinstance(receipt["deleted_at"], str)
+                    or datetime.fromisoformat(receipt["deleted_at"]).tzinfo is None
+                ):
+                    continue
+                deleted_ids.add(entry_id)
+            except (KeyError, OSError, TypeError, ValueError):
+                continue
+        return deleted_ids
 
     def _trash_item_dir(self, trash_id: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{32}", trash_id):
@@ -540,6 +626,9 @@ class TrashMixin:
                 raise ValueError("废纸篓条目正在恢复或维护，暂时不能彻底删除")
             title = str(manifest.get("entry", {}).get("title") or "已删除资料")
             size_bytes = int(manifest.get("size_bytes") or 0)
+            # Keep only proof that historical references once pointed to a
+            # legitimately deleted entry, before destroying recoverable files.
+            self._persist_deleted_entry_receipt(manifest)
             manifest["phase"] = "purging"
             self._write_trash_manifest(item_dir, manifest)
             shutil.rmtree(item_dir)
@@ -649,6 +738,7 @@ class TrashMixin:
                 data = self._normalize_trashed_entry_data(entry, dict(manifest["data"]))
                 dependencies = dict(manifest.get("dependencies") or {})
                 if phase == "purging":
+                    self._persist_deleted_entry_receipt(manifest)
                     shutil.rmtree(item_dir)
                     report["completed"].append(manifest["trash_id"])
                     continue
