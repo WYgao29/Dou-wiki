@@ -1,6 +1,6 @@
 # Web UI 设计系统（当前实现）
 
-2026-10-12，Web 0.2.50，包 0.2.1。当前界面支持阅读、完整逐字稿、本地视频链接、已有批次与任务管理、信息 / 灵感 / 专题来源和系统维护；新建业务请求由 MCP Agent 执行。收藏目录记录提示请 Agent 选择收藏夹并发起作品读取。聊天、模型配置、自动成果和新导入表单已删除。目标规格与实施记录见 [重设计方案](web-ui-redesign-readwise.md)。前半部分记录当前行为，带版本的验证段落保留历史基准；当前安装与验证见[视频详情页材料记录](maintenance/2026-10-12-video-detail-materials.md)，独立 runtime 的安装约定见[精简审查修复记录](superpowers/reviews/2026-10-11-mcp-gateway-review-fixes.md)。
+2026-10-13，Web 0.2.51，包 0.2.1。当前界面支持阅读、完整逐字稿、本地视频链接、已有批次与任务管理、信息 / 灵感 / 专题来源和系统维护；新建业务请求由 MCP Agent 执行。收藏目录记录提示请 Agent 选择收藏夹并发起作品读取。聊天、模型配置、自动成果和新导入表单已删除。目标规格与实施记录见 [重设计方案](web-ui-redesign-readwise.md)。前半部分记录当前行为，带版本的验证段落保留历史基准；当前安装与验证见[项目审查修复记录](maintenance/2026-10-13-project-review-fixes.md)，独立 runtime 的安装约定见[精简审查修复记录](superpowers/reviews/2026-10-11-mcp-gateway-review-fixes.md)。
 
 ## 令牌与字体
 

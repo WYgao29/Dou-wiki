@@ -37,6 +37,14 @@ wheel SHA256：`f1c71d748a39991b7e306dbcb5dfd1ade22f0a203c613671291abea99aa0fb80
 
 ## 本机部署
 
-部署前只读探针：现用 Web `0.2.50`，Worker 正常，运行任务和队列均为 0。已获得用户安装、提交和重启授权；实际提交与部署结果在执行后补充。
+修复提交为 `80f436fb4215e6d8c03a44c9cf5f29ea2c6c72ac`。部署前只读探针确认 Web `0.2.50`、Worker 正常、无运行和排队任务；随后按用户授权备份现用包与 SQLite，安装已验收的 wheel，并重新注册 Web、Worker 和维护 LaunchAgent。现用依赖未同步，只替换抖库包。
+
+2026-10-13 18:48（北京时间），新 Web 返回 HTTP 200 / `0.2.51`，Worker 使用新的进程和心跳，队列为 0。维护服务按原定周日 03:00 计划等待执行，没有强制运行维护。90 个安装运行文件与源码 / wheel 逐字一致，24 个线上静态资源与安装文件一致；配置、三个 plist、Codex MCP 配置与所有依赖版本保持原值。部署及新 MCP 验收后，34 张表除 Worker 心跳记录外的完整行内容哈希不变。
+
+两个旧 STDIO MCP 进程已退出。使用保存的客户端配置新建 MCP 连接，51 项工具与实际 `doctor` 调用通过，解释器为仓库外独立 runtime。当前聊天旧连接的调用仍返回 `Transport closed`，需要用户在客户端重连抖库；新建验收连接不表示当前聊天已重连。本记录明确保留这个客户端接续事项。
+
+首次新 MCP 验收脚本使用了错误的结果属性名 `isError`，工具调用本身成功后因属性读取失败退出；修正为当前 MCP 客户端的 `is_error` 后全部验收通过，产品代码没有因此改变，首次日志保留。
+
+部署证据包括 `runtime-before-fixes.zip`、`state-before-fixes.sqlite3`、`deployment-before.json`、`deployment.json`、`deployment-commands.log`、`runtime-wheel-check.json`、`live-acceptance.json`、`fresh-mcp-doctor.json`、`current-chat-mcp.json` 与 `final-state-check.json`。备份、代码和验收材料均在下述仓库外目录，没有修改真实业务内容或浏览器 Profile。
 
 证据均在仓库外 `/Users/weisengao/Documents/ChatGPT/douyin-wiki-review-2026-10-13/`：`navigation-red.log`、`navigation-green.log`、`cache-red.log`、`repair-targeted.log`、`fixes-full-regression.log`、`installed-regression.log`、`wheel-check.json`、`fixes-browser/` 与 `release/`。初次审查材料继续保留。
