@@ -43,6 +43,12 @@ wheel SHA256：`f1c71d748a39991b7e306dbcb5dfd1ade22f0a203c613671291abea99aa0fb80
 
 两个旧 STDIO MCP 进程已退出。使用保存的客户端配置新建 MCP 连接，51 项工具与实际 `doctor` 调用通过，解释器为仓库外独立 runtime。当前聊天旧连接的调用仍返回 `Transport closed`，需要用户在客户端重连抖库；新建验收连接不表示当前聊天已重连。本记录明确保留这个客户端接续事项。
 
+### 当前聊天重连验收（2026-10-14）
+
+用户重启客户端后，本聊天实际 `doctor` RPC 成功且 `overall=true`，当前工具清单为 51 项；模型准备命令使用独立 runtime 的 `bin/hf`，新 STDIO MCP 进程也使用同一 runtime 的解释器。此前 `Transport closed` 是升级后旧会话的历史状态，当前聊天已经重连成功，没有剩余客户端接续事项。
+
+本机 Web 健康接口继续返回 HTTP 200 / `0.2.51`，Worker 心跳正常，无运行和排队任务。90 个安装运行文件仍逐字等于已验收的 wheel 和源码，Git 工作区在检查前干净。Qwen3、OCR、向量模型和必需工具诊断可用；只调用一次只读 `doctor`，没有创建业务任务或执行真实采集。证据为仓库外同目录的 `current-chat-reconnect-2026-10-14.json` 和 `reconnect-runtime-wheel-check-2026-10-14.json`。修复、复审、提交、部署、服务重启及本聊天重连全部完成。
+
 首次新 MCP 验收脚本使用了错误的结果属性名 `isError`，工具调用本身成功后因属性读取失败退出；修正为当前 MCP 客户端的 `is_error` 后全部验收通过，产品代码没有因此改变，首次日志保留。
 
 部署证据包括 `runtime-before-fixes.zip`、`state-before-fixes.sqlite3`、`deployment-before.json`、`deployment.json`、`deployment-commands.log`、`runtime-wheel-check.json`、`live-acceptance.json`、`fresh-mcp-doctor.json`、`current-chat-mcp.json` 与 `final-state-check.json`。备份、代码和验收材料均在下述仓库外目录，没有修改真实业务内容或浏览器 Profile。
