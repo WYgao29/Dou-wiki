@@ -220,6 +220,8 @@ Gateway 应先调用 `get_auth_status` 和 `get_job` 复核最新状态，不要
 
 ## 博主选择式批量采集
 
+补导 `import_creator_works` 和同步 `sync_creator` 可显式传 `retention`；省略仍为临时保留，不自动继承某一轮导入策略。新建子任务保存本批处理选项，重试继续复用。
+
 用户提交博主主页或该博主任意作品时，先调用 `capture_douyin_creator`，并逐字传递博主灵感。
 本地 Worker 完成主页清点后，父任务进入“待选择作品”：
 
@@ -404,6 +406,8 @@ capture 时保存实际可获得的 gateway/channel/conversation/message 路由�
 ```
 
 ## 调试
+
+分析输入错误返回 `invalid_analysis`，`details.errors` 给出字段路径、原因及数量/长度限制；按提示修正后向同一待分析任务重新提交。已有引用、状态和材料版本错误保留原错误码。协议 1 保留历史要点规范化，超过 5 条时在回执中提示截断；协议 2 明确拒绝超过 5 条。
 
 在仓库外工作目录沿用实际 runtime 和 MCP 配置环境运行 `douyin-wiki doctor`、`auth status` 或 `web status`。单页兼容探测使用 `douyin-wiki gateway monitor-events`；完整事件扫描使用 MCP `list_job_events` 分页。
 

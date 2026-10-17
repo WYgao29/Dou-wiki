@@ -9,6 +9,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+from collections import Counter
 from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -1126,6 +1127,7 @@ class YtDlpDownloader:
         audio_candidates: list[tuple[str, str, int]] = []
         payloads: list[Any] = []
         payload_tasks: list[asyncio.Task[Any]] = []
+        media_hosts: Counter[str] = Counter()
 
         try:
             async with self._locked_profile(), async_playwright() as playwright:
@@ -1144,10 +1146,18 @@ class YtDlpDownloader:
                         content_type = response.headers.get("content-type", "")
                         status = int(response.status or 0)
                         lowered_type = content_type.lower()
-                        if host == "douyinvod.com" or host.endswith(".douyinvod.com"):
+                        binary = lowered_type.startswith("application/octet-stream")
+                        media_type = lowered_type.startswith(("video/", "audio/"))
+                        legacy_host = host == "douyinvod.com" or host.endswith(".douyinvod.com")
+                        media_hint = "json" not in lowered_type and any(
+                            hint in urlsplit(resp_url).path.lower()
+                            for hint in ("media-video", "media-audio", "audiomp4")
+                        )
+                        if media_type or binary or legacy_host or media_hint:
                             if status not in {200, 206}:
                                 return
                             lowered = resp_url.lower()
+                            media_hosts[host] += 1
                             is_audio = lowered_type.startswith("audio/") or any(
                                 tag in lowered
                                 for tag in ("media-audio", "audiomp4", "/audio")
@@ -1161,6 +1171,10 @@ class YtDlpDownloader:
                                 audio_candidates.append((resp_url, content_type, status))
                             elif is_video:
                                 video_candidates.append((resp_url, content_type, status))
+                            elif binary:
+                                # The target play_addr anchors resolve ambiguous binary streams.
+                                video_candidates.append((resp_url, content_type, status))
+                                audio_candidates.append((resp_url, content_type, status))
                             return
                         if status != 200 or "json" not in lowered_type:
                             return
@@ -1406,7 +1420,13 @@ class YtDlpDownloader:
                     # page CDN response may belong to an ad or recommendation.
                     if not expected_work_id or not video_markers or not video_url:
                         return CdnCaptureOutcome(
-                            login_required=await self._page_confirms_login(page)
+                            login_required=await self._page_confirms_login(page),
+                            error=(
+                                f"媒体响应 {sum(media_hosts.values())} 个，视频候选 "
+                                f"{len(video_candidates)} 个，音频候选 {len(audio_candidates)} 个；"
+                                f"域名统计 {dict(media_hosts.most_common(10))}；"
+                                f"作品媒体关联{'存在但没有匹配' if video_markers else '缺失'}"
+                            ),
                         )
                     return CdnCaptureOutcome(
                         media=CapturedCdnMedia(

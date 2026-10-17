@@ -87,9 +87,9 @@ uv sync --locked --extra dev --extra embeddings --extra asr --extra ocr --extra 
 Qwen3-ASR 使用 Apple Silicon 上的 `qwen3` extra，`asr` / `mlx` 是它的安装兼容别名；上面的命令已包含 Qwen3 依赖，已固定为 `mlx-audio==0.5.8`。普通转写和体检只读取本地缓存，不自动下载三份模型。首次准备模型时执行：
 
 ```bash
-uv run --no-sync hf download mlx-community/Qwen3-ASR-1.7B-bf16 --revision e1f6c266914abc5a46e8756e02580f834a6cf8a7 --include '*.safetensors' '*.json' '*.txt'
-uv run --no-sync hf download mlx-community/silero-vad --revision 7bc17f22d3c0451bd3a6cd71e759b009271ff49a --include '*.safetensors' '*.json' '*.txt'
-uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revision 0e1a68e91d815300c7c9754b2a7639378b23db15 --include '*.safetensors' '*.json' '*.txt'
+uv run --no-sync hf download mlx-community/Qwen3-ASR-1.7B-bf16 --revision e1f6c266914abc5a46e8756e02580f834a6cf8a7 --include '*.safetensors' --include '*.json' --include '*.txt'
+uv run --no-sync hf download mlx-community/silero-vad --revision 7bc17f22d3c0451bd3a6cd71e759b009271ff49a --include '*.safetensors' --include '*.json' --include '*.txt'
+uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revision 0e1a68e91d815300c7c9754b2a7639378b23db15 --include '*.safetensors' --include '*.json' --include '*.txt'
 ```
 
 需要镜像时由调用方设置 `HF_ENDPOINT` 后执行准备命令；准备成功后转写继续离线。显式 Qwen 配置同时填写 `asr_provider="qwen3"`、上述 ASR/VAD 模型及各自 `asr_model_revision` / `vad_model_revision`；对齐模型/SHA、`asr_language="Chinese"`、`asr_itn=true`、`asr_segment_seconds=30` 使用配置默认值。识别窗口最多 600 秒，对齐窗口最多 180 秒，展示段最长 5–60 秒；本期不传热词或上下文提示。Qwen ASR 与对齐权重遵循 Apache-2.0，Silero 上游为 MIT，MLX 转换模型卡未声明许可，项目不分发权重。
@@ -97,6 +97,19 @@ uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revis
 不按整条音轨的总时长拒绝处理，音频按最多 600 秒的窗口逐块读取和识别。
 
 0.2.0 的 Worker、维护、Web 和 MCP 应共同使用仓库外独立 runtime 中的 wheel 安装。部署前读取实际配置核对入口；旧服务若仍引用源码仓库 `.venv`，先保留该环境，完成新安装验收后再切换。开发依赖同步只在隔离工作区执行。
+
+Embedding 普通运行同样只读取本地缓存。首次准备可在已安装的独立 runtime 中执行 `hf download BAAI/bge-small-zh-v1.5`；缺缓存时使用字符检索替代，体检说明当前准备情况。
+
+国内网络安装依赖时，可在开发环境使用以下命令从锁文件导出版本与哈希，再在仓库外独立环境安装；先确保所用镜像提供锁定版本，不能为安装成功悄悄换版本：
+
+```bash
+uv export --locked --no-dev --extra asr --extra ocr --extra embeddings --no-emit-project --output-file /absolute/path/douyin-requirements.txt
+uv venv /absolute/path/douyin-runtime
+uv pip install --python /absolute/path/douyin-runtime/bin/python --require-hashes --index-url https://pypi.tuna.tsinghua.edu.cn/simple -r /absolute/path/douyin-requirements.txt
+uv pip install --python /absolute/path/douyin-runtime/bin/python --no-deps /absolute/path/douyin_wiki.whl
+```
+
+上述 wheel 使用实际构建的文件名。Playwright 内核单独执行 `python -m playwright install chromium`，需要自定义下载来源时设置 `PLAYWRIGHT_DOWNLOAD_HOST`；镜像应兼容当前 Playwright 所需的版本与目录结构。`doctor` 会实际启动一次临时无界面浏览器，并检查登录内核文件，不读取已登录 Profile。
 
 未安装 Embedding 时使用字符 n-gram；OCR 的 `auto` 优先 RapidOCR，初始化不可用时使用 macOS Vision。当前语音识别只有 Qwen3，不回退旧引擎；`asr` / `mlx` 是 `qwen3` 的安装兼容别名，不再安装 FunASR 或 mlx-whisper。
 
@@ -193,7 +206,7 @@ poll_seconds = 5
 ### Worker 与知识重建
 
 ```bash
-douyin-wiki worker run
+douyin-wiki worker run --forever
 douyin-wiki maintenance run
 douyin-wiki maintenance run --apply
 douyin-wiki database rebuild
@@ -201,6 +214,8 @@ douyin-wiki database rebuild --apply
 ```
 
 维护和知识重建先预览，按用户目标执行确认。知识重建只恢复当前 Vault 的知识投影与持久关系，不恢复全部任务或导入历史，也不升级旧版状态库。
+
+不带参数的 `worker run` 与 `--once` 只领取并处理一个任务；持续处理后续入队任务请使用 `--forever`。正式后台服务已经使用常驻模式。
 
 Worker 使用可续期租约，进程异常后恢复有检查点的新库任务。发布时在 SQLite 写事务内校验租约，写入检索投影并可逆地更新 Vault 文档；提交前失败恢复数据库及文档，成功后才提交 Vault Git。
 

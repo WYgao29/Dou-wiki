@@ -61,6 +61,7 @@ async def ui(tmp_path):
             await page.route("**/*", route_handler)
             await page.goto("http://testserver/")
             await page.wait_for_selector("#library-results [data-entry-id]")
+            await page.wait_for_function("Boolean(window.libraryEvents)")
             try:
                 yield page, service, client, calls
                 assert not errors, errors

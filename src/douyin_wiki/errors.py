@@ -67,6 +67,30 @@ class JobStateError(DouyinWikiError):
     code = "invalid_job_state"
 
 
+class InvalidAnalysisError(DouyinWikiError, ValueError):
+    code = "invalid_analysis"
+
+    @classmethod
+    def from_validation(cls, error):
+        issues = []
+        for issue in error.errors(include_input=False, include_url=False)[:8]:
+            detail = {
+                "path": ".".join(str(part) for part in issue["loc"]) or "$",
+                "type": issue["type"],
+                "message": issue["msg"],
+            }
+            detail.update(
+                {
+                    key: value
+                    for key, value in issue.get("ctx", {}).items()
+                    if key in {"max_length", "min_length", "actual_length", "ge", "le"}
+                    and isinstance(value, (int, float))
+                }
+            )
+            issues.append(detail)
+        return cls("分析参数无效，请按字段限制修正后重新提交", details={"errors": issues})
+
+
 class JobCancelledError(JobStateError):
     """The worker reached a safe persistence checkpoint after cancellation."""
 

@@ -680,10 +680,15 @@ class DouyinWikiService(
     def commit_vault(self, changed: list[Path], message: str) -> bool:
         if not (self.config.vault_path / ".git").exists():
             return True
+        # A mocked or third-party commit implementation may only return False.
+        self.vault.last_commit_status = "pending"
         committed = self.vault.commit(changed, message)
+        if not committed and self.vault.last_commit_status in {"unchanged", "not_repository"}:
+            return True
         if not committed:
             warnings.warn(
-                f"Vault 与 SQLite 已保存，但 Git 提交失败，文件保持为待提交状态：{message}",
+                f"Vault 与 SQLite 已保存，但 Git 提交失败，文件保持为待提交状态：{message}"
+                f"；{self.vault.last_commit_error or '请检查 Git 状态'}",
                 RuntimeWarning,
                 stacklevel=2,
             )

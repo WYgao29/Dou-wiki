@@ -5,7 +5,14 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 
 class RetentionPolicy(StrEnum):
@@ -510,7 +517,13 @@ class AnalysisResultV2(BaseModel):
         data = dict(value)
         data.setdefault("one_liner", data.get("summary", ""))
         data.setdefault("relevance_to_inspiration", data.get("ai_judgment", ""))
+        for name in ("takeaways", "core_points", "steps", "evidence", "claims", "key_moments"):
+            if name in data and not isinstance(data[name], (list, tuple)):
+                raise ValidationError.from_exception_data(cls.__name__, [
+                    {"type": "list_type", "loc": (name,), "input": data[name]}
+                ])
         data.setdefault("takeaways", list(data.get("core_points", []))[:5])
+        data["takeaways"] = list(data["takeaways"])
         if len(data.get("takeaways", [])) < 3:
             extras = [
                 *data.get("steps", []),
@@ -526,9 +539,16 @@ class AnalysisResultV2(BaseModel):
         data.setdefault("content_type", "other")
         data.setdefault("facets", [])
         data.setdefault("content_card", {"kind": data["content_type"]})
+        if not isinstance(data.get("content_card"), dict):
+            return data
         if data.get("content_card", {}).get("kind") != data["content_type"]:
             data["content_card"] = {"kind": data["content_type"]}
         if "knowledge_atoms" not in data:
+            for index, claim in enumerate(data.get("claims", [])):
+                if not isinstance(claim, (dict, BaseModel)):
+                    raise ValidationError.from_exception_data(cls.__name__, [
+                        {"type": "dict_type", "loc": ("claims", index), "input": claim}
+                    ])
             legacy_claims = [
                 item.model_dump(mode="python") if isinstance(item, BaseModel) else item
                 for item in data.get("claims", [])
@@ -547,7 +567,7 @@ class AnalysisResultV2(BaseModel):
                     "stale": claim.get("stale", False),
                 }
                 for index, claim in enumerate(legacy_claims)
-                if claim.get("text")
+                if isinstance(claim, dict) and claim.get("text")
             ]
         legacy_moments = [
             item.model_dump(mode="python") if isinstance(item, BaseModel) else item

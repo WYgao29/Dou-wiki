@@ -17,7 +17,7 @@ from pydantic import (
 )
 
 from .analysis_rules import CONTENT_TAG_RULES
-from .errors import JobStateError
+from .errors import InvalidAnalysisError, JobStateError
 from .gateway_sources import (
     OCR_DEDUP_WINDOW_MS,
     SOURCE_PROJECTION_VERSION,
@@ -272,7 +272,7 @@ def validate_compact_analysis_shape(analysis: dict[str, Any]) -> None:
                     "errors": ref_issues[:8],
                 },
             ) from error
-        raise
+        raise InvalidAnalysisError.from_validation(error) from error
 
     def fail(path: str, message: str) -> None:
         raise JobStateError(message, details={"reason": "invalid_source_ref", "path": path})

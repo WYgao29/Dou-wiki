@@ -6,8 +6,11 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from .analysis_rules import CONTENT_TAG_RULES, MAX_ANALYSIS_TAGS, PROMPT_VERSION
 from .errors import (
+    InvalidAnalysisError,
     JobStateError,
 )
 from .gateway_protocol import (
@@ -266,7 +269,10 @@ class AnalysisMixin:
                 build_source_catalog(job.artifacts, phase="analysis"),
                 source_kind=source_kind,
             )
-        validated = AnalysisResult.model_validate(analysis)
+        try:
+            validated = AnalysisResult.model_validate(analysis)
+        except ValidationError as exc:
+            raise InvalidAnalysisError.from_validation(exc) from exc
         self._validate_analysis_tags(validated)
         self.validate_analysis_evidence(validated, job.artifacts)
         reanalyze_entry_id = job.artifacts.get("reanalyze_entry_id")
@@ -279,6 +285,9 @@ class AnalysisMixin:
         return self.database.requeue_job(
             job_id,
             expected_updated_at=job.updated_at,
+            result={"normalization_warnings": ["要点超过 5 条，已按协议 1 保留前 5 条"]}
+            if protocol == 1 and len(analysis.get("takeaways", [])) > 5
+            else None,
             artifacts={
                 "analysis": normalized,
                 "analysis_producer": producer,
@@ -347,7 +356,10 @@ class AnalysisMixin:
             and incoming.get("one_liner") == current_analysis.get("one_liner")
         ):
             incoming["one_liner"] = incoming["summary"]
-        validated = AnalysisResult.model_validate(incoming)
+        try:
+            validated = AnalysisResult.model_validate(incoming)
+        except ValidationError as exc:
+            raise InvalidAnalysisError.from_validation(exc) from exc
         self._validate_analysis_tags(validated)
         self.validate_analysis_evidence(validated, data)
         validated = AnalysisResult.model_validate(

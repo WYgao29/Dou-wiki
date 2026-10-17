@@ -209,7 +209,9 @@ def test_qwen_model_commands_use_the_current_environment_outside_the_project(
             revision,
             "--include",
             "*.safetensors",
+            "--include",
             "*.json",
+            "--include",
             "*.txt",
         ]
 

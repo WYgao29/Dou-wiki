@@ -713,13 +713,16 @@ def test_collect_aweme_media_anchors_reads_play_addr_and_uri() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cdn_host", ["v3.douyinvod.com", "v5-dy-ov-experiment.zjcdn.com", "media.example.invalid"]
+)
 async def test_capture_rebinds_cdn_to_aweme_play_addr(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cdn_host: str
 ) -> None:
     """Higher-scoring ad CDN must lose once aweme play_addr anchors are known."""
     downloader = YtDlpDownloader(MediaSettings(), tmp_path / "browser")
     work_id = "7672717300746907078"
-    target = "https://v3.douyinvod.com/target/media-video/seg"
+    target = f"https://{cdn_host}/target/media-video/seg"
     ad = "https://v9.douyinvod.com/ad/media-video/full.mp4"
 
     class FakeResponse:

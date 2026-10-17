@@ -34,7 +34,7 @@ class EmbeddingService:
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
 
-            self._model = SentenceTransformer(self.settings.model)
+            self._model = SentenceTransformer(self.settings.model, local_files_only=True)
             self.provider_name = f"sentence-transformers:{self.settings.model}"
             dimension = getattr(self._model, "get_sentence_embedding_dimension", lambda: None)()
             if isinstance(dimension, int) and dimension > 0:

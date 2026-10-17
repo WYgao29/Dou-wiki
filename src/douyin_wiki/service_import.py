@@ -19,6 +19,7 @@ from .models import (
     InspirationInput,
     JobRecord,
     JobStatus,
+    RetentionPolicy,
     SourceKind,
     VideoMetadata,
 )
@@ -50,12 +51,14 @@ class ImportMixin:
         creator_id: str,
         *,
         gateway_context: GatewayContext | None = None,
+        retention: RetentionPolicy = RetentionPolicy.TEMPORARY,
     ) -> JobRecord:
         creator = self.database.get_creator(creator_id)
         request = CaptureRequest(
             share_text=creator.canonical_url,
             inspirations=creator.inspirations,
             gateway_context=gateway_context,
+            options=CaptureOptions(retention=retention),
         )
         return self.database.create_job(
             request,
@@ -146,12 +149,14 @@ class ImportMixin:
         work_ids: list[str],
         *,
         gateway_context: GatewayContext | None = None,
+        retention: RetentionPolicy = RetentionPolicy.TEMPORARY,
     ) -> JobRecord:
         creator = self.database.get_creator(creator_id)
         request = CaptureRequest(
             share_text=creator.canonical_url,
             inspirations=creator.inspirations,
             gateway_context=gateway_context,
+            options=CaptureOptions(retention=retention),
         )
         job = self.database.create_job(
             request,
@@ -218,19 +223,26 @@ class ImportMixin:
                 / f"{safe_filename(inventory.profile.nickname, max_length=48)}_{creator_id[-8:]}"
             )
         )
+
         def prepare_media(
             value: CreatorInventoryResult, target_folder: str
         ) -> CreatorInventoryResult:
-            return value.model_copy(update={
-                "profile": self._persist_creator_avatar(value, target_folder),
-                "works": self._persist_creator_previews(value, target_folder),
-            })
+            return value.model_copy(
+                update={
+                    "profile": self._persist_creator_avatar(value, target_folder),
+                    "works": self._persist_creator_previews(value, target_folder),
+                }
+            )
 
         with self.vault.entry_operations_locked():
             with self.vault.reversible_writes():
                 creator, inventory_result = self.database.persist_creator_inventory(
-                    job.id, inventory, creator_id=creator_id, folder_path=folder,
-                    inspirations=job.request.inspirations, sync=action == "sync",
+                    job.id,
+                    inventory,
+                    creator_id=creator_id,
+                    folder_path=folder,
+                    inspirations=job.request.inspirations,
+                    sync=action == "sync",
                     prepare_media=prepare_media,
                 )
             artifacts_update = {

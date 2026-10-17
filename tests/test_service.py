@@ -1262,7 +1262,8 @@ async def test_worker_continues_when_catch_up_maintenance_fails(
 
 def test_embedding_model_failure_uses_deterministic_fallback(monkeypatch) -> None:
     class BrokenSentenceTransformer:
-        def __init__(self, _: str) -> None:
+        def __init__(self, _: str, *, local_files_only: bool = False) -> None:
+            assert local_files_only
             raise ValueError("broken model cache")
 
     monkeypatch.setattr(

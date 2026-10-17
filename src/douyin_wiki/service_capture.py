@@ -543,6 +543,8 @@ class CaptureMixin:
             )
 
             warnings = []
+            if self.vault.last_commit_status == "failed":
+                warnings.append("资料已保存，但 Git 提交失败，请检查运行日志及 Git 状态")
             if artifacts.get("ocr_warning"):
                 warnings.append(f"OCR 未完成：{artifacts['ocr_warning']}")
             if artifacts.get("transcript_skipped") == "no_audio_available":

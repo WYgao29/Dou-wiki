@@ -229,12 +229,14 @@ def import_creator_works(
     creator_id: str,
     work_ids: list[str],
     gateway_context: dict[str, Any] | None = None,
+    retention: str = "temporary",
 ) -> dict[str, Any]:
     """把之前跳过的指定作品改为需要并创建采集任务。"""
     return _payload(
         _service().import_creator_works(
             creator_id,
             work_ids,
+            retention=parse_retention(retention),
             gateway_context=(
                 GatewayContext.model_validate(gateway_context) if gateway_context else None
             ),
@@ -261,11 +263,16 @@ def list_creator_works(creator_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def sync_creator(creator_id: str, gateway_context: dict[str, Any] | None = None) -> dict[str, Any]:
+def sync_creator(
+    creator_id: str,
+    gateway_context: dict[str, Any] | None = None,
+    retention: str = "temporary",
+) -> dict[str, Any]:
     """仅在用户明确调用时完整同步一次主页；不会创建定时任务。"""
     return _payload(
         _service().sync_creator(
             creator_id,
+            retention=parse_retention(retention),
             gateway_context=(
                 GatewayContext.model_validate(gateway_context) if gateway_context else None
             ),

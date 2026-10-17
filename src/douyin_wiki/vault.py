@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import logging
 import os
 import re
 import subprocess
@@ -11,6 +12,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -69,6 +71,18 @@ VAULT_AGENTS = """# 抖库维护规则
 """
 
 _SAFE_WORK_ID = re.compile(r"[0-9]{10,}")
+logger = logging.getLogger(__name__)
+
+
+def _date_values(value):
+    """Compare date-only YAML scalars without changing their textual formatting."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _date_values(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_date_values(item) for item in value]
+    return value
 
 
 @dataclass
@@ -114,6 +128,8 @@ _document_writes: ContextVar[dict[Path, bytes | None] | None] = ContextVar(
 class VaultWriter:
     def __init__(self, vault_path: Path) -> None:
         self.vault_path = vault_path
+        self.last_commit_status = "unchanged"
+        self.last_commit_error: str | None = None
         self.last_entry_load_errors: list[dict[str, str]] = []
         self.last_creator_load_errors: list[dict[str, str]] = []
         self.last_collection_load_errors: list[dict[str, str]] = []
@@ -434,6 +450,8 @@ class VaultWriter:
                 lambda item: item.group(1) + format_beijing(item.group(2)),
                 body,
             )
+            if _date_values(frontmatter) == localized_frontmatter and body == match.group("body"):
+                continue
             updated = self._frontmatter(localized_frontmatter) + body
             if updated == original:
                 continue
@@ -939,7 +957,11 @@ class VaultWriter:
         return path
 
     def commit(self, paths: list[Path], message: str) -> bool:
+        self.last_commit_status = "unchanged"
+        self.last_commit_error = None
         if not paths or not (self.vault_path / ".git").exists():
+            if not (self.vault_path / ".git").exists():
+                self.last_commit_status = "not_repository"
             return False
         relative = []
         for path in paths:
@@ -968,10 +990,15 @@ class VaultWriter:
             index_lock = lock_path
             os.close(descriptor)
             with tempfile.TemporaryDirectory(prefix="douyin-wiki-git-") as directory:
-                return self._commit_with_temporary_indexes(
+                committed = self._commit_with_temporary_indexes(
                     relative, message, index_path, lock_path, Path(directory)
                 )
-        except (OSError, subprocess.CalledProcessError):
+                self.last_commit_status = "committed" if committed else "unchanged"
+                return committed
+        except (OSError, subprocess.CalledProcessError) as exc:
+            self.last_commit_status = "failed"
+            self.last_commit_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("Vault Git 提交失败：%s", self.last_commit_error)
             return False
         finally:
             if index_lock is not None:
@@ -2022,9 +2049,17 @@ class VaultWriter:
             return True
         today = beijing_date()
         content = (
-            f"---\ntype: {page_type}\nstatus: {label_entry_status('active')}\ncreated: {today}\n"
-            f"updated: {today}\ntags: []\n---\n\n"
-            f"# {title}\n\n{description}\n\n## 来源\n\n- {source_link}\n"
+            self._frontmatter(
+                {
+                    "type": page_type,
+                    "status": label_entry_status("active"),
+                    "created": today,
+                    "updated": today,
+                    "tags": [],
+                }
+            )
+            + "\n"
+            + f"# {title}\n\n{description}\n\n## 来源\n\n- {source_link}\n"
         )
         self._atomic_write(path, content)
         return True

@@ -18,6 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from .adapters.browser_health import playwright_health
 from .config import (
     AppConfig,
     default_config_path,
@@ -65,7 +66,9 @@ def qwen3_health(settings) -> dict[str, Any]:
                 revision,
                 "--include",
                 "*.safetensors",
+                "--include",
                 "*.json",
+                "--include",
                 "*.txt",
             ]
         )
@@ -423,9 +426,8 @@ def doctor(config: AppConfig) -> dict[str, Any]:
     for command in ("yt-dlp", "ffmpeg", "ffprobe", "swift", "osascript", "git"):
         checks[command] = {"ok": bool(shutil.which(command)), "path": shutil.which(command)}
     playwright_available = importlib.util.find_spec("playwright") is not None
-    checks["playwright"] = {
-        "ok": playwright_available,
-        "message": None if playwright_available else "未安装 Playwright；请运行 uv sync",
+    checks["playwright"] = playwright_health() if playwright_available else {
+        "ok": False, "message": "未安装 Playwright；请在当前 runtime 安装运行依赖",
     }
     web_dependencies = ("fastapi", "uvicorn", "jinja2", "markdown_it", "nh3", "watchfiles")
     missing_web = [name for name in web_dependencies if importlib.util.find_spec(name) is None]
@@ -496,7 +498,8 @@ def doctor(config: AppConfig) -> dict[str, Any]:
     checks["embeddings"] = {
         "ok": sentence_transformers,
         "model": config.embeddings.model,
-        "message": None
+        "local_files_only": True,
+        "message": "运行只读取本地模型缓存；缺缓存时使用字符检索替代"
         if sentence_transformers
         else "未安装 embeddings extra；将使用字符 n-gram fallback",
     }
