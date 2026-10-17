@@ -9,7 +9,7 @@ from .adapters.share import assert_collection_share
 from .batch_capture import TERMINAL, active_capture_jobs
 from .collection_store import CollectionStore, eligible
 from .errors import JobCancelledError, JobLeaseLostError, JobStateError
-from .models import CaptureOptions, CaptureRequest, JobStatus
+from .models import CaptureRequest, JobStatus
 
 
 class CollectionService:
@@ -21,7 +21,7 @@ class CollectionService:
         assert_collection_share(source_text)
         request = CaptureRequest(
             share_text=source_text,
-            options=options or CaptureOptions(),
+            options=self.core.resolve_capture_options(options),
             gateway_context=gateway_context,
         )
         return self.database.get_job(self.store.create(request))

@@ -62,14 +62,13 @@ class WebOperationService:
         owner_id = shared_capture_job_id(job)
         if owner_id:
             owner = self.core.database.get_job(owner_id)
-            job = job.model_copy(update={
-                "result": {**job.result, "shared_job_status": owner.status.value}
-            })
+            job = job.model_copy(
+                update={"result": {**job.result, "shared_job_status": owner.status.value}}
+            )
             executor = present_job(owner, analysis_mode=self.analysis_mode)
-            merged.update({
-                key: executor[key]
-                for key in ("stage", "stage_label", "progress", "auth_scope")
-            })
+            merged.update(
+                {key: executor[key] for key in ("stage", "stage_label", "progress", "auth_scope")}
+            )
             merged["state_label"] = "等待同一作品处理"
             merged["message_for_user"] = f"同一作品已有任务。{executor['message_for_user']}"
         merged["display_title"] = job_display_title(job, hints=self._title_hints(job))
@@ -164,7 +163,8 @@ class WebOperationService:
             jobs = [job for job in jobs if job.kind == kind]
         if in_progress:
             jobs = [
-                job for job in jobs
+                job
+                for job in jobs
                 if job_is_in_progress(job) and effective_job_status(job) != JobStatus.QUEUED
             ]
         elif status == JobStatus.COMPLETED.value:
@@ -654,12 +654,17 @@ class WebOperationService:
 
     def maintenance(self, *, confirmed: bool) -> dict[str, Any]:
         report = self.core.run_maintenance(apply=confirmed)
+        titles = {entry.id: entry.title for entry in self.core.database.list_entries()}
+        kept_frames = [
+            f"按策略保留关键帧：{titles.get(entry_id, entry_id)}"
+            for entry_id in report.get("keyframes_retained", [])
+        ]
         return sanitize_public_payload(
             {
                 "preview": not confirmed,
                 "executed": confirmed,
                 "will_delete": ["过期且未永久保留的媒体文件"],
-                "will_keep": ["知识资料正文", "任务历史", "聊天记录"],
+                "will_keep": ["知识资料正文", "任务历史", "聊天记录", *kept_frames],
                 "report": report,
             }
         )

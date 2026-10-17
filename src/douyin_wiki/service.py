@@ -231,6 +231,12 @@ class DouyinWikiService(
             "cookie_values_exposed": False,
         }
 
+    def resolve_capture_options(self, options: CaptureOptions | None = None) -> CaptureOptions:
+        value = (options or CaptureOptions()).model_copy()
+        if value.keep_keyframes is None:
+            value.keep_keyframes = self.config.media.keep_keyframes
+        return value
+
     def capture_douyin(
         self,
         share_text: str,
@@ -241,7 +247,7 @@ class DouyinWikiService(
         request = CaptureRequest(
             share_text=share_text,
             inspirations=inspirations or [],
-            options=options or CaptureOptions(),
+            options=self.resolve_capture_options(options),
             gateway_context=gateway_context,
         )
         return self.database.create_job(request)

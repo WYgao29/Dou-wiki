@@ -43,6 +43,6 @@ Gateway 协议1和2的任务查询均保留结果中的 `shared_capture_job_id` 
 
 ## Gateway 与停用边界
 
-所有作品校正、分析与重新分析由 Gateway 完成。`get_analysis_context` 和提交方法保留原公开参数、协议 1 / 2、阶段和材料版本校验；Worker 继续等待提交并在租约内发布。`CaptureOptions.processing_key()` 只返回 `retention`，旧授权字段仍序列化但不影响共享；不改变整个模型的相等语义。
+所有作品校正、分析与重新分析由 Gateway 完成。`get_analysis_context` 和提交方法保留原公开参数、协议 1 / 2、阶段和材料版本校验；Worker 继续等待提交并在租约内发布。`CaptureOptions.processing_key()` 比较 `retention`，并在临时媒体长期保留关键帧时增加该标记；`keep / discard` 下帧标记不改变行为，旧授权字段仍序列化但不影响共享，不改变整个模型的相等语义。新建请求由 `resolve_capture_options()` 解析可选的 `keep_keyframes` 并保存配置快照，批次子任务继承已保存的选项，不能在处理时用当前配置重新解释。
 
 `generate_topic_artifact(topic_id, kind, *, provider=None)` 的异步 Service 签名保留，但在读专题或调用模型之前抛 `FeatureDisabledError`。专题笔记通过 `save_topic_note` 逐字保存，查询返回 `topic / artifacts` 字段仍保留，笔记 `kind="note"`。聊天执行器、数据库表和模型连接已删除。

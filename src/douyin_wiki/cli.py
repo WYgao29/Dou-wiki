@@ -148,6 +148,7 @@ def init_command(
             raise typer.BadParameter(str(exc)) from exc
         config = AppConfig(vault_path=selected)
         config.media.alignment_failure_policy = "retain_window"
+        config.media.keep_keyframes = True
 
     service = DouyinWikiService(config)
     service.initialize(initialize_git=True)

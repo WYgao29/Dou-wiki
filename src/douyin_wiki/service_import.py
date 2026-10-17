@@ -37,7 +37,7 @@ class ImportMixin:
         request = CaptureRequest(
             share_text=source_text,
             inspirations=inspirations or [],
-            options=options or CaptureOptions(),
+            options=self.resolve_capture_options(options),
             gateway_context=gateway_context,
         )
         return self.database.create_job(
@@ -52,13 +52,16 @@ class ImportMixin:
         *,
         gateway_context: GatewayContext | None = None,
         retention: RetentionPolicy = RetentionPolicy.TEMPORARY,
+        keep_keyframes: bool | None = None,
     ) -> JobRecord:
         creator = self.database.get_creator(creator_id)
         request = CaptureRequest(
             share_text=creator.canonical_url,
             inspirations=creator.inspirations,
             gateway_context=gateway_context,
-            options=CaptureOptions(retention=retention),
+            options=self.resolve_capture_options(
+                CaptureOptions(retention=retention, keep_keyframes=keep_keyframes)
+            ),
         )
         return self.database.create_job(
             request,
@@ -150,13 +153,16 @@ class ImportMixin:
         *,
         gateway_context: GatewayContext | None = None,
         retention: RetentionPolicy = RetentionPolicy.TEMPORARY,
+        keep_keyframes: bool | None = None,
     ) -> JobRecord:
         creator = self.database.get_creator(creator_id)
         request = CaptureRequest(
             share_text=creator.canonical_url,
             inspirations=creator.inspirations,
             gateway_context=gateway_context,
-            options=CaptureOptions(retention=retention),
+            options=self.resolve_capture_options(
+                CaptureOptions(retention=retention, keep_keyframes=keep_keyframes)
+            ),
         )
         job = self.database.create_job(
             request,

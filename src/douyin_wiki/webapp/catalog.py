@@ -310,14 +310,19 @@ class LibraryCatalog:
         try:
             target = (self.vault_path / relative).resolve()
             target.relative_to(self.vault_path)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             return None
         if target.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}:
             return None
         return target if target.is_file() else None
 
     def article_materials(self, item: LibraryItem) -> dict[str, Any]:
-        result: dict[str, Any] = {"transcript": None, "local_video_url": None}
+        result: dict[str, Any] = {
+            "transcript": None,
+            "local_video_url": None,
+            "keyframes": None,
+            "keep_keyframes": False,
+        }
         if not item.database_managed or item.source_kind != SourceKind.VIDEO:
             return result
         try:
@@ -325,6 +330,14 @@ class LibraryCatalog:
         except EntryNotFoundError:
             return result
         corrected = data.get("transcript_corrected")
+        result["keyframes"] = self.article_keyframes(item, data)
+        entry = self.database.get_entry(item.entry_id)
+        policy = data.get("media_policy")
+        result["keep_keyframes"] = entry.retention == "keep" or (
+            entry.retention == "temporary"
+            and isinstance(policy, dict)
+            and policy.get("keep_keyframes") is True
+        )
         rows = corrected or data.get("transcript_raw") or []
         result["transcript"] = {
             "source": "corrected" if corrected else "raw",
@@ -349,6 +362,55 @@ class LibraryCatalog:
         if self.local_video_path(item, data=data) is not None:
             result["local_video_url"] = f"/api/articles/{quote(item.entry_id, safe='')}/video"
         return result
+
+    def article_keyframes(self, item: LibraryItem, data: dict[str, Any]) -> list[dict[str, Any]]:
+        entry = self.database.get_entry(item.entry_id)
+        raw_parent = (self.vault_path / entry.raw_path).parent
+        raw_root = raw_parent.parent if raw_parent.name == "records" else raw_parent
+        root = raw_root / "assets" / entry.video_id / "frames"
+        try:
+            root.resolve().relative_to(self.vault_path.resolve())
+            if root.resolve() != root.absolute():
+                return []
+        except (ValueError, OSError, RuntimeError):
+            return []
+        frames = data.get("frames", [])
+        if not isinstance(frames, list):
+            frames = []
+        if not frames and data.get("frame_manifest_version", 0) != 1 and root.is_dir():
+            frames = []
+            for path in sorted(root.glob("frame-*")):
+                match = re.fullmatch(r"frame-(\d{10,})\.[^.]+", path.name)
+                frames.append(
+                    {
+                        "path": path.relative_to(self.vault_path).as_posix(),
+                        "timestamp_ms": int(match[1]) if match else None,
+                    }
+                )
+        result, seen = [], set()
+        for frame in frames:
+            if not isinstance(frame, dict) or not isinstance(frame.get("path"), str):
+                continue
+            path = self.safe_media_path(frame["path"])
+            if path is None or path in seen:
+                continue
+            try:
+                path.relative_to(root)
+            except ValueError:
+                continue
+            seen.add(path)
+            timestamp = frame.get("timestamp_ms")
+            if not isinstance(timestamp, int) or isinstance(timestamp, bool) or timestamp < 0:
+                timestamp = None
+            result.append({"url": self.media_url(frame["path"]), "timestamp_ms": timestamp})
+        return sorted(
+            result,
+            key=lambda frame: (
+                frame["timestamp_ms"] is None,
+                frame["timestamp_ms"] or 0,
+                frame["url"],
+            ),
+        )
 
     def local_video_path(
         self, item: LibraryItem, *, data: dict[str, Any] | None = None

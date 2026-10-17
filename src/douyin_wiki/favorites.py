@@ -32,6 +32,7 @@ class FavoritesService:
         directory_only=False,
         gateway_context=None,
         update_mode: str = "incremental",
+        capture_options=None,
     ):
         if folder_ids is not None:
             if not folder_ids or any(not isinstance(v, str) or not v.strip() for v in folder_ids):
@@ -48,7 +49,12 @@ class FavoritesService:
             "update_mode": update_mode,
         }
         job_id = self.store.create(
-            CaptureRequest(share_text=FAVORITES_URL, gateway_context=gateway_context), options
+            CaptureRequest(
+                share_text=FAVORITES_URL,
+                gateway_context=gateway_context,
+                options=self.core.resolve_capture_options(capture_options),
+            ),
+            options,
         )
         return self.database.get_job(job_id)
 
@@ -156,7 +162,9 @@ class FavoritesService:
                 "error_message": (
                     f"作品 {row['work_id']} 已有不同处理选项的活动任务"
                     if conflict
-                    else child.error_message if child else None
+                    else child.error_message
+                    if child
+                    else None
                 ),
                 "options_conflict": conflict,
                 "job_status": child.status.value if child else None,

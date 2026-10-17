@@ -237,7 +237,11 @@ def test_fresh_init_enables_window_policy_but_legacy_config_stays_strict(tmp_pat
     )
     assert result.exit_code == 0, result.output
     assert load_config(config_path).media.alignment_failure_policy == "retain_window"
+    assert load_config(config_path).media.keep_keyframes is True
     config_path.write_text(
-        config_path.read_text().replace('alignment_failure_policy = "retain_window"\n', "")
+        config_path.read_text()
+        .replace('alignment_failure_policy = "retain_window"\n', "")
+        .replace("keep_keyframes = true\n", "")
     )
     assert load_config(config_path).media.alignment_failure_policy == "fail"
+    assert load_config(config_path).media.keep_keyframes is False

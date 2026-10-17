@@ -10,7 +10,7 @@ const STORAGE = {
 const UI_PREFERENCE_VERSION = "3";
 const VALID_VIEWS = new Set(["list", "gallery"]);
 const VALID_SORTS = new Set([
-  "captured_desc", "published_desc", "published_asc", "title_asc", "author_asc",
+  "relevance", "captured_desc", "published_desc", "published_asc", "title_asc", "author_asc",
 ]);
 const VALID_SECTIONS = new Set(["all", "recent", "favorite", "inspiration"]);
 
@@ -43,6 +43,9 @@ const state = {
   inspirationOnly: false,
   favoritesJob: "",
   query: "",
+  searchMode: "keyword",
+  libraryLoadedScope: null,
+  pendingLibraryScope: null,
   commandArticles: [],
   commandSearch: 0,
   commandTimer: 0,
@@ -118,6 +121,7 @@ function readPreferences() {
 function readStateFromURL() {
   const params = new URLSearchParams(window.location.search);
   state.query = params.get("q") || "";
+  state.searchMode = params.get("search_mode") === "semantic" ? "semantic" : "keyword";
   const view = params.get("view");
   const preferredView = readStored(STORAGE.view, "list");
   state.libraryView = VALID_VIEWS.has(view)
@@ -125,7 +129,8 @@ function readStateFromURL() {
     : VALID_VIEWS.has(preferredView) ? preferredView : "list";
   if (VALID_VIEWS.has(view)) writePreference(STORAGE.view, view);
   const sort = params.get("sort");
-  state.sort = VALID_SORTS.has(sort) ? sort : "captured_desc";
+  state.sort = VALID_SORTS.has(sort) && !(sort === "relevance" && state.searchMode !== "semantic")
+    ? sort : state.searchMode === "semantic" ? "relevance" : "captured_desc";
   const section = params.get("section");
   state.section = VALID_SECTIONS.has(section) ? section : "all";
   state.authors = params.getAll("author").filter(Boolean);
@@ -139,6 +144,7 @@ function readStateFromURL() {
 function currentLibraryURL() {
   const params = new URLSearchParams();
   if (state.query) params.set("q", state.query);
+  if (state.searchMode === "semantic") params.set("search_mode", "semantic");
   if (state.libraryView !== "list") params.set("view", state.libraryView);
   if (state.sort !== "captured_desc") params.set("sort", state.sort);
   if (state.section !== "all") params.set("section", state.section);
@@ -261,7 +267,7 @@ function filteredItems() {
       && (state.section !== "favorite" || item.favorite)
       && (state.section !== "inspiration" || hasInspiration);
   });
-  items.sort((a, b) => {
+  if (!(state.searchMode === "semantic" && state.query && state.sort === "relevance")) items.sort((a, b) => {
     if (state.sort === "published_desc") return compareDate(a, b, "published_at", "desc");
     if (state.sort === "published_asc") return compareDate(a, b, "published_at", "asc");
     if (state.sort === "title_asc") return a.title.localeCompare(b.title, "zh-CN");
@@ -373,20 +379,38 @@ function beginNavigation({preserveLibraryRequests = false} = {}) {
   return ++state.navigationRequestId;
 }
 
+function semanticScopeKey() {
+  return JSON.stringify([state.query, state.searchMode, state.authors, state.types, state.tags,
+    state.sources, state.inspirationOnly, state.section, state.favoritesJob]);
+}
+
 async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
   const requestId = ++state.libraryRequestId;
   const navigationId = state.libraryNavigationId;
   const query = state.query;
+  const mode = state.searchMode;
+  const semantic = mode === "semantic" && Boolean(query);
+  const scopeKey = semanticScopeKey();
+  state.pendingLibraryScope = scopeKey;
   const favoritesJob = state.favoritesJob;
   const isCurrent = () => requestId === state.libraryRequestId
-    && navigationId === state.libraryNavigationId && query === state.query && favoritesJob === state.favoritesJob;
+    && navigationId === state.libraryNavigationId && query === state.query && favoritesJob === state.favoritesJob
+    && mode === state.searchMode && (!semantic || scopeKey === semanticScopeKey());
   if (showLoading) setLibraryLoading();
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (favoritesJob) params.set("favorites_job", favoritesJob);
+  if (semantic) {
+    state.authors.forEach(value => params.append("author", value));
+    state.types.forEach(value => params.append("type", value));
+    state.tags.forEach(value => params.append("tag", value));
+    state.sources.forEach(value => params.append("source", value));
+    if (state.inspirationOnly) params.set("inspiration_only", "true");
+    params.set("section", state.section);
+  }
   try {
     const [data, allData] = await Promise.all([
-      api(`/api/library${params.size ? `?${params}` : ""}`),
+      api(`/api/library${semantic ? "/search" : ""}${params.size ? `?${params}` : ""}`),
       favoritesJob ? api("/api/library") : null,
     ]);
     if (!isCurrent()) return;
@@ -405,12 +429,19 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
     );
     state.libraryLoaded = true;
     state.libraryLoadedQuery = query;
+    state.libraryLoadedScope = semanticScopeKey();
+    state.pendingLibraryScope = null;
+    const capability = $("#search-capability");
+    capability.textContent = semantic ? data.notice || "" : "";
+    capability.classList.toggle("hidden", !capability.textContent);
     refreshAuthChannelBanners();
     renderFilters();
     renderLibrary();
     fillInspirationTargets();
   } catch (error) {
     if (isCurrent()) setLibraryError(error);
+  } finally {
+    if (requestId === state.libraryRequestId) state.pendingLibraryScope = null;
   }
 }
 
@@ -499,6 +530,8 @@ function renderAppliedFilters() {
 }
 
 function renderToolbarState() {
+  $("#search-mode").value = state.searchMode;
+  $("#sort-select option[value='relevance']").hidden = state.searchMode !== "semantic";
   const count = activeFilterCount();
   $("#filter-count").textContent = String(count);
   $("#filter-count").classList.toggle("hidden", count === 0);
@@ -677,6 +710,16 @@ function bindEntryLink(link, item, cover = null) {
   });
 }
 
+function makeSearchEvidence(item) {
+  const evidence = item.search_evidence?.find(match => match.timestamp_ms != null || match.image_index != null)
+    || item.search_evidence?.[0];
+  if (!evidence) return null;
+  const location = evidence.timestamp_precision === "window" ? "粗略时间范围"
+    : evidence.image_index != null ? `第 ${evidence.image_index} 张图片`
+    : evidence.timestamp_ms != null ? formatLocation(evidence) : "相关证据";
+  return window.Douku.node("p", `${location} · ${evidence.snippet}`, "search-evidence");
+}
+
 function makeListItem(item) {
   const article = window.Douku.node("article", null, "library-item row--entry");
   article.dataset.entryId = item.entry_id;
@@ -687,6 +730,7 @@ function makeListItem(item) {
   bindEntryLink(link, item);
   const copy = window.Douku.node("div", null, "item-copy");
   copy.append(window.Douku.node("h2", item.title), window.Douku.node("p", item.summary || "暂无一句话摘要", `item-summary${item.summary ? "" : " is-empty"}`), makeMetadata(item, {tags: true}));
+  const evidence = makeSearchEvidence(item); if (evidence) copy.append(evidence);
   link.append(makeCover(item, "item-thumbnail"), copy);
   const side = window.Douku.node("div", null, "item-side");
   side.append(window.Douku.node("time", shortDate(state.sort === "captured_desc" ? item.captured_at : item.published_at), "item-date"));
@@ -734,6 +778,7 @@ function makeGalleryCard(item) {
   const cover = makeCover(item, "gallery-cover"); bindEntryLink(link, item, cover);
   const copy = window.Douku.node("div", null, "gallery-copy");
   copy.append(window.Douku.node("h2", item.title || "未命名文章"), makeMetadata(item));
+  const evidence = makeSearchEvidence(item); if (evidence) copy.append(evidence);
   link.append(cover, copy); article.append(link);
   if (item.favorite) { const badge = window.Douku.node("span", null, "gallery-favorite"); badge.append(svgIcon("bookmark")); badge.setAttribute("aria-label", "库内收藏"); cover.append(badge); }
   if (state.topicSelectionMode) article.append(makeSelectionIndicator(item.entry_id));
@@ -858,12 +903,18 @@ function renderLibraryEmptyState(items) {
     $("#empty-results-copy").textContent = favoriteOnly
       ? "还没有库内收藏。打开一篇资料，点「库内收藏」，视频会永久留在本机。"
       : state.query
-      ? `没有包含“${state.query}”的文章。请调整关键词或清除筛选。`
+      ? state.searchMode === "semantic" ? `没有找到与“${state.query}”相关的证据。请调整问题或筛选。`
+        : `没有包含“${state.query}”的文章。请调整关键词或清除筛选。`
       : "当前筛选条件没有匹配文章。请调整或清除筛选。";
   }
 }
 
 function renderLibrary() {
+  if (state.searchMode === "semantic" && state.query
+      && state.libraryLoadedScope !== semanticScopeKey()) {
+    if (state.pendingLibraryScope !== semanticScopeKey()) loadLibrary({showLoading: false});
+    return;
+  }
   const items = filteredItems();
   const titles = {all: "资料库", recent: "最近加入", favorite: "库内收藏", inspiration: "灵感"};
   const summaries = {
@@ -1466,6 +1517,39 @@ async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
   }
 }
 
+function makeArticleKeyframes(frames, videoUrl, {open = false, keep = false} = {}) {
+  if (!frames) return null;
+  const details = window.Douku.node("details", null, "article-keyframes");
+  details.open = open;
+  const summary = window.Douku.node("summary");
+  summary.textContent = `关键帧 · ${frames.length} 张${keep ? " · 长期保留" : ""}`;
+  details.append(summary);
+  if (!frames.length) details.append(window.Douku.node("p", "暂无可用关键帧。素材可能已清理。", "hint-copy"));
+  const grid = window.Douku.node("div", null, "keyframe-grid");
+  frames.forEach((frame, index) => {
+    if (!frame.url?.startsWith("/media/")) return;
+    const figure = window.Douku.node("figure");
+    const link = window.Douku.node("a");
+    link.href = frame.url; link.target = "_blank"; link.rel = "noopener";
+    const image = window.Douku.node("img");
+    image.src = frame.url; image.loading = "lazy"; image.decoding = "async";
+    image.alt = `第 ${index + 1} 张关键帧，打开大图`;
+    link.append(image); figure.append(link);
+    const caption = window.Douku.node("figcaption");
+    const label = frame.timestamp_ms == null ? "时间未知" : formatLocation(frame);
+    if (videoUrl && frame.timestamp_ms != null) {
+      const seek = window.Douku.node("a", label); seek.href = `${videoUrl}#t=${frame.timestamp_ms / 1000}`;
+      seek.target = "_blank"; seek.rel = "noopener"; seek.setAttribute("aria-label", `打开本地视频 ${label}`);
+      caption.append(seek);
+    } else caption.textContent = label;
+    figure.append(caption); grid.append(figure);
+  });
+  details.append(grid);
+  details.addEventListener("toggle", updateReadingMetrics);
+  details.addEventListener("load", updateReadingMetrics, true);
+  return details;
+}
+
 function makeArticleTranscript(transcript, {open = false} = {}) {
   if (!transcript) return null;
   const rows = transcript.segments || [];
@@ -1714,6 +1798,8 @@ function renderArticleData(data, entryId, push) {
   const root = $("#article-content");
   const transcriptOpen = state.currentEntry === entryId
     && Boolean(root.querySelector(".article-transcript")?.open);
+  const keyframesOpen = state.currentEntry === entryId
+    && Boolean(root.querySelector(".article-keyframes")?.open);
   state.currentEntry = entryId;
   state.currentArticleItem = data.item;
   state.currentTopic = "";
@@ -1724,6 +1810,12 @@ function renderArticleData(data, entryId, push) {
   if (transcript) {
     const source = [...body.querySelectorAll(":scope > h2")].find(node => node.textContent.trim() === "来源");
     body.insertBefore(transcript, source || null);
+  }
+  const keyframes = makeArticleKeyframes(data.keyframes, data.item.local_video_url,
+    {open: keyframesOpen, keep: data.keep_keyframes});
+  if (keyframes) {
+    const source = [...body.querySelectorAll(":scope > h2")].find(node => node.textContent.trim() === "来源");
+    body.insertBefore(keyframes, source || null);
   }
   clearReader();
   const hero = makeArticleHeader(data.item);
@@ -2685,6 +2777,13 @@ function bindEvents() {
   $("#confirm-topic").addEventListener("click", (event) => {
     event.preventDefault();
     createTopicFromSelection();
+  });
+  $("#search-mode").addEventListener("change", event => {
+    state.searchMode = event.target.value;
+    if (state.searchMode === "semantic") state.sort = "relevance";
+    else if (state.sort === "relevance") state.sort = "captured_desc";
+    state.libraryRequestId += 1;
+    renderToolbarState(); writeStateToURL(); loadLibrary({showLoading: false});
   });
   let searchTimer = 0;
   $("#search-input").addEventListener("input", (event) => {

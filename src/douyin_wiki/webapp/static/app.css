@@ -1908,3 +1908,25 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   .library-main { overflow: visible; }
   .side-panel, .view-header, .library-toolbar { display: none !important; }
 }
+
+/* Saved materials and scoped text search. */
+.article-keyframes { margin: 24px 0; padding: 16px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.article-keyframes summary { cursor: pointer; font-family: var(--font-ui); color: var(--text-2); font-size: 14px; }
+.keyframe-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin-top: 16px; }
+.keyframe-grid figure { min-width: 0; margin: 0; }
+.keyframe-grid img { display: block; width: 100%; height: 150px; margin: 0; object-fit: contain; border-radius: var(--radius); background: var(--surface-sunken); }
+.keyframe-grid figcaption { margin-top: 6px; text-align: center; font-size: 12px; font-family: var(--font-ui); color: var(--text-2); }
+.search-evidence { margin: 8px 0 0; font-size: 13px; color: var(--text-2); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.library-item:has(.search-evidence) { height: auto; padding-block: var(--space-3); }
+.search-capability { margin: 12px 0; }
+.library-toolbar .search-mode-control { flex: 0 0 82px; width: 82px; margin-left: 0; padding: 0; }
+.library-toolbar .search-mode-control select { position: static; width: 100%; height: 100%; opacity: 1; padding: 0 8px; }
+@media (max-width: 760px) {
+  .library-toolbar .search-mode-control { flex-basis: 74px; width: 74px; }
+  .keyframe-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .keyframe-grid img { height: 120px; }
+}
+@container (width < 361px) {
+  .library-toolbar { flex-wrap: wrap; padding-block: var(--space-2); row-gap: var(--space-2); }
+  .library-toolbar .source-tabs { flex: 1 0 calc(100% - 44px); }
+}

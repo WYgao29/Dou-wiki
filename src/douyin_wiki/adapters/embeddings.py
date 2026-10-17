@@ -52,6 +52,7 @@ class EmbeddingService:
                 values = model.encode(
                     list(texts), normalize_embeddings=True, show_progress_bar=False
                 )
+                self.last_error = None
                 array = np.asarray(values, dtype=np.float32)
                 if array.ndim == 2 and array.shape[1] > 0:
                     self._dimensions = int(array.shape[1])

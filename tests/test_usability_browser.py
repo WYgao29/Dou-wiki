@@ -396,6 +396,39 @@ async def test_reader_shows_window_precision_in_transcript(ui):
     await expect(page.locator(".transcript-text")).to_have_text("窗口内保留的完整原话。")
 
 
+async def test_reader_keyframes_and_semantic_search_fallback(ui):
+    page, service, _client, _calls = ui
+    import base64
+
+    entry = service.database.get_entry("dy-1000")
+    frame = service.config.vault_path / "raw/assets/1000/frames/frame-0000001200.png"
+    frame.parent.mkdir(parents=True)
+    frame.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jVf0AAAAASUVORK5CYII="
+        )
+    )
+    data = service.database.get_entry_data(entry.id)
+    data["frames"] = [
+        {"path": frame.relative_to(service.config.vault_path).as_posix(), "timestamp_ms": 1200}
+    ]
+    data["media_policy"] = {"keep_keyframes": True}
+    service.database.upsert_entry(entry, data)
+    await page.goto("http://testserver/articles/dy-1000")
+    await page.locator(".article-keyframes > summary").click()
+    image = page.locator(".keyframe-grid img")
+    await expect(image).to_have_count(1)
+    await expect(page.locator(".keyframe-grid figcaption")).to_contain_text("00:01")
+    await page.set_viewport_size({"width": 375, "height": 812})
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.goto("http://testserver/")
+    await page.locator("#search-mode").select_option("semantic")
+    await page.locator("#search-toggle").click()
+    await page.locator("#search-input").fill("原文保留")
+    await expect(page.locator("#search-capability")).to_contain_text("关键词结果")
+    assert "/api/library/search" in " ".join(path for method, path in _calls)
+
+
 async def test_reader_focus_fonts_and_selection_guidance(ui, tmp_path):
     page, _service, _client, calls = ui
     assert not any(path.endswith("/reading.css") or "/fonts/reading/" in path for _, path in calls)

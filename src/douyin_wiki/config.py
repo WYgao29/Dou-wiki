@@ -50,6 +50,7 @@ class MediaSettings(BaseModel):
     browser: str = "chrome"
     browser_profile: str | None = None
     retention_days: int = 30
+    keep_keyframes: bool = False
     # 保留旧配置字段以兼容现有 TOML；采集流程不再按时长暂停。
     cloud_confirmation_minutes: int = 30
     max_duration_minutes: int = 120
@@ -265,6 +266,7 @@ fallback_dimensions = {cfg.embeddings.fallback_dimensions}
 [media]
 browser = {_toml_string(cfg.media.browser)}{profile}
 retention_days = {cfg.media.retention_days}
+keep_keyframes = {str(cfg.media.keep_keyframes).lower()}
 # 兼容旧配置字段，不再用于限制视频时长或要求再次确认。
 cloud_confirmation_minutes = {cfg.media.cloud_confirmation_minutes}
 max_duration_minutes = {cfg.media.max_duration_minutes}

@@ -139,6 +139,7 @@ def capture_douyin(
     approve_ai_analysis: bool = False,
     gateway_context: dict[str, Any] | None = None,
     purposes: list[dict[str, Any]] | None = None,
+    keep_keyframes: bool | None = None,
 ) -> dict[str, Any]:
     """提交作品并返回中间回执 job_id；Agent 随后继续跟进，旧时长批准参数无需填写。"""
     values = inspirations if inspirations is not None else purposes or []
@@ -147,6 +148,7 @@ def capture_douyin(
         [InspirationInput.model_validate(item) for item in values],
         CaptureOptions(
             retention=parse_retention(retention),
+            keep_keyframes=keep_keyframes,
             allow_long=allow_long,
             approve_cloud_analysis=approve_ai_analysis or approve_cloud_analysis,
         ),
@@ -163,6 +165,7 @@ def capture_douyin_creator(
     allow_long: bool = False,
     approve_ai_analysis: bool = False,
     gateway_context: dict[str, Any] | None = None,
+    keep_keyframes: bool | None = None,
 ) -> dict[str, Any]:
     """从博主主页或其任意作品清点公开作品；清点阶段不下载媒体或调用 AI。"""
     job = _service().capture_douyin_creator(
@@ -170,6 +173,7 @@ def capture_douyin_creator(
         [InspirationInput.model_validate(item) for item in (inspirations or [])],
         CaptureOptions(
             retention=parse_retention(retention),
+            keep_keyframes=keep_keyframes,
             allow_long=allow_long,
             approve_cloud_analysis=approve_ai_analysis,
         ),
@@ -230,6 +234,7 @@ def import_creator_works(
     work_ids: list[str],
     gateway_context: dict[str, Any] | None = None,
     retention: str = "temporary",
+    keep_keyframes: bool | None = None,
 ) -> dict[str, Any]:
     """把之前跳过的指定作品改为需要并创建采集任务。"""
     return _payload(
@@ -237,6 +242,7 @@ def import_creator_works(
             creator_id,
             work_ids,
             retention=parse_retention(retention),
+            keep_keyframes=keep_keyframes,
             gateway_context=(
                 GatewayContext.model_validate(gateway_context) if gateway_context else None
             ),
@@ -267,12 +273,14 @@ def sync_creator(
     creator_id: str,
     gateway_context: dict[str, Any] | None = None,
     retention: str = "temporary",
+    keep_keyframes: bool | None = None,
 ) -> dict[str, Any]:
     """仅在用户明确调用时完整同步一次主页；不会创建定时任务。"""
     return _payload(
         _service().sync_creator(
             creator_id,
             retention=parse_retention(retention),
+            keep_keyframes=keep_keyframes,
             gateway_context=(
                 GatewayContext.model_validate(gateway_context) if gateway_context else None
             ),
@@ -599,10 +607,12 @@ def scan_favorites(
     include_images: bool = False,
     directory_only: bool = False,
     gateway_context: dict[str, Any] | None = None,
+    keep_keyframes: bool | None = None,
 ) -> dict:
     """清点收藏，不下载或导入；按已有选择条件完成清单，再调用 confirm_favorites_import。"""
     job = _service().favorites.start(
         folder_ids=folder_ids,
+        capture_options=CaptureOptions(keep_keyframes=keep_keyframes),
         include_images=include_images,
         directory_only=directory_only,
         gateway_context=GatewayContext.model_validate(gateway_context) if gateway_context else None,

@@ -17,6 +17,7 @@ from .models import (
     EntryRecord,
     ReminderCandidate,
     ResearchTopic,
+    RetentionPolicy,
     SourceKind,
     VideoMetadata,
 )
@@ -404,6 +405,9 @@ class MaintenanceMixin:
             "stale_chunks": 0,
             "media_candidates": [entry.id for entry in expired],
             "media_removed": [],
+            "keyframes_retained": [
+                entry.id for entry in expired if self._preserve_keyframes(entry)
+            ],
             "orphan_pages": self._find_orphan_pages(),
             "relation_updates": [],
         }
@@ -429,7 +433,7 @@ class MaintenanceMixin:
                     self.database.persist_entry_bundle(entry, data, chunks, relations, reminders)
                     report["relation_updates"].append(entry.id)
                 for entry in expired:
-                    self.trash_assets(entry)
+                    self.trash_assets(entry, preserve_keyframes=self._preserve_keyframes(entry))
                     report["media_removed"].append(entry.id)
                     refreshed = self.database.get_entry(entry.id)
                     data = self.database.get_entry_data(entry.id)
@@ -448,12 +452,37 @@ class MaintenanceMixin:
             self.database.record_maintenance("weekly", report)
         return report
 
-    def trash_assets(self, entry: EntryRecord, *, mark_database: bool = True) -> None:
+    def _preserve_keyframes(self, entry: EntryRecord) -> bool:
+        policy = self.database.get_entry_data(entry.id).get("media_policy")
+        return (
+            entry.retention == RetentionPolicy.TEMPORARY
+            and isinstance(policy, dict)
+            and policy.get("keep_keyframes") is True
+        )
+
+    def trash_assets(
+        self,
+        entry: EntryRecord,
+        *,
+        mark_database: bool = True,
+        preserve_keyframes: bool = False,
+    ) -> None:
         raw_parent = Path(entry.raw_path).parent
         raw_root = raw_parent.parent if raw_parent.name == "records" else raw_parent
-        assets = self.config.vault_path / raw_root / "assets" / entry.video_id
+        vault = self.config.vault_path.resolve()
+        assets = vault / raw_root / "assets" / entry.video_id
         if assets.exists():
-            send2trash(str(assets))
+            if preserve_keyframes and entry.retention == RetentionPolicy.TEMPORARY:
+                resolved = assets.resolve()
+                resolved.relative_to(vault)
+                if resolved != assets:
+                    raise ValueError("素材目录包含符号链接，已停止清理")
+                for path in assets.iterdir():
+                    if path.name == "frames" and path.is_dir() and not path.is_symlink():
+                        continue
+                    send2trash(str(path))
+            else:
+                send2trash(str(assets))
         if mark_database:
             self.database.mark_media_removed(entry.id)
 

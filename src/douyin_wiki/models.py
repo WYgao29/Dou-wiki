@@ -129,9 +129,12 @@ class CaptureOptions(BaseModel):
     retention: RetentionPolicy = RetentionPolicy.TEMPORARY
     allow_long: bool = False
     approve_cloud_analysis: bool = False
+    keep_keyframes: bool | None = None
 
-    def processing_key(self) -> tuple[RetentionPolicy]:
+    def processing_key(self) -> tuple[RetentionPolicy] | tuple[RetentionPolicy, bool]:
         """Compare processing behavior while retaining legacy request fields."""
+        if self.retention == RetentionPolicy.TEMPORARY and self.keep_keyframes:
+            return (self.retention, True)
         return (self.retention,)
 
 

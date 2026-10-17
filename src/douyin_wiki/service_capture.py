@@ -555,6 +555,8 @@ class CaptureMixin:
             "ocr": ocr_items,
             "media_provenance": artifacts.get("media_provenance", {}),
             "frames": artifacts.get("frames", []),
+            "frame_manifest_version": 1,
+            "media_policy": {"keep_keyframes": bool(request.options.keep_keyframes)},
             "review_issues": [item.model_dump(mode="json") for item in review_issues]
             or artifacts.get("review_issues", []),
             "analysis": analysis_data,
@@ -946,6 +948,7 @@ class CaptureMixin:
         current = self.database.get_entry(existing_id)
         current_data = self.database.get_entry_data(existing_id)
         data["inspirations"] = [item.model_dump(mode="json") for item in current.inspirations]
+        data["media_policy"] = current_data.get("media_policy", {})
         if "reminder_states" in current_data:
             data["reminder_states"] = current_data["reminder_states"]
         expires_at = current.media_expires_at

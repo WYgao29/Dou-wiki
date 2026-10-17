@@ -40,6 +40,7 @@ from ..vault import entry_operation_observer
 from ..web_operation import WebOperationService
 from .catalog import CONTENT_TYPE_LABELS, LibraryCatalog
 from .rendering import render_article, render_topic_note
+from .semantic_search import register_semantic_search
 from .version import WEB_VERSION
 
 ANALYSIS_MODE_INFO = {
@@ -156,6 +157,21 @@ class ChangeNotifier:
         async with self._condition:
             await self._condition.wait_for(lambda: self.version > last_version)
             return self.version, self.last_name, self.last_payload
+
+
+def _library_facets(all_items, tags):
+    return {
+        "authors": sorted({item.author for item in all_items}),
+        "content_types": [
+            {"value": code, "label": label}
+            for code, label in CONTENT_TYPE_LABELS.items()
+            if any(item.content_type == code for item in all_items)
+        ],
+        "tags": sorted(row["name"] for row in tags["tags"] if row["count"] > 0),
+        "tag_details": tags["tags"],
+        "sidebar_tags": tags["sidebar"],
+        "tag_aliases": tags["aliases"],
+    }
 
 
 def _item_payload(item: Any) -> dict[str, Any]:
@@ -577,22 +593,13 @@ def create_app(
         all_items = catalog.list_items()
         return {
             "items": [_item_payload(item) for item in items],
-            "facets": {
-                "authors": sorted({item.author for item in all_items}),
-                "content_types": [
-                    {"value": code, "label": label}
-                    for code, label in CONTENT_TYPE_LABELS.items()
-                    if any(item.content_type == code for item in all_items)
-                ],
-                "tags": sorted(row["name"] for row in tags["tags"] if row["count"] > 0),
-                "tag_details": tags["tags"],
-                "sidebar_tags": tags["sidebar"],
-                "tag_aliases": tags["aliases"],
-            },
+            "facets": _library_facets(all_items, tags),
             "total": len(items),
             "limit": limit,
             "version": catalog.version,
         }
+
+    register_semantic_search(app, core, catalog, _item_payload, _library_facets, read_tag_overview)
 
     @app.post("/api/captures")
     async def create_capture():
@@ -615,6 +622,8 @@ def create_app(
                 catalog=catalog,
             ),
             "transcript": materials["transcript"],
+            "keyframes": materials["keyframes"],
+            "keep_keyframes": materials["keep_keyframes"],
         }
 
     @app.api_route("/api/articles/{entry_id}/video", methods=["GET", "HEAD"])
