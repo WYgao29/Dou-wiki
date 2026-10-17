@@ -8,6 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from .adapters.asr_checkpoints import digest, file_digest
 from .analysis_rules import PROMPT_VERSION
 from .errors import (
     ExternalToolError,
@@ -189,12 +190,9 @@ class CaptureMixin:
             if existing:
                 for inspiration in self.capture_sharing.inspirations(job):
                     existing = self.add_inspiration_locked(existing.id, inspiration)
-                should_reacquire = (
-                    artifacts.get("reacquire_entry_id") == existing.id
-                    or (
-                        existing.media_status == "removed"
-                        and request.options.retention != RetentionPolicy.DISCARD
-                    )
+                should_reacquire = artifacts.get("reacquire_entry_id") == existing.id or (
+                    existing.media_status == "removed"
+                    and request.options.retention != RetentionPolicy.DISCARD
                 )
                 if not should_reacquire:
                     existing = self.repair_entry_if_needed_locked(existing)
@@ -211,9 +209,7 @@ class CaptureMixin:
                     )
                 if artifacts.get("reacquire_entry_id") != existing.id:
                     artifacts["reacquire_entry_id"] = existing.id
-                    self.database.update_job(
-                        job.id, artifacts={"reacquire_entry_id": existing.id}
-                    )
+                    self.database.update_job(job.id, artifacts={"reacquire_entry_id": existing.id})
         shared = self.capture_sharing.join_if_active(job.id, video_id)
         if shared is not None:
             return self.capture_sharing.refresh(shared.id)
@@ -285,6 +281,78 @@ class CaptureMixin:
             frames_dir = assets_dir / "frames"
             async with self.media_semaphore:
                 self.check_job_cancelled(job)
+                media_digest = await asyncio.to_thread(file_digest, video_path)
+                self.check_job_cancelled(job)
+                frames_signature = digest(
+                    {
+                        "version": 1,
+                        "media": media_digest,
+                        "interval": self.config.media.frame_interval_seconds,
+                        "threshold": self.config.media.scene_threshold,
+                        "max_frames": self.config.media.max_frames,
+                    }
+                )
+                ocr_signature = digest([frames_signature, self.config.media.ocr_provider])
+                if (
+                    "ocr" not in artifacts
+                    or artifacts.get("ocr_warning")
+                    or artifacts.get("ocr_signature") != ocr_signature
+                ):
+                    stored_frames = artifacts.get("frames", [])
+                    frames = [
+                        (row["timestamp_ms"], self.vault_path(row["path"])) for row in stored_frames
+                    ]
+                    if (
+                        not frames
+                        or not all(path.is_file() for _, path in frames)
+                        or artifacts.get("frames_signature") != frames_signature
+                    ):
+                        frames = await self.media.extract_frames(
+                            video_path,
+                            frames_dir,
+                            duration_seconds=metadata.duration_seconds or 0,
+                            interval_seconds=self.config.media.frame_interval_seconds,
+                            scene_threshold=self.config.media.scene_threshold,
+                            max_frames=self.config.media.max_frames,
+                        )
+                        artifacts["frames"] = [
+                            {"timestamp_ms": timestamp, "path": self.vault_relative(path)}
+                            for timestamp, path in frames
+                        ]
+                        self.database.update_job(
+                            job.id,
+                            artifacts={
+                                "frames": artifacts["frames"],
+                                "frames_signature": frames_signature,
+                            },
+                        )
+                    try:
+                        ocr = await self.ocr.recognize(frames)
+                        artifacts.pop("ocr_warning", None)
+                    except ExternalToolError as exc:
+                        ocr = []
+                        artifacts["ocr_warning"] = str(exc)
+                    artifacts["ocr"] = [item.model_dump(mode="json") for item in ocr]
+                    artifacts["media_provenance"] = {
+                        **artifacts.get("media_provenance", {}),
+                        "ocr": deepcopy(getattr(self.ocr, "provenance", {})),
+                    }
+                    self.database.update_job(
+                        job.id,
+                        artifacts={
+                            "ocr": artifacts["ocr"],
+                            "ocr_signature": ocr_signature,
+                            "media_provenance": artifacts["media_provenance"],
+                            **(
+                                {"ocr_warning": artifacts["ocr_warning"]}
+                                if artifacts.get("ocr_warning")
+                                else {}
+                            ),
+                        },
+                        remove_artifacts={"ocr_warning"}
+                        if not artifacts.get("ocr_warning")
+                        else None,
+                    )
                 # Prefer audio.mp4; also accept other retained audio.* from CDN merge.
                 retained_audio = [
                     path
@@ -331,27 +399,13 @@ class CaptureMixin:
                     asr_provenance = (
                         deepcopy(getattr(self.transcriber, "provenance", {})) if audio_ready else {}
                     )
-                    frames = await self.media.extract_frames(
-                        video_path,
-                        frames_dir,
-                        duration_seconds=metadata.duration_seconds or 0,
-                        interval_seconds=self.config.media.frame_interval_seconds,
-                        scene_threshold=self.config.media.scene_threshold,
-                        max_frames=self.config.media.max_frames,
-                    )
-                    try:
-                        ocr = await self.ocr.recognize(frames)
-                    except ExternalToolError as exc:
-                        ocr = []
-                        artifacts["ocr_warning"] = str(exc)
                 finally:
                     if audio_path.exists():
                         audio_path.unlink()
             artifacts["transcript_raw"] = [item.model_dump(mode="json") for item in transcript]
-            artifacts["ocr"] = [item.model_dump(mode="json") for item in ocr]
             artifacts["media_provenance"] = {
                 "asr": asr_provenance,
-                "ocr": getattr(self.ocr, "provenance", {}),
+                "ocr": artifacts.get("media_provenance", {}).get("ocr", {}),
             }
             self.database.update_job(
                 job.id,
@@ -423,7 +477,8 @@ class CaptureMixin:
             )
 
         self.database.update_job(
-            job.id, status=JobStatus.ANALYZING,
+            job.id,
+            status=JobStatus.ANALYZING,
             progress=max(self.database.get_job(job.id).progress, 0.7),
         )
 
@@ -498,6 +553,8 @@ class CaptureMixin:
             "transcript_edits": artifacts.get("transcript_edits", []),
             "correction_notes": artifacts.get("correction_notes", []),
             "ocr": ocr_items,
+            "media_provenance": artifacts.get("media_provenance", {}),
+            "frames": artifacts.get("frames", []),
             "review_issues": [item.model_dump(mode="json") for item in review_issues]
             or artifacts.get("review_issues", []),
             "analysis": analysis_data,
@@ -545,6 +602,10 @@ class CaptureMixin:
             warnings = []
             if self.vault.last_commit_status == "failed":
                 warnings.append("资料已保存，但 Git 提交失败，请检查运行日志及 Git 状态")
+            if any(
+                row.get("timestamp_precision") == "window" for row in artifacts["transcript_raw"]
+            ):
+                warnings.append("部分逐字稿仅有粗略窗口时间，引用时请查看范围提示")
             if artifacts.get("ocr_warning"):
                 warnings.append(f"OCR 未完成：{artifacts['ocr_warning']}")
             if artifacts.get("transcript_skipped") == "no_audio_available":
@@ -589,10 +650,9 @@ class CaptureMixin:
                 for inspiration in self.capture_sharing.inspirations(job):
                     existing = self.add_inspiration_locked(existing.id, inspiration)
                 existing_data = self.database.get_entry_data(existing.id)
-                if (
-                    artifacts.get("reacquire_entry_id") != existing.id
-                    and self.image_note_files_intact(existing_data)
-                ):
+                if artifacts.get(
+                    "reacquire_entry_id"
+                ) != existing.id and self.image_note_files_intact(existing_data):
                     existing = self.repair_entry_if_needed_locked(existing)
                     return self.database.update_job(
                         job.id,
@@ -608,9 +668,7 @@ class CaptureMixin:
                     )
                 if artifacts.get("reacquire_entry_id") != existing.id:
                     artifacts["reacquire_entry_id"] = existing.id
-                    self.database.update_job(
-                        job.id, artifacts={"reacquire_entry_id": existing.id}
-                    )
+                    self.database.update_job(job.id, artifacts={"reacquire_entry_id": existing.id})
         shared = self.capture_sharing.join_if_active(job.id, work_id)
         if shared is not None:
             return self.capture_sharing.refresh(shared.id)

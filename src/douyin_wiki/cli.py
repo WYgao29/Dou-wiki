@@ -147,6 +147,7 @@ def init_command(
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
         config = AppConfig(vault_path=selected)
+        config.media.alignment_failure_policy = "retain_window"
 
     service = DouyinWikiService(config)
     service.initialize(initialize_git=True)

@@ -1482,7 +1482,8 @@ function makeArticleTranscript(transcript, {open = false} = {}) {
       const segment = window.Douku.node("li", null, "transcript-segment");
       const start = formatLocation({timestamp_ms: row.start_ms});
       const end = formatLocation({timestamp_ms: row.end_ms});
-      segment.append(window.Douku.node("span", `${start}–${end}`, "transcript-time"),
+      segment.append(window.Douku.node("span", row.timestamp_precision === "window"
+        ? `约 ${start}–${end}（时间未经精确对齐）` : `${start}–${end}`, "transcript-time"),
         window.Douku.node("p", row.text, "transcript-text"));
       list.append(segment);
     });

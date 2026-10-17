@@ -67,6 +67,7 @@ class MediaSettings(BaseModel):
     asr_language: str = "Chinese"
     asr_itn: bool = True
     asr_segment_seconds: int = Field(default=30, ge=5, le=60)
+    alignment_failure_policy: Literal["fail", "retain_window"] = "fail"
 
     @model_validator(mode="before")
     @classmethod
@@ -281,6 +282,7 @@ alignment_model_revision = {_toml_string(cfg.media.alignment_model_revision)}
 asr_language = {_toml_string(cfg.media.asr_language)}
 asr_itn = {str(cfg.media.asr_itn).lower()}
 asr_segment_seconds = {cfg.media.asr_segment_seconds}
+alignment_failure_policy = {_toml_string(cfg.media.alignment_failure_policy)}
 
 [worker]
 poll_seconds = {cfg.worker.poll_seconds}

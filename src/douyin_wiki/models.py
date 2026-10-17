@@ -232,7 +232,14 @@ class CreatorInventoryItem(BaseModel):
     work: CreatorWorkRecord
 
 
-class TranscriptSegment(BaseModel):
+class TimestampQuality(BaseModel):
+    timestamp_precision: Literal["aligned", "window", "unknown"] = "unknown"
+    timestamp_start_ms: int | None = Field(default=None, ge=0)
+    timestamp_end_ms: int | None = Field(default=None, ge=0)
+    alignment_reason: str | None = None
+
+
+class TranscriptSegment(TimestampQuality):
     id: int
     start_ms: int = Field(ge=0)
     end_ms: int = Field(ge=0)
@@ -284,7 +291,7 @@ class Claim(BaseModel):
     stale: bool = False
 
 
-class ReminderCandidate(BaseModel):
+class ReminderCandidate(TimestampQuality):
     id: str
     title: str
     due_at: datetime | None = None
@@ -413,7 +420,7 @@ ContentCard = Annotated[
 ]
 
 
-class ChapterEvidence(BaseModel):
+class ChapterEvidence(TimestampQuality):
     timestamp_ms: int = Field(ge=0)
     quote: str = Field(min_length=1)
     evidence_type: Literal["audio", "ocr", "audio+ocr"] = "audio"
@@ -439,7 +446,7 @@ class ChapterTable(BaseModel):
         return self
 
 
-class TimelineChapter(BaseModel):
+class TimelineChapter(TimestampQuality):
     start_ms: int = Field(ge=0)
     end_ms: int | None = Field(default=None, ge=0)
     title: str
@@ -455,7 +462,7 @@ class TimelineChapter(BaseModel):
         return self
 
 
-class KnowledgeAtom(BaseModel):
+class KnowledgeAtom(TimestampQuality):
     id: str
     statement: str
     atom_type: Literal[
@@ -519,9 +526,9 @@ class AnalysisResultV2(BaseModel):
         data.setdefault("relevance_to_inspiration", data.get("ai_judgment", ""))
         for name in ("takeaways", "core_points", "steps", "evidence", "claims", "key_moments"):
             if name in data and not isinstance(data[name], (list, tuple)):
-                raise ValidationError.from_exception_data(cls.__name__, [
-                    {"type": "list_type", "loc": (name,), "input": data[name]}
-                ])
+                raise ValidationError.from_exception_data(
+                    cls.__name__, [{"type": "list_type", "loc": (name,), "input": data[name]}]
+                )
         data.setdefault("takeaways", list(data.get("core_points", []))[:5])
         data["takeaways"] = list(data["takeaways"])
         if len(data.get("takeaways", [])) < 3:
@@ -546,9 +553,10 @@ class AnalysisResultV2(BaseModel):
         if "knowledge_atoms" not in data:
             for index, claim in enumerate(data.get("claims", [])):
                 if not isinstance(claim, (dict, BaseModel)):
-                    raise ValidationError.from_exception_data(cls.__name__, [
-                        {"type": "dict_type", "loc": ("claims", index), "input": claim}
-                    ])
+                    raise ValidationError.from_exception_data(
+                        cls.__name__,
+                        [{"type": "dict_type", "loc": ("claims", index), "input": claim}],
+                    )
             legacy_claims = [
                 item.model_dump(mode="python") if isinstance(item, BaseModel) else item
                 for item in data.get("claims", [])
@@ -683,7 +691,7 @@ class VideoMetadata(BaseModel):
     creator_url: str | None = None
 
 
-class Evidence(BaseModel):
+class Evidence(TimestampQuality):
     entry_id: str
     snippet: str
     timestamp_ms: int | None = None

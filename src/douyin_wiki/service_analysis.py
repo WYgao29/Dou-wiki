@@ -37,6 +37,7 @@ from .models import (
 )
 from .review import deduplicate_review_issues, detect_review_issues
 from .time_utils import utc_now
+from .timing import apply_timing, audio_timing
 from .vault import safe_filename
 
 
@@ -117,6 +118,8 @@ class AnalysisMixin:
             "analysis_schema": AnalysisResult.model_json_schema(),
             "rules": [
                 *CONTENT_TAG_RULES,
+                "粗略时间来源必须说明整个窗口范围，不得编造精确句子时间；"
+                "区分口播、旁白、配乐歌词，身份不明时说明限制，不自动归为作者观点。",
                 "根据原话上下文和对应 OCR 直接给出最贴近原意的校正版，不请求人工校对，"
                 "不增加独立复核调用；数字、金额、人名缺少依据时保留原表述。",
                 "灵感必须逐字保留，不得改写或补造。",
@@ -884,6 +887,39 @@ class AnalysisMixin:
                 errors.append(f"提醒候选 {reminder.id} 的依据无法在原始证据中定位")
         if errors:
             raise JobStateError("分析证据校验失败：" + "；".join(errors[:8]))
+        for reminder in analysis.reminders:
+            apply_timing(reminder, audio_timing(transcript_values, None, reminder.source_quote))
+        for atom in analysis.knowledge_atoms:
+            apply_timing(
+                atom,
+                audio_timing(
+                    transcript_values if atom.provenance in {"audio", "audio+ocr"} else [],
+                    atom.timestamp_ms,
+                    atom.quote,
+                ),
+            )
+        for chapter in analysis.chapters:
+            for evidence in chapter.evidence:
+                apply_timing(
+                    evidence,
+                    audio_timing(
+                        transcript_values
+                        if evidence.evidence_type in {"audio", "audio+ocr"}
+                        else [],
+                        evidence.timestamp_ms,
+                        evidence.quote,
+                    ),
+                )
+            coarse = [item for item in chapter.evidence if item.timestamp_precision == "window"]
+            info = audio_timing([], None)
+            if coarse:
+                info.update(
+                    timestamp_precision="window",
+                    timestamp_start_ms=min(item.timestamp_start_ms for item in coarse),
+                    timestamp_end_ms=max(item.timestamp_end_ms for item in coarse),
+                    alignment_reason=",".join(sorted({item.alignment_reason for item in coarse})),
+                )
+            apply_timing(chapter, info)
 
 
 def _normalize_evidence_text(value: str) -> str:

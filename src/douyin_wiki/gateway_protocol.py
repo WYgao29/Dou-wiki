@@ -59,6 +59,8 @@ LEGACY_ANALYSIS_FIELDS = frozenset(
     }
 )
 CORRECTION_RULES = [
+    "timestamp_precision=window 表示整段只有粗略时间范围；不得自行细分或编造句子时间。"
+    "保留配乐歌词原稿；不能仅凭语言不同删句，也不能将歌词自动视为作者发言。",
     "完整检查原稿，根据原话上下文和对应 OCR 校正识别错误、同音字和断句；"
     "不得摘要、删句、扩写或补充原视频没有的内容。数字、金额、人名缺少依据时保留原表述。",
     "只提交有改动片段的完整替换文本；corrections=[] 表示已检查且无需修改。"
@@ -67,6 +69,8 @@ CORRECTION_RULES = [
     "灵感必须逐字保留，不得改写或补造。",
 ]
 ANALYSIS_RULES = [
+    "区分口播、旁白与配乐歌词；无法确认说话者时说明来源不明，不把歌词当成作者立场。"
+    "时间精度为 window 的来源只支持整个窗口定位，分析必须说明范围，不声称精确句子时间。",
     "来源单元就是完整分析材料；区分原话、正文、OCR、AI 推断和用户灵感。"
     "existing_knowledge 仅供关联与矛盾判断，不能充当本作品证据。灵感逐字保留。",
     "事实、数字、日期、参数和方法写入 knowledge_atoms；非推断原子必须有 source_refs，"
@@ -369,6 +373,7 @@ def context_revision(job: JobRecord) -> str:
             "transcript_corrected": artifacts.get("transcript_corrected"),
             "ocr": artifacts.get("ocr"),
             "metadata": artifacts.get("metadata"),
+            "media_provenance": artifacts.get("media_provenance"),
             "inspirations": serialized["request"]["inspirations"],
             "rules": rule_version,
         }
@@ -468,6 +473,7 @@ def build_compact_context(
         "boundary_limit_count",
         "boundary_limit_max_delta_ms",
         "itn",
+        "degraded_windows",
     }
     provenance = {
         name: {key: value for key, value in info.items() if key in provenance_keys}
@@ -499,6 +505,19 @@ def build_compact_context(
             {
                 "transcript": [
                     {key: segment[key] for key in ("id", "start_ms", "end_ms", "text")}
+                    | (
+                        {
+                            key: segment.get(key)
+                            for key in (
+                                "timestamp_precision",
+                                "timestamp_start_ms",
+                                "timestamp_end_ms",
+                                "alignment_reason",
+                            )
+                        }
+                        if segment.get("timestamp_precision") == "window"
+                        else {}
+                    )
                     for segment in job.artifacts.get("transcript_raw", [])
                 ],
                 "ocr": catalog.ocr,

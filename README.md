@@ -96,6 +96,8 @@ uv run --no-sync hf download mlx-community/Qwen3-ForcedAligner-0.6B-8bit --revis
 
 不按整条音轨的总时长拒绝处理，音频按最多 600 秒的窗口逐块读取和识别。
 
+首次 `init` 创建的配置启用 `alignment_failure_policy="retain_window"`：识别已完整成功但指定对齐错误修复失败时，保留全文与真实窗口，标记“时间未经精确对齐”后继续校正。已有配置缺字段仍为严格的 `fail`；修改策略后通过现有接口重试指定失败任务。内存不足、音频损坏、识别截断不降级。识别检查点、OCR 和关键帧各自保存，重试按媒体与配置版本复用。
+
 0.2.0 的 Worker、维护、Web 和 MCP 应共同使用仓库外独立 runtime 中的 wheel 安装。部署前读取实际配置核对入口；旧服务若仍引用源码仓库 `.venv`，先保留该环境，完成新安装验收后再切换。开发依赖同步只在隔离工作区执行。
 
 Embedding 普通运行同样只读取本地缓存。首次准备可在已安装的独立 runtime 中执行 `hf download BAAI/bge-small-zh-v1.5`；缺缓存时使用字符检索替代，体检说明当前准备情况。

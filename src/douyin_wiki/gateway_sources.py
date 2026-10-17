@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from .errors import JobStateError
 
-SOURCE_PROJECTION_VERSION = 1
+SOURCE_PROJECTION_VERSION = 2
 SUBTITLE_MIN_LENGTH = 4
 SUBTITLE_WINDOW_MS = 5000
 OCR_DEDUP_WINDOW_MS = 60_000
@@ -31,6 +31,8 @@ class SourceSpan:
     segment_id: int | None = None
     start_ms: int | None = None
     end_ms: int | None = None
+    timestamp_precision: str = "unknown"
+    alignment_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,8 @@ def build_source_catalog(
                 segment_id=segment["id"],
                 start_ms=segment.get("start_ms"),
                 end_ms=segment.get("end_ms"),
+                timestamp_precision=segment.get("timestamp_precision", "unknown"),
+                alignment_reason=segment.get("alignment_reason"),
             )
             refs[ref] = span
             sources.append(
@@ -109,6 +113,16 @@ def build_source_catalog(
                             "start_ms": span.start_ms,
                             "end_ms": span.end_ms,
                             "timestamp_ms": span.timestamp_ms,
+                            **(
+                                {
+                                    "timestamp_precision": "window",
+                                    "timestamp_start_ms": span.start_ms,
+                                    "timestamp_end_ms": span.end_ms,
+                                    "alignment_reason": segment.get("alignment_reason"),
+                                }
+                                if segment.get("timestamp_precision") == "window"
+                                else {}
+                            ),
                         }
                     ],
                 }
@@ -142,15 +156,32 @@ def build_source_catalog(
                     <= segment.get("end_ms", 0) + SUBTITLE_WINDOW_MS
                 )
             )
+        raw_lines = text.splitlines(keepends=True)
+        retained = [
+            index
+            for index, value in enumerate(raw_lines)
+            if value.strip()
+            and not (
+                nearby
+                and len(_comparison_key(value)) >= SUBTITLE_MIN_LENGTH
+                and _comparison_key(value) in nearby
+            )
+        ]
+        bridge = range(min(retained), max(retained) + 1) if retained else ()
         offset = 0
-        for line_index, raw_line in enumerate(text.splitlines(keepends=True)):
+        for line_index, raw_line in enumerate(raw_lines):
             line = raw_line.rstrip("\r\n")
             start, end = offset, offset + len(line)
             offset += len(raw_line)
             if not line.strip():
                 continue
             key = _comparison_key(line)
-            if nearby and len(key) >= SUBTITLE_MIN_LENGTH and key in nearby:
+            if (
+                nearby
+                and len(key) >= SUBTITLE_MIN_LENGTH
+                and key in nearby
+                and line_index not in bridge
+            ):
                 continue
             ref = f"o:{observation_index}:{line_index}"
             kind: SourceKind = "image_ocr" if is_image_note else "ocr"
@@ -204,10 +235,11 @@ def expand_source_references(
             return
         ref_path = f"{path}.source_refs"
 
-        def fail(message: str, *, ref: str | None = None) -> None:
+        def fail(message: str, *, ref: str | None = None, **extra) -> None:
             details: dict[str, Any] = {"reason": "invalid_source_ref", "path": ref_path}
             if ref is not None:
                 details["source_ref"] = ref
+            details.update(extra)
             raise JobStateError(message, details=details)
 
         if role == "atom" and (
@@ -229,14 +261,30 @@ def expand_source_references(
                 fail("来源编号不存在于当前上下文", ref=ref)
             spans.append(catalog.refs[ref])
         first = spans[0]
-        for previous, current in zip(spans, spans[1:], strict=False):
+        for pair_index, (previous, current) in enumerate(zip(spans, spans[1:], strict=False)):
             if first.kind != current.kind or first.container != current.container:
                 fail("编号引用不能跨来源或原文容器")
             if current.start < previous.end:
                 fail("来源编号必须按原文顺序排列")
             gap = catalog.containers[first.container][previous.end : current.start]
             if any(character.isalnum() for character in gap):
-                fail("编号引用不能跳过原文内容")
+                intermediate = sorted(
+                    (
+                        (ref, span)
+                        for ref, span in catalog.refs.items()
+                        if span.container == first.container
+                        and previous.end <= span.start < current.start
+                    ),
+                    key=lambda item: item[1].start,
+                )
+                fail(
+                    "编号引用不能跳过原文内容",
+                    previous_ref=values[pair_index],
+                    next_ref=values[pair_index + 1],
+                    gap_preview=gap[:160],
+                    **({"expected_next_ref": intermediate[0][0]} if intermediate else {}),
+                    repair="补齐中间引用，或拆成多条独立证据",
+                )
         original = catalog.containers[first.container]
         quote = original[first.start : spans[-1].end]
         if not any(character.isalnum() for character in quote):
@@ -263,6 +311,21 @@ def expand_source_references(
                 "timestamp_ms": None if is_image_note else located.timestamp_ms,
                 "image_index": located.image_index if first.kind == "image_ocr" else None,
             }
+        if any(span.timestamp_precision == "window" for span in spans):
+            item.update(
+                timestamp_precision="window",
+                timestamp_start_ms=min(span.start_ms for span in spans),
+                timestamp_end_ms=max(span.end_ms for span in spans),
+                alignment_reason=",".join(
+                    sorted(
+                        {
+                            span.alignment_reason or "alignment_failed"
+                            for span in spans
+                            if span.timestamp_precision == "window"
+                        }
+                    )
+                ),
+            )
         for field, value in derived.items():
             if field in item and item[field] != value:
                 fail(f"{field} 与来源编号还原结果不一致")

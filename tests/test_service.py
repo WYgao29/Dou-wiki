@@ -353,7 +353,9 @@ async def test_concurrent_works_capture_their_own_asr_provenance(service) -> Non
                 "language": f"language-{call}",
                 "nested": {"clip": call},
             }
-            if call == 2:
+            # OCR now precedes ASR, so the second queued work recognizes first
+            # while the first work is paused in frame extraction.
+            if call == 1:
                 second_asr.set()
             return await super().transcribe(audio_path, output_dir)
 
@@ -382,8 +384,8 @@ async def test_concurrent_works_capture_their_own_asr_provenance(service) -> Non
         service.database.get_job(item.id).artifacts["media_provenance"]["asr"]
         for item in (first, second)
     ]
-    assert [item["language"] for item in provenances] == ["language-1", "language-2"]
-    assert [item["nested"]["clip"] for item in provenances] == [1, 2]
+    assert [item["language"] for item in provenances] == ["language-2", "language-1"]
+    assert [item["nested"]["clip"] for item in provenances] == [2, 1]
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from .adapters.embeddings import EmbeddingService, cosine_similarity
 from .database import Database, lexical_tokens
 from .errors import EntryNotFoundError
 from .models import AnalysisResult, EntryRecord, Evidence, OCRObservation, TranscriptSegment
+from .timing import audio_timing, coarse_label
 
 
 class KnowledgeIndexer:
@@ -309,9 +310,7 @@ class KnowledgeSearch:
             lexical_ranks[row["id"]] = index
 
         query_vector = self.embeddings.embed([cleaned])[0]
-        rows = self.database.fetch_chunks(
-            include_stale=include_stale, entry_ids=allowed_ids
-        )
+        rows = self.database.fetch_chunks(include_stale=include_stale, entry_ids=allowed_ids)
         results: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
             vector_score = 0.0
@@ -328,8 +327,7 @@ class KnowledgeSearch:
             if allowed_ids is not None:
                 semantic_floor = (
                     0.42
-                    if row["kind"]
-                    in {"knowledge_atom", "inspiration", "summary", "takeaway"}
+                    if row["kind"] in {"knowledge_atom", "inspiration", "summary", "takeaway"}
                     else 0.52
                 )
             if lexical_score == 0 and vector_score < semantic_floor and inspiration_bonus == 0:
@@ -369,11 +367,32 @@ class KnowledgeSearch:
                 "image_ocr": "图片文字与问题匹配",
                 "post_text": "作品正文与问题匹配",
             }.get(row["kind"])
+            saved = self.database.get_entry_data(entry.id)
+            transcript = saved.get("transcript_corrected") or saved.get("transcript_raw", [])
+            source, quote = "", row["text"]
+            if row["kind"] == "transcript":
+                source = "audio"
+            elif row["kind"] == "knowledge_atom":
+                atom_id = row["id"].split(":atom:")[-1]
+                atom = next(
+                    (
+                        item
+                        for item in saved.get("analysis", {}).get("knowledge_atoms", [])
+                        if item.get("id") == atom_id
+                    ),
+                    {},
+                )
+                source, quote = atom.get("provenance"), atom.get("quote")
+            timing = audio_timing(
+                transcript if source in {"audio", "audio+ocr"} else [], row["timestamp_ms"], quote
+            )
+            label = coarse_label(timing)
             evidence.append(
                 Evidence(
                     entry_id=entry.id,
                     title=entry.title,
-                    snippet=row["text"],
+                    snippet=(label + "\n" if label else "") + row["text"],
+                    **timing,
                     timestamp_ms=row["timestamp_ms"],
                     image_index=row.get("image_index"),
                     original_url=entry.original_url,
@@ -395,21 +414,15 @@ def _fts_query(value: str, *, relaxed: bool = False) -> str:
     for part in re.split(r"\s+", value):
         tokens = lexical_tokens(part)
         if tokens:
-            if relaxed and re.fullmatch(
-                r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+", part
-            ):
+            if relaxed and re.fullmatch(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+", part):
                 # A continuous phrase may contain useful terms separated by other
                 # words in the document (e.g. 手机技巧 -> 手机拍照技巧). Use CJK
                 # bigrams as a lower-weight recall channel without broad unigram hits.
                 bigrams = [token for token in tokens if len(token) == 2]
                 terms = bigrams or tokens
-                groups.append(
-                    " OR ".join(f'"{token.replace(chr(34), "")}"' for token in terms)
-                )
+                groups.append(" OR ".join(f'"{token.replace(chr(34), "")}"' for token in terms))
             else:
-                groups.append(
-                    " AND ".join(f'"{token.replace(chr(34), "")}"' for token in tokens)
-                )
+                groups.append(" AND ".join(f'"{token.replace(chr(34), "")}"' for token in tokens))
     return " OR ".join(f"({group})" for group in groups)
 
 

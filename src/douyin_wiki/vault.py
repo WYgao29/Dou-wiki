@@ -48,6 +48,7 @@ from .time_utils import (
     user_times_to_beijing,
     utc_now,
 )
+from .timing import coarse_label
 
 VAULT_AGENTS = """# 抖库维护规则
 
@@ -1231,6 +1232,7 @@ class VaultWriter:
             "transcript_edits",
             "correction_notes",
             "ocr_quality_notes",
+            "frames",
             "relations",
             "reminder_states",
         ):
@@ -1251,6 +1253,8 @@ class VaultWriter:
             "share_text": payload.get("share_text", ""),
             "inspirations": [item.model_dump(mode="json") for item in inspirations],
             "metadata": metadata,
+            "media_provenance": payload.get("media_provenance", {}),
+            "frames": payload.get("frames", []),
             "ocr": payload.get("ocr", []),
             "review_issues": payload.get("review_issues", []),
             "transcript_edits": payload.get("transcript_edits", []),
@@ -1784,6 +1788,11 @@ class VaultWriter:
             "creator_id": data.get("creator", {}).get("id"),
         }
         lines = [self._frontmatter(frontmatter), f"# {entry.title}"]
+        if any(
+            row.get("timestamp_precision") == "window"
+            for row in (data.get("transcript_corrected") or data.get("transcript_raw", []))
+        ):
+            lines.extend(["", "> 时间提示：部分音频只有粗略窗口时间，引用范围未经精确对齐。", ""])
         if cover_path:
             relative_cover = os.path.relpath(
                 cover_path,
@@ -1851,7 +1860,7 @@ class VaultWriter:
                 "十二",
             ]
             for index, chapter in enumerate(analysis.chapters[:12]):
-                timestamp = format_timestamp(chapter.start_ms)
+                timestamp = coarse_label(chapter) or format_timestamp(chapter.start_ms)
                 number = chapter_numbers[index]
                 lines.extend(
                     [
@@ -1904,6 +1913,8 @@ class VaultWriter:
             "share_text": data.get("share_text", ""),
             "inspirations_verbatim": [item.model_dump(mode="json") for item in entry.inspirations],
             "metadata": data.get("metadata", {}),
+            "media_provenance": data.get("media_provenance", {}),
+            "frames": data.get("frames", []),
             "ocr": data.get("ocr", []),
             "review_issues": data.get("review_issues", []),
             "transcript_edits": data.get("transcript_edits", []),
@@ -2086,7 +2097,8 @@ class VaultWriter:
         if not segments:
             return ["无可用逐字稿。"]
         return [
-            f"[{format_timestamp(segment.get('start_ms'))}] {segment.get('text', '')}"
+            f"[{coarse_label(segment) or format_timestamp(segment.get('start_ms'))}] "
+            f"{segment.get('text', '')}"
             for segment in segments
         ]
 

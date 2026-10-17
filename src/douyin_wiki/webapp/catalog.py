@@ -330,6 +330,19 @@ class LibraryCatalog:
             "source": "corrected" if corrected else "raw",
             "segments": [
                 {key: row[key] for key in ("id", "start_ms", "end_ms", "text")}
+                | (
+                    {
+                        key: row.get(key)
+                        for key in (
+                            "timestamp_precision",
+                            "timestamp_start_ms",
+                            "timestamp_end_ms",
+                            "alignment_reason",
+                        )
+                    }
+                    if row.get("timestamp_precision") == "window"
+                    else {}
+                )
                 for row in rows
             ],
         }

@@ -45,7 +45,7 @@
 
 ## 开发中的功能
 
-[部署反馈改进方案](design/2026-10-17-deployment-feedback-improvement-plan.md)已获用户批准，按运行可靠性、识别与证据、材料与搜索三批实施。第一批及修复复审已通过，后两批继续推进；实际验证和逐批 review 见[实施记录](maintenance/2026-10-17-deployment-feedback-improvements.md)。既有画面检索分支沿用原范围。
+[部署反馈改进方案](design/2026-10-17-deployment-feedback-improvement-plan.md)已获用户批准，按运行可靠性、识别与证据、材料与搜索三批实施。前两批及修复复审已通过，第三批继续推进；实际验证和逐批 review 见[实施记录](maintenance/2026-10-17-deployment-feedback-improvements.md)。既有画面检索分支沿用原范围。
 
 
 上述「近期完成」中的数字、52 工具和服务重启属于 0.1.5 及更早的历史部署记录；0.2.0 实际工具清单移除 `generate_topic_artifact`，客户端升级后需重新连接。历史 Qwen3、收藏与合集验收内容继续保留。

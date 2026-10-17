@@ -375,6 +375,27 @@ async def test_retired_import_and_events_distinguish_background(ui):
     await page.wait_for_function("document.querySelector('#toast').textContent === '资料库已更新'")
 
 
+async def test_reader_shows_window_precision_in_transcript(ui):
+    page, service, _client, _calls = ui
+    entry = service.database.get_entry("dy-1000")
+    data = service.database.get_entry_data(entry.id)
+    data["transcript_raw"] = [
+        {
+            "id": 0,
+            "start_ms": 120000,
+            "end_ms": 180000,
+            "text": "窗口内保留的完整原话。",
+            "timestamp_precision": "window",
+        }
+    ]
+    data["transcript_corrected"] = data["transcript_raw"]
+    service.database.upsert_entry(entry, data)
+    await page.goto("http://testserver/articles/dy-1000")
+    await page.locator(".article-transcript > summary").click()
+    await expect(page.locator(".transcript-time")).to_contain_text("时间未经精确对齐")
+    await expect(page.locator(".transcript-text")).to_have_text("窗口内保留的完整原话。")
+
+
 async def test_reader_focus_fonts_and_selection_guidance(ui, tmp_path):
     page, _service, _client, calls = ui
     assert not any(path.endswith("/reading.css") or "/fonts/reading/" in path for _, path in calls)
