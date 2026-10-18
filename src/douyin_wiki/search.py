@@ -239,7 +239,7 @@ class KnowledgeIndexer:
                 (
                     item
                     for item in analysis_data.get("knowledge_atoms", [])
-                    if f":atom:{item.get('id')}" in row["id"]
+                    if f"{entry.id}:atom:{item.get('id')}" == row["id"]
                 ),
                 None,
             ) or next(
@@ -373,12 +373,11 @@ class KnowledgeSearch:
             if row["kind"] == "transcript":
                 source = "audio"
             elif row["kind"] == "knowledge_atom":
-                atom_id = row["id"].split(":atom:")[-1]
                 atom = next(
                     (
                         item
                         for item in saved.get("analysis", {}).get("knowledge_atoms", [])
-                        if item.get("id") == atom_id
+                        if f"{entry.id}:atom:{item.get('id')}" == row["id"]
                     ),
                     {},
                 )

@@ -9,7 +9,7 @@ from douyin_wiki.config import MediaSettings
 from douyin_wiki.errors import ExternalToolError
 from douyin_wiki.gateway_protocol import context_revision
 from douyin_wiki.gateway_sources import build_source_catalog, expand_source_references
-from douyin_wiki.models import JobStatus, TranscriptSegment
+from douyin_wiki.models import AnalysisResult, JobStatus, TimestampQuality, TranscriptSegment
 from douyin_wiki.worker import Worker
 from tests.support.gateway import complete_gateway_job, make_gateway_job
 from tests.test_qwen3_asr import FakeRuntime
@@ -169,6 +169,13 @@ def test_server_restores_coarse_precision_instead_of_trusting_agent(service, pro
     saved = result.artifacts["analysis"]["knowledge_atoms"][0]
     assert saved["timestamp_precision"] == "window"
     assert saved["timestamp_end_ms"] == 9000
+    claim = result.artifacts["analysis"]["claims"][0]
+    assert {key: claim[key] for key in TimestampQuality.model_fields} == {
+        key: saved[key] for key in TimestampQuality.model_fields
+    }
+    assert (
+        AnalysisResult.model_validate(result.artifacts["analysis"]).claims[0].model_dump() == claim
+    )
 
 
 async def test_precision_survives_publication_search_and_vault_rebuild(service, monkeypatch):
@@ -190,6 +197,9 @@ async def test_precision_survives_publication_search_and_vault_rebuild(service, 
     completed = await complete_gateway_job(service, job.id, gateway_protocol=2)
     assert completed.status == JobStatus.COMPLETED_WITH_WARNINGS
     entry = service.database.get_entry(completed.result["entry_id"])
+    assert service.get_entry(entry.id)["data"]["analysis"]["claims"][0]["timestamp_precision"] == (
+        "window"
+    )
     source = service.vault_path(entry.source_path).read_text()
     assert "粗略窗口时间" in source
     raw = service.vault_path(entry.raw_path).read_text()
@@ -201,6 +211,8 @@ async def test_precision_survives_publication_search_and_vault_rebuild(service, 
     service.rebuild_database_from_vault(apply=True)
     data = service.database.get_entry_data(entry.id)
     assert data["transcript_corrected"][0]["timestamp_precision"] == "window"
+    assert data["analysis"]["claims"][0]["timestamp_precision"] == "window"
+    assert data["analysis"]["claims"][0]["timestamp_end_ms"] == 9000
     found = service.search_knowledge("窗户尺寸", entry_ids=[entry.id])
     assert any(
         item.timestamp_precision == "window" and item.timestamp_end_ms == 9000 for item in found

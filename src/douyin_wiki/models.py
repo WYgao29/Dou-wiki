@@ -284,7 +284,7 @@ class OCRObservation(BaseModel):
     image_path: str | None = None
 
 
-class Claim(BaseModel):
+class Claim(TimestampQuality):
     id: str
     text: str
     source_quote: str | None = None
@@ -576,6 +576,9 @@ class AnalysisResultV2(BaseModel):
                     "valid_until": claim.get("valid_until"),
                     "review_after": claim.get("review_after"),
                     "stale": claim.get("stale", False),
+                    **{
+                        name: claim[name] for name in TimestampQuality.model_fields if name in claim
+                    },
                 }
                 for index, claim in enumerate(legacy_claims)
                 if isinstance(claim, dict) and claim.get("text")
@@ -664,7 +667,27 @@ class AnalysisResultV2(BaseModel):
                 for atom in self.knowledge_atoms
                 if atom.atom_type != "inference"
             ]
+        self.synchronize_claim_timing()
         return self
+
+    def synchronize_claim_timing(self) -> None:
+        """Copy atom timing only for the same legacy source locator and quote."""
+        atoms = {atom.id: atom for atom in self.knowledge_atoms if atom.atom_type != "inference"}
+        quality_fields = set(TimestampQuality.model_fields)
+        claims = []
+        for claim in self.claims:
+            atom = atoms.get(claim.id)
+            quality = TimestampQuality().model_dump()
+            if (
+                atom is not None
+                and claim.start_ms == atom.timestamp_ms
+                and claim.source_quote == atom.quote
+            ):
+                quality = atom.model_dump(include=quality_fields)
+            # Evidence pruning validates shallow model copies. Replacing claims
+            # keeps candidate timing from changing another analysis snapshot.
+            claims.append(claim.model_copy(update=quality))
+        self.claims = claims
 
 
 # Compatibility name used by integrations released before v2.

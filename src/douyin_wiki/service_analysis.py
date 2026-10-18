@@ -913,13 +913,27 @@ class AnalysisMixin:
             coarse = [item for item in chapter.evidence if item.timestamp_precision == "window"]
             info = audio_timing([], None)
             if coarse:
+                # The coarse label describes the whole chapter, including its
+                # declared extent, precise evidence and any wider source window.
+                bounds = [
+                    value
+                    for value in (
+                        chapter.start_ms,
+                        chapter.end_ms,
+                        *(item.timestamp_ms for item in chapter.evidence),
+                        *(item.timestamp_start_ms for item in coarse),
+                        *(item.timestamp_end_ms for item in coarse),
+                    )
+                    if value is not None
+                ]
                 info.update(
                     timestamp_precision="window",
-                    timestamp_start_ms=min(item.timestamp_start_ms for item in coarse),
-                    timestamp_end_ms=max(item.timestamp_end_ms for item in coarse),
+                    timestamp_start_ms=min(bounds),
+                    timestamp_end_ms=max(bounds),
                     alignment_reason=",".join(sorted({item.alignment_reason for item in coarse})),
                 )
             apply_timing(chapter, info)
+        analysis.synchronize_claim_timing()
 
 
 def _normalize_evidence_text(value: str) -> str:
