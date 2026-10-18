@@ -4,7 +4,7 @@
 
 用户已批准[三批方案](../design/2026-10-17-deployment-feedback-improvement-plan.md)，要求每批完成后 review，发现问题先修复，再针对修复复审。由当前维护 Agent 实施、检查差异并执行验证，没有委派子 Agent。本记录按实际结果更新。
 
-现用 Web、Worker、维护任务均引用仓库外 `~/Library/Application Support/douyin-wiki/runtime/.venv/bin/python`。本轮未修改该环境、用户 Vault、登录 Profile 或常驻服务。
+现用 Web、Worker、维护任务均引用仓库外 `~/Library/Application Support/douyin-wiki/runtime/.venv/bin/python`。开发及独立验收阶段未修改该环境、用户 Vault、登录 Profile 或常驻服务；2026-10-18 经用户授权的本机部署见文末。
 
 ## 第一批：运行可靠性
 
@@ -105,3 +105,27 @@ SHA256：`a037b03dc6bed82fcd63115281baeac1cf6f94ff07c7931c3b189ca51217555a`。
 用户授权提交、合并到 `main` 并推送 GitHub。三批开发提交为 `2ae03a2`、`bb153ef`、`55b0c33`，后续 review 修复提交为 `8992abe`。确认本地与远端主线均为 `36697c3` 后，将本地主线直接推进到 `8992abe`，没有合并冲突或运行代码变化；沿用上文 1686 项完整离线测试、210 项独立安装包测试和复审结果。
 
 主线集成后仅补充本节、方案状态及文档索引；远端为 `https://github.com/WYgao29/douyin-wiki.git`，目标分支为 `main`。当前候选包及哈希继续有效，现用 runtime、用户 Vault、登录 Profile 和常驻服务未改动。其他开发分支和 worktree 保留。
+
+## 本机部署（2026-10-18）
+
+用户随后授权安装已验收的新包、重启 Web / Worker 并重建 MCP 连接。部署前确认现用 Web 为 0.2.51、Worker 正常、运行与排队任务均为 0；备份实际安装包、console scripts、原 wheel、SQLite 及配置后，只替换现用 runtime 中的抖库包，没有同步依赖。安装包 SHA256 仍为本记录的 `a037b03d…17555a`，对应运行源码在 `27bd58f`；后续部署记录只修改文档。
+
+北京时间 10:40，新 Web 返回 HTTP 200 / 0.2.52，Worker 使用新的进程和心跳；三个原 LaunchAgent 均按原 plist 重新加载，维护任务继续按周日 03:00 执行，没有强制运行维护。
+
+| 验证 | 结果 |
+| --- | --- |
+| 实际安装包 | 94 个运行文件与验收 wheel 和主线源码逐字节一致 |
+| 网页资源 | 页面引用 0.2.52；24 个静态资源 HTTP 200，内容与安装文件一致 |
+| 配置与依赖 | 抖库配置、三个 plist、Codex MCP 配置及全部依赖版本保持原值 |
+| 业务数据 | 34 张表的完整行哈希不变，仅排除持续更新的 Worker 心跳；schema 仍为 16 |
+| Vault 内容 | 2721 份 Markdown 的文件集合及内容哈希不变 |
+| 任务 | 运行 0、排队 0、待用户处理 0；原有 369 条完成 / 7 条失败记录未重跑 |
+| 新 MCP 连接 | 按保存的客户端配置完成 initialize、instructions、51 项工具及新增可选字段检查；实际 `doctor` 的 `overall=true` |
+
+三个旧 runtime STDIO MCP 进程已退出。当前聊天实际调用 `doctor` 仍返回 `Transport closed`，因此当前会话尚未完成重连；用户需要重新连接抖库 MCP 或重启 Codex。独立新连接的成功不等于当前聊天已经重连。
+
+已有配置未声明 `alignment_failure_policy` 和 `keep_keyframes`，本次保留其有效值 `fail` 和 `false`；新安装推荐默认值只作用于新建配置，没有在升级时隐式更改现有任务策略或重写已完成资料。
+
+首次线上验收脚本直接请求 `/health`，HTTPX 未自动跟随其 307 跳转，脚本在此停止；部署探针此前已经跟随跳转并确认新版本。验收脚本改用正式 `/api/system/health` 后，网页与新 MCP 全部检查通过，产品代码未变。首次结果保留在 `live-first-attempt.txt`。
+
+备份和部署证据在仓库外 `/Users/weisengao/Documents/ChatGPT/douyin-wiki-deployment-2026-10-18-3hroy56p/`：`runtime-before-upgrade.zip`、`previous-wheel/`、`state-before-upgrade.sqlite3`、`configuration-backups/`、`release/`、`deployment-before.json`、`deployment.json`、`deployment-commands.log`、`live-acceptance.json`、`fresh-mcp-initialize.json`、`fresh-mcp-tools.json`、`fresh-mcp-doctor.json`、`current-chat-mcp.json` 与 `final-state-check.json`。原验收材料和仓库 `.venv` 保留，登录 Profile 未改动。
