@@ -23,6 +23,7 @@ from ..errors import (
     VideoUnavailableError,
 )
 from ..models import AuthCheckResult, SourceKind, VideoMetadata
+from .image_download import ImageDownloadRejected, download_image_playwright
 
 IMAGE_EXTENSIONS = {
     "image/avif": ".avif",
@@ -688,20 +689,22 @@ class PlaywrightImageNoteDownloader:
         seen_content: set[str] = set()
         try:
             for request_index, url in enumerate(urls, start=1):
-                response = await context.request.get(
-                    url,
-                    headers={"Referer": "https://www.douyin.com/"},
-                    timeout=60_000,
-                )
-                if not response.ok:
-                    raise ExternalToolError(
-                        f"第 {request_index} 张图片下载失败",
-                        details={"status": response.status},
+                try:
+                    content, content_type = await download_image_playwright(
+                        context.request,
+                        url,
+                        timeout_ms=60_000,
+                        headers={"Referer": "https://www.douyin.com/"},
                     )
-                content = await response.body()
-                content_type = response.headers.get("content-type", "")
-                if not content or (content_type and not content_type.startswith("image/")):
-                    raise ExternalToolError(f"第 {request_index} 张图片返回了无效内容")
+                except ImageDownloadRejected as exc:
+                    if exc.reason == "http_status":
+                        raise ExternalToolError(
+                            f"第 {request_index} 张图片下载失败",
+                            details={"status": exc.status},
+                        ) from exc
+                    if exc.reason == "transport":
+                        raise ExternalToolError(f"第 {request_index} 张图片下载失败") from exc
+                    raise ExternalToolError(f"第 {request_index} 张图片返回了无效内容") from exc
                 digest = hashlib.sha256(content).hexdigest()
                 if digest in seen_content:
                     continue

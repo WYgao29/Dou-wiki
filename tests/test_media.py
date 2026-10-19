@@ -111,6 +111,7 @@ def test_prefers_douyin_static_cover_over_origin_and_dynamic() -> None:
 
 def test_downloads_preferred_cover(monkeypatch, tmp_path: Path) -> None:
     class FakeResponse:
+        status_code = 200
         content = b"\xff\xd8\xfffake-jpeg"
         headers = {"content-type": "image/jpeg"}
 
@@ -130,12 +131,12 @@ def test_downloads_preferred_cover(monkeypatch, tmp_path: Path) -> None:
 
         @staticmethod
         def get(url: str):
-            assert url == "https://example.test/static"
+            assert url == "https://p3.douyinpic.com/static.jpg"
             return FakeResponse()
 
     monkeypatch.setattr(httpx, "Client", FakeClient)
     path = download_preferred_cover(
-        {"thumbnails": [{"id": "cover", "url": "https://example.test/static"}]},
+        {"thumbnails": [{"id": "cover", "url": "https://p3.douyinpic.com/static.jpg"}]},
         tmp_path,
     )
     assert path == tmp_path / "cover.jpg"

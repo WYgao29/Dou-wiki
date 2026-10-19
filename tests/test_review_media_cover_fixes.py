@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -20,9 +21,9 @@ from douyin_wiki.config import MediaSettings
 @pytest.fixture
 def cover_download(monkeypatch, tmp_path):
     urls = {
-        "cover": "https://example.test/custom.jpg",
-        "origin_cover": "https://example.test/origin.jpg",
-        "dynamic_cover": "https://example.test/dynamic.webp",
+        "cover": "https://p3-pc-sign.douyinpic.com/custom.jpg",
+        "origin_cover": "https://p9.douyinpic.com/origin.jpg",
+        "dynamic_cover": "https://p3.byteimg.com/dynamic.webp",
     }
     detail = {
         "aweme_id": "1234567890123",
@@ -64,7 +65,7 @@ def install_cover_client(monkeypatch, get):
         def get(self, url):
             return get(url)
 
-    monkeypatch.setattr("douyin_wiki.adapters.media.httpx.Client", Client)
+    monkeypatch.setattr("douyin_wiki.adapters.image_download.httpx.Client", Client)
 
 
 def cover_response(url):
@@ -157,13 +158,13 @@ def test_static_cover_helper_does_not_label_fallback_as_independent_cover(monkey
     install_cover_client(monkeypatch, get)
     result = download_preferred_cover(
         {"thumbnails": [
-            {"id": "cover", "url": "https://example.test/custom.jpg"},
-            {"id": "origin_cover", "url": "https://example.test/origin.jpg"},
+            {"id": "cover", "url": "https://p3-pc-sign.douyinpic.com/custom.jpg"},
+            {"id": "origin_cover", "url": "https://p9.douyinpic.com/origin.jpg"},
         ]},
         tmp_path,
     )
     assert result is None
-    assert requested == ["https://example.test/custom.jpg"]
+    assert requested == ["https://p3-pc-sign.douyinpic.com/custom.jpg"]
 
 
 @pytest.mark.parametrize(
@@ -224,3 +225,115 @@ async def test_cached_cover_precedes_successful_lower_priority_remote_cover(
     assert metadata.thumbnail_path == str(cached)
     assert metadata.thumbnail_kind == expected_kind
     assert requested == [urls[key] for key in failed_kinds]
+
+
+COVER_URL = "https://p3.douyinpic.com/cover.jpg?x-signature=ab%2Bcd"
+PAGE_URL = "https://www.douyin.com/video/1234567890123"
+VIDEO_ID = "1234567890123"
+
+
+def _assert_thumbnail_download_disabled(command):
+    assert "--no-write-thumbnail" in command
+    assert "--no-embed-thumbnail" in command
+    assert command[command.index("--convert-thumbnails") + 1] == "none"
+    assert "--write-thumbnail" not in command
+    assert "--embed-thumbnail" not in command
+    assert "--write-info-json" in command
+    assert "--cookies-from-browser" in command
+    assert command[command.index("--output") + 1].endswith("original.%(ext)s")
+
+
+def _image_names(directory: Path) -> list[str]:
+    suffixes = {".jpg", ".jpeg", ".png", ".webp"}
+    return sorted(
+        path.name for path in directory.glob("original.*") if path.suffix.lower() in suffixes
+    )
+
+
+@pytest.mark.parametrize("path", ["metadata", "page"])
+@pytest.mark.parametrize("thumbnail", ["cover", "rejected", "redirect"])
+async def test_yt_dlp_thumbnail_flags_leave_cover_download_to_the_helper(
+    monkeypatch, tmp_path, path, thumbnail
+):
+    downloader = YtDlpDownloader(MediaSettings(), tmp_path / "browser")
+    commands = []
+    requested = []
+    cover_url = (
+        "https://example.test/original.jpg" if thumbnail == "rejected" else COVER_URL
+    )
+    info = {
+        "id": VIDEO_ID,
+        "title": "测试作品",
+        "channel": "作者",
+        "description": "简介",
+        "thumbnails": [{"id": "cover", "url": cover_url}],
+    }
+
+    async def captured(_url):
+        if path == "page":
+            return None
+        return CapturedCdnMedia(
+            video_url="https://cdn.douyinvod.com/media-video.mp4",
+            audio_url=None,
+            page_title="测试作品",
+            info={
+                "title": "测试作品",
+                "description": "简介",
+                "channel": "作者",
+                "creator_sec_uid": "MS4wLjABAAAAtest",
+                "channel_url": "https://www.douyin.com/user/MS4wLjABAAAAtest",
+            },
+        )
+
+    def run(command, **kwargs):
+        commands.append(list(command))
+        if "--write-thumbnail" in command:
+            (tmp_path / "original.jpg").write_bytes(b"uncontrolled")
+        if "--skip-download" in command or "--write-info-json" in command:
+            (tmp_path / "original.info.json").write_text(
+                json.dumps(info), encoding="utf-8"
+            )
+        if "--skip-download" not in command:
+            output = command[command.index("--output") + 1].replace("%(ext)s", "mp4")
+            Path(output).write_bytes(b"video")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def get(url):
+        requested.append(url)
+        if thumbnail == "redirect":
+            return httpx.Response(
+                302,
+                headers={"location": "http://127.0.0.1/secret.jpg"},
+                request=httpx.Request("GET", url),
+            )
+        return cover_response(url)
+
+    monkeypatch.setattr(downloader, "_capture_cdn_url", captured)
+    monkeypatch.setattr("douyin_wiki.adapters.media._run", run)
+    install_cover_client(monkeypatch, get)
+    metadata = await downloader.download(PAGE_URL, VIDEO_ID, tmp_path)
+
+    if path == "metadata":
+        assert [command for command in commands if "--skip-download" in command]
+        _assert_thumbnail_download_disabled(
+            next(command for command in commands if "--skip-download" in command)
+        )
+    else:
+        assert len(commands) == 1
+        _assert_thumbnail_download_disabled(commands[0])
+        assert "--merge-output-format" in commands[0]
+        assert "--skip-download" not in commands[0]
+    assert _image_names(tmp_path) == []
+    if thumbnail == "cover":
+        assert requested == [COVER_URL]
+        assert metadata.thumbnail_kind == "douyin_cover"
+        assert Path(metadata.thumbnail_path).name == "cover.jpg"
+        assert Path(metadata.thumbnail_path).read_bytes() == cover_response(COVER_URL).content
+    elif thumbnail == "rejected":
+        assert requested == []
+        assert metadata.thumbnail_path is None
+    else:
+        assert requested == [COVER_URL]
+        assert "127.0.0.1" not in requested
+        assert metadata.thumbnail_path is None
+        assert not (tmp_path / "cover.jpg").exists()

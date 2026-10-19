@@ -27,6 +27,7 @@ from ..errors import (
     VideoUnavailableError,
 )
 from ..models import AuthCheckResult, OCRObservation, VideoMetadata
+from .image_download import ImageDownloadRejected, download_image_httpx
 from .image_note import _acquire_file_lock, _release_file_lock
 from .share import extract_creator_sec_uid
 
@@ -698,33 +699,27 @@ def _download_cover_candidates(
             "AppleWebKit/537.36 Chrome/140.0 Safari/537.36"
         ),
     }
-    with httpx.Client(follow_redirects=True, timeout=60, headers=headers) as client:
-        for kind in kinds:
-            for candidate_kind, url in candidates:
-                if candidate_kind != kind:
-                    continue
-                try:
-                    response = client.get(url)
-                    response.raise_for_status()
-                except httpx.HTTPError:
-                    continue
-                content = response.content
-                content_type = response.headers.get("content-type", "").lower()
-                if not content or (content_type and not content_type.startswith("image/")):
-                    continue
-                if content.startswith(b"\x89PNG"):
-                    suffix = ".png"
-                elif content.startswith(b"RIFF") and content[8:12] == b"WEBP":
-                    suffix = ".webp"
-                else:
-                    suffix = ".jpg"
-                target = target_dir / f"{kind}{suffix}"
-                temporary = target.with_suffix(target.suffix + ".part")
-                temporary.write_bytes(content)
-                temporary.replace(target)
-                return target, "douyin_cover" if kind == "cover" else kind
-            if reuse_cache and (cached := _cached_cover(target_dir, kind)):
-                return cached
+    for kind in kinds:
+        for candidate_kind, url in candidates:
+            if candidate_kind != kind:
+                continue
+            try:
+                content, _content_type = download_image_httpx(url, timeout=60, headers=headers)
+            except ImageDownloadRejected:
+                continue
+            if content.startswith(b"\x89PNG"):
+                suffix = ".png"
+            elif content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+                suffix = ".webp"
+            else:
+                suffix = ".jpg"
+            target = target_dir / f"{kind}{suffix}"
+            temporary = target.with_suffix(target.suffix + ".part")
+            temporary.write_bytes(content)
+            temporary.replace(target)
+            return target, "douyin_cover" if kind == "cover" else kind
+        if reuse_cache and (cached := _cached_cover(target_dir, kind)):
+            return cached
     return None
 
 
@@ -1458,9 +1453,10 @@ class YtDlpDownloader:
             "--no-playlist",
             "--skip-download",
             "--write-info-json",
-            "--write-thumbnail",
+            "--no-write-thumbnail",
+            "--no-embed-thumbnail",
             "--convert-thumbnails",
-            "jpg",
+            "none",
             "--cookies-from-browser",
             cookie_spec,
             "--no-warnings",
@@ -1492,9 +1488,10 @@ class YtDlpDownloader:
             "--cookies-from-browser",
             cookie_spec,
             "--write-info-json",
-            "--write-thumbnail",
+            "--no-write-thumbnail",
+            "--no-embed-thumbnail",
             "--convert-thumbnails",
-            "jpg",
+            "none",
             "--merge-output-format",
             "mp4",
             "--output",

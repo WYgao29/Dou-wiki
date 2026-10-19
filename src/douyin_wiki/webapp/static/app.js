@@ -710,11 +710,23 @@ function bindEntryLink(link, item, cover = null) {
   });
 }
 
+function searchWindowLocation(evidence) {
+  const start = evidence.timestamp_start_ms;
+  const end = evidence.timestamp_end_ms;
+  const valid = typeof start === "number" && typeof end === "number"
+    && Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end >= start;
+  if (!valid) return "粗略时间范围";
+  const formattedStart = formatLocation({timestamp_ms: start});
+  const formattedEnd = formatLocation({timestamp_ms: end});
+  return `约 ${formattedStart}–${formattedEnd}（时间未经精确对齐）`;
+}
+
 function makeSearchEvidence(item) {
-  const evidence = item.search_evidence?.find(match => match.timestamp_ms != null || match.image_index != null)
-    || item.search_evidence?.[0];
+  const evidence = item.search_evidence?.find((match) => match && (
+    match.timestamp_ms != null || match.image_index != null || match.timestamp_precision === "window"
+  )) || item.search_evidence?.[0];
   if (!evidence) return null;
-  const location = evidence.timestamp_precision === "window" ? "粗略时间范围"
+  const location = evidence.timestamp_precision === "window" ? searchWindowLocation(evidence)
     : evidence.image_index != null ? `第 ${evidence.image_index} 张图片`
     : evidence.timestamp_ms != null ? formatLocation(evidence) : "相关证据";
   return window.Douku.node("p", `${location} · ${evidence.snippet}`, "search-evidence");

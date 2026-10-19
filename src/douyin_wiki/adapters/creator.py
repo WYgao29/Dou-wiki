@@ -26,6 +26,7 @@ from ..models import (
     CreatorProfile,
     SourceKind,
 )
+from .image_download import ImageDownloadRejected, download_image_playwright
 from .image_note import _page_auth_blocked, _usable_auth_cookies
 from .media import preferred_yt_dlp_cookie_spec
 from .share import DouyinShareResolver, extract_creator_sec_uid, extract_douyin_url
@@ -502,23 +503,25 @@ class DouyinCreatorAdapter:
         )
 
     async def _download_preview(self, context: Any, url: str, stem: Path) -> str | None:
-        with suppress(Exception):
-            response = await context.request.get(
+        try:
+            content, content_type = await download_image_playwright(
+                context.request,
                 url,
+                timeout_ms=30_000,
                 headers={"Referer": "https://www.douyin.com/"},
-                timeout=30_000,
             )
-            if not response.ok:
-                return None
-            content = await response.body()
-            if not content or len(content) > 12 * 1024 * 1024:
-                return None
-            content_type = response.headers.get("content-type", "").partition(";")[0]
-            suffix = mimetypes.guess_extension(content_type) or Path(urlsplit(url).path).suffix
-            if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".avif"}:
-                suffix = ".jpg"
-            target = stem.with_suffix(suffix)
+        except ImageDownloadRejected:
+            return None
+        if len(content) > 12 * 1024 * 1024:
+            return None
+        mime = content_type.partition(";")[0]
+        suffix = mimetypes.guess_extension(mime) or Path(urlsplit(url).path).suffix
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".avif"}:
+            suffix = ".jpg"
+        target = stem.with_suffix(suffix)
+        try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
-            return str(target)
-        return None
+        except OSError:
+            return None
+        return str(target)
