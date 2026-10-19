@@ -150,7 +150,7 @@ async def verify():
 
                 await page.route("**/*", route)
                 contrasts = {}
-                for width in [1440, 1100, 390]:
+                for width in [1440, 1280, 1100, 960]:
                     await page.set_viewport_size({"width": width, "height": 900})
                     for theme in ["light", "dark"]:
                         for name, path, ready in pages:
@@ -194,12 +194,9 @@ async def verify():
                             assert ratio >= 4.5, (name, theme, ratio)
                             contrasts[theme] = ratio
                             measurements.append({"page": name, "width": width, "theme": theme})
-                            if width == 1440 or (
-                                width == 390 and name in {"library", "article", "topic"}
-                            ):
-                                suffix = "" if width == 1440 else "-mobile"
+                            if width == 1440:
                                 await page.screenshot(
-                                    path=out / f"{name}-{theme}{suffix}.png", animations="disabled"
+                                    path=out / f"{name}-{theme}.png", animations="disabled"
                                 )
                 assert not errors and not external and not server_errors, (
                     errors,

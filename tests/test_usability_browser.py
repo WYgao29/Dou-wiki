@@ -111,7 +111,7 @@ async def test_timestamped_inspiration_remains_readable_without_chat(ui):
     await expect(page.locator("#inspiration-pane")).to_contain_text("00:01")
 
 
-@pytest.mark.parametrize("width", [1440, 390])
+@pytest.mark.parametrize("width", [1440])
 async def test_video_detail_has_collapsed_complete_transcript_and_copyable_video_url(ui, width):
     page, service, _client, _calls = ui
     video = service.config.vault_path / "raw/assets/123/本地 视频.mp4"
@@ -168,7 +168,7 @@ async def test_video_detail_handles_missing_transcript_and_video(ui):
     await expect(page.locator("#chat-panel")).to_have_count(0)
 
 
-@pytest.mark.parametrize("width", [1440, 390])
+@pytest.mark.parametrize("width", [1440])
 @pytest.mark.parametrize("theme", ["light", "dark"])
 async def test_retired_links_and_preserved_right_panel(ui, width, theme):
     page, service, _client, calls = ui
@@ -314,30 +314,25 @@ async def test_scope_changes_and_command_query_clears_old_results(ui):
     await page.locator("#command-results [data-entry-id='dy-123']").wait_for()
 
 
-async def test_mobile_tag_controls_and_real_merge_undo(ui, tmp_path):
+async def test_tag_controls_and_real_merge_undo(ui, tmp_path):
     page, service, _client, _calls = ui
     out = tmp_path / "usability"
     out.mkdir(parents=True, exist_ok=True)
+    await page.set_viewport_size({"width": 1440, "height": 900})
     await page.evaluate("window.Douku.navigate('/tags')")
     await page.locator("#tags-rows tr").first.wait_for()
     for theme in ("light", "dark"):
         await page.evaluate("theme => window.DoukuTheme.set(theme)", theme)
         await page.screenshot(path=out / f"tags-desktop-{theme}.png")
         await page.locator("#library-sidebar").screenshot(path=out / f"sidebar-{theme}.png")
-    await page.set_viewport_size({"width": 390, "height": 844})
-    await page.evaluate("window.Douku.navigate('/tags')")
-    await page.locator("#tags-cards .tag-card").first.wait_for()
-    await page.select_option("#tags-mobile-sort", "name:1")
-    assert await page.locator("#tags-mobile-select-all").is_visible()
-    await page.check("#tags-mobile-select-all")
+    await page.locator("[data-tag-sort=name]").click()
+    assert await page.locator("[data-tag-sort=name]").inner_text() == "标签名 ↑"
+    assert await page.locator("#tags-select-all").is_visible()
+    await page.check("#tags-select-all")
     assert await page.locator("#tags-selected").inner_text() == "已选 3 个"
-    await page.uncheck("#tags-mobile-select-all")
+    await page.uncheck("#tags-select-all")
     for name in ("AI 代理", "AI Agent"):
-        await (
-            page.get_by_role("checkbox", name=f"选择 {name}", exact=True)
-            .filter(visible=True)
-            .check()
-        )
+        await page.get_by_role("checkbox", name=f"选择 {name}", exact=True).check()
     await page.click("#tags-merge")
     await page.select_option("#tag-target", "AI Agent")
     await page.click("#tag-edit-submit")
@@ -346,13 +341,8 @@ async def test_mobile_tag_controls_and_real_merge_undo(ui, tmp_path):
     await page.locator("#tag-aliases").get_by_role("button", name="撤销操作", exact=True).click()
     await page.wait_for_function("document.querySelector('#toast').textContent.includes('已恢复')")
     assert service.database.get_entry("dy-1000").tags == ["AI 代理"]
-    assert await page.locator("#tags-cards time").count() == 3
+    assert await page.locator("#tags-rows time").count() == 3
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-    out = tmp_path / "usability"
-    out.mkdir(parents=True, exist_ok=True)
-    for theme in ("light", "dark"):
-        await page.evaluate("theme => window.DoukuTheme.set(theme)", theme)
-        await page.screenshot(path=out / f"tags-mobile-{theme}.png")
 
 
 async def test_retired_import_and_events_distinguish_background(ui):
@@ -419,11 +409,9 @@ async def test_reader_keyframes_and_semantic_search_fallback(ui):
     image = page.locator(".keyframe-grid img")
     await expect(image).to_have_count(1)
     await expect(page.locator(".keyframe-grid figcaption")).to_contain_text("00:01")
-    await page.set_viewport_size({"width": 375, "height": 812})
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     await page.goto("http://testserver/")
     await page.locator("#search-mode").select_option("semantic")
-    await page.locator("#search-toggle").click()
     await page.locator("#search-input").fill("原文保留")
     await expect(page.locator("#search-capability")).to_contain_text("关键词结果")
     assert "/api/library/search" in " ".join(path for method, path in _calls)

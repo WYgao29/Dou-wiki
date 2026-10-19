@@ -472,7 +472,7 @@ async def verify():
                 await page.wait_for_timeout(1000)
                 assert await page.locator("#library-view").is_visible()
                 mode = "normal"
-                for width in [1440, 1280, 1100, 800, 390, 320]:
+                for width in [1440, 1280, 1100, 960]:
                     await page.set_viewport_size({"width": width, "height": 900})
                     await article()
                     assert await page.evaluate(
@@ -501,27 +501,6 @@ async def verify():
                             await page.screenshot(
                                 path=out / f"article-{theme}.png", animations="disabled"
                             )
-                    if width == 800:
-                        await page.locator("#main-content").focus()
-                        await key("Shift+n")
-                        await page.fill("#inspiration-text", "窄屏阅读时也保留当前位置")
-                        await page.click("#confirm-inspiration")
-                        await page.locator(".inspiration-card", has_text="窄屏阅读").wait_for()
-                        assert await page.locator("#main-content").evaluate("e => e.inert")
-                        await key("Escape")
-                        assert not await page.locator("#main-content").evaluate("e => e.inert")
-                    if width == 390:
-                        await page.click("#nav-toggle")
-                        await page.locator("#reader-toc .toc-item", has_text="03:40").click()
-                        assert not await page.locator("#main-content").evaluate("e => e.inert")
-                        assert (await page.locator(".article-body h3").nth(1).bounding_box())[
-                            "y"
-                        ] >= 63
-                        await page.locator("#main-content").evaluate("e => e.scrollTop = 0")
-                        await page.evaluate(
-                            "document.querySelector('#toast').classList.remove('show')"
-                        )
-                        await page.screenshot(path=out / "mobile-reader.png", animations="disabled")
                 await page.set_viewport_size({"width": 1440, "height": 900})
                 await library()
                 for theme in ["light", "dark"]:
@@ -546,7 +525,7 @@ async def verify():
                     json.dumps(
                         {
                             "typography": typography,
-                            "widths": [1440, 1280, 1100, 800, 390, 320],
+                            "widths": [1440, 1280, 1100, 960],
                             "checks": [
                                 "toc and sticky heading offsets",
                                 "chapter times and callouts",
@@ -563,7 +542,7 @@ async def verify():
                                 "stale response guard",
                                 "loading/error",
                                 "album cover transition",
-                                "responsive header and drawer",
+                                "responsive header",
                             ],
                             "errors": errors,
                             "external_requests": external,

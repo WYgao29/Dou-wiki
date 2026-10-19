@@ -13,7 +13,7 @@
 | [项目结构与处理流程](docs/architecture.md) | 分析模式、模块职责、数据边界和开发验证 |
 | [Service 协作 API](docs/service-collaboration-api.md) | mixin 调用、操作锁、发布和租约约束 |
 | [Gateway Agent 接入指南](docs/gateway-agents.md) | 全部 MCP 工具、已有授权、任务持续执行和事件接续 |
-| [Web UI 设计系统](docs/web-ui-design-system.md) | 当前界面约定；重设计规格保留为历史记录 |
+| [Web UI 设计系统](docs/web-ui-design-system.md) | 当前界面约定。Web 只支持桌面浏览器，最窄约 960px，不做手机布局；重设计规格保留为历史记录 |
 
 ## 目录与入口
 
@@ -21,7 +21,7 @@
 | --- | --- |
 | `src/douyin_wiki/` | Python 包；`cli.py` / `__main__.py` 为 CLI，`mcp_server.py` 为 STDIO MCP，`worker.py` 为后台处理 |
 | `src/douyin_wiki/adapters/` | 下载、媒体、模型、向量和系统提醒适配 |
-| `src/douyin_wiki/webapp/` | 本机 Web、Jinja2 模板和原生 JS/CSS；资源 URL、加载顺序及字体许可属于运行交付 |
+| `src/douyin_wiki/webapp/` | 本机 Web、Jinja2 模板和原生 JS/CSS；只支持桌面浏览器，最窄约 960px。资源 URL、加载顺序及字体许可属于运行交付 |
 | `src/douyin_wiki/resources/` | 动态加载的运行资源，包括 Vision OCR Swift 文件 |
 | `tests/` | 正式回归测试；`support/web.py` 共用 Web 夹具和假 provider；保留 `tests/__init__.py` 和跨文件引用 |
 | `scripts/` | 浏览器验证入口与字体来源、字表、许可、哈希 |

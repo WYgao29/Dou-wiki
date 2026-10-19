@@ -5,7 +5,6 @@
   const node = D.node;
   const state = {rows: [], duplicates: [], aliases: {}, undoByAlias: {}, undoableByAlias: {}, selected: new Set(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
   const PIN_LIMIT = 8;
-  const narrowTags = () => window.matchMedia("(width < 480px)").matches;
   const active = () => $("app-shell").dataset.page === "tags";
   const date = (value) => value ? new Date(value).toLocaleString("zh-CN", {year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : "—";
   const pinned = () => state.rows.filter(row => row.pinned_at).sort((a, b) => a.position - b.position || a.pinned_at.localeCompare(b.pinned_at));
@@ -243,37 +242,8 @@
       });
       return tr;
     }));
-    $("tags-cards").replaceChildren(...rows.map((row) => {
-      const card = node("article", null, "tag-card");
-      card.dataset.tagName = row.name;
-      card.tabIndex = -1;
-      card.classList.toggle("selected", state.selected.has(row.name));
-      card.addEventListener("focusin", () => { state.focus = row.name; renderPanel(); });
-      const check = node("input");
-      check.type = "checkbox";
-      check.checked = state.selected.has(row.name);
-      check.setAttribute("aria-label", `选择 ${row.name}`);
-      check.dataset.tagAction = "select";
-      check.disabled = state.busy;
-      check.addEventListener("change", () => {
-        if (check.checked) state.selected.add(row.name); else state.selected.delete(row.name);
-        state.focus = row.name; render();
-      });
-      const copy = node("div", null, "tag-card-copy");
-      copy.append(tagLink(row), node("span", `${row.count} 条`, "tag-count"), node("time", `最近使用 ${date(row.last_used_at)}`, "hint-copy"));
-      const actions = node("div", null, "tag-card-actions");
-      actions.append(makePin(row));
-      if (row.pinned_at) {
-        actions.append(button("↑", () => move(row.name, -1)), button("↓", () => move(row.name, 1)));
-        actions.children[1].setAttribute("aria-label", `上移 ${row.name}`);
-        actions.children[2].setAttribute("aria-label", `下移 ${row.name}`);
-      }
-      card.append(check, copy, actions);
-      return card;
-    }));
     if (focusName && focusAction) {
-      const scope = narrowTags() ? $("tags-cards") : $("tags-rows");
-      [...scope.querySelectorAll("[data-tag-name]")].find((row) => row.dataset.tagName === focusName)?.querySelector(`[data-tag-action='${focusAction}']`)?.focus({preventScroll: true});
+      [...$("tags-rows").querySelectorAll("[data-tag-name]")].find((row) => row.dataset.tagName === focusName)?.querySelector(`[data-tag-action='${focusAction}']`)?.focus({preventScroll: true});
     }
     const pinNote = pinned().length >= PIN_LIMIT ? ` · 最多固定 ${PIN_LIMIT} 个` : "";
     $("tags-count").textContent = `${rows.length} / ${state.rows.length} 个标签${pinNote}`;
@@ -284,11 +254,6 @@
     $("tags-select-all").disabled = state.busy || !rows.length;
     $("tags-select-all").checked = Boolean(rows.length) && rows.every(row => state.selected.has(row.name));
     $("tags-select-all").indeterminate = rows.some(row => state.selected.has(row.name)) && !$("tags-select-all").checked;
-    $("tags-mobile-sort").value = `${state.sort}:${state.direction}`;
-    $("tags-mobile-sort").disabled = state.busy;
-    const mobileAll = $("tags-mobile-select-all");
-    mobileAll.checked = $("tags-select-all").checked; mobileAll.indeterminate = $("tags-select-all").indeterminate;
-    mobileAll.disabled = $("tags-select-all").disabled;
     $("tags-empty").classList.toggle("hidden", rows.length > 0);
     document.querySelectorAll("[data-tag-sort]").forEach(control => {
       const selected = control.dataset.tagSort === state.sort;
@@ -331,13 +296,6 @@
   D.tags = {open, load, renderPanel};
   document.addEventListener("DOMContentLoaded", () => {
     $("tags-search").addEventListener("input", render);
-    $("tags-mobile-select-all").addEventListener("change", event => {
-      visibleRows().forEach(row => { if (event.target.checked) state.selected.add(row.name); else state.selected.delete(row.name); }); render();
-    });
-    $("tags-mobile-sort").addEventListener("change", event => {
-      const [sort, direction] = event.target.value.split(":");
-      state.sort = sort; state.direction = Number(direction); render();
-    });
     $("tags-select-all").addEventListener("change", () => {
       visibleRows().forEach(row => { if ($("tags-select-all").checked) state.selected.add(row.name); else state.selected.delete(row.name); }); render();
     });
@@ -384,7 +342,7 @@
       if (document.querySelector("dialog[open]")) return;
       if (event.target.closest("input, textarea, select, [contenteditable='true']")) return;
       if (event.key !== "j" && event.key !== "k") return;
-      const rows = [...(narrowTags() ? $("tags-cards") : $("tags-rows")).querySelectorAll("[data-tag-name]")];
+      const rows = [...$("tags-rows").querySelectorAll("[data-tag-name]")];
       if (!rows.length) return;
       event.preventDefault();
       const current = rows.findIndex((row) => row.dataset.tagName === state.focus);

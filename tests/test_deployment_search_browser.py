@@ -102,12 +102,11 @@ async def test_failed_semantic_search_can_reload_after_scope_changes():
         assert attempts == 3
 
 
-@pytest.mark.parametrize("width", [320, 375])
-async def test_search_toolbar_remains_accessible_on_narrow_screens(width):
+@pytest.mark.parametrize("width", [1440, 960])
+async def test_search_toolbar_remains_accessible(width):
     async with browser_fixture() as (page, _topics, _gates):
         await page.emulate_media(reduced_motion="reduce")
-        await page.set_viewport_size({"width": width, "height": 812})
-        await page.evaluate("closeDrawers(false)")
+        await page.set_viewport_size({"width": width, "height": 900})
         await page.locator("#search-mode").select_option("semantic")
         await page.locator("#topic-select-toggle").click()
         await expect(page.locator("#library-selection-bar")).to_be_visible()

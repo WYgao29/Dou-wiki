@@ -59,7 +59,6 @@ const state = {
   selectedEntryIds: new Set(),
   sidebarCollapsed: false,
   chatCollapsed: false,
-  activeDrawer: "",
   panelPage: "",
   panelOverride: null,
   panelTab: "info",
@@ -1106,7 +1105,6 @@ function showLibrary(push = true) {
   if (!fromLibrary && (!state.libraryLoaded || state.libraryLoadedQuery !== state.query)) {
     loadLibrary({showLoading: false});
   }
-  closeDrawers(false);
   if (returningFromReader) {
     $("#main-content").scrollTop = state.libraryScrollTop;
     focusEntry(entryId, {scroll: false});
@@ -1117,7 +1115,6 @@ function showLibrary(push = true) {
 function showTags() {
   beginNavigation();
   state.currentEntry = ""; state.currentArticleItem = null; state.currentTopic = "";
-  closeDrawers(false);
   window.Douku.tags.open();
 }
 window.Douku.refreshLibrary = () => loadLibrary({showLoading: false});
@@ -1195,7 +1192,6 @@ async function showTopics(push = true) {
   document.title = "专题 · 抖库";
   updateTopicSelectionButton();
   await loadTopics();
-  closeDrawers();
 }
 
 async function loadTrash() {
@@ -1396,7 +1392,6 @@ async function showTrash(push = true) {
   document.title = "废纸篓 · 抖库";
   updateTopicSelectionButton();
   await loadTrash();
-  closeDrawers();
 }
 
 function renderTopicData(value) {
@@ -1520,7 +1515,6 @@ async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
   const navigationId = beginNavigation();
   const preserve = !push && state.currentTopic === topicId;
   const savedScroll = preserve ? $("#main-content").scrollTop : 0;
-  const drawerBefore = state.activeDrawer;
   const focusedSource = sourceFocus || document.activeElement?.dataset.entryId;
   try {
     const value = await api(`/api/topics/${encodeURIComponent(topicId)}`);
@@ -1538,9 +1532,7 @@ async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
     document.title = `${value.topic.title} · 抖库`;
     await loadTopics();
     if (navigationId !== state.navigationRequestId) return;
-    closeDrawers();
     $(".library-main").scrollTo({top: savedScroll, behavior: "instant"});
-    if (preserve && drawerBefore === "chat") openDrawer("chat");
     if (preserve && focusedSource) $$("#topic-sources-pane input").find((input) => input.dataset.entryId === focusedSource)?.focus({preventScroll: true});
   } catch (error) {
     if (navigationId !== state.navigationRequestId) return;
@@ -1731,7 +1723,7 @@ function buildReaderToc() {
     } else link.textContent = heading.textContent;
     link.title = heading.textContent.trim();
     link.addEventListener("click", (event) => {
-      event.preventDefault(); closeDrawers(false);
+      event.preventDefault();
       heading.scrollIntoView({block: "start", behavior: "instant"});
       focusReadingBlock(state.readingBlocks.indexOf(heading), {scroll: false});
       $("#main-content").focus({preventScroll: true}); updateReadingMetrics();
@@ -1859,7 +1851,6 @@ function renderArticleData(data, entryId, push) {
   if (push) history.pushState({entryId}, "", `/articles/${encodeURIComponent(entryId)}`);
   document.title = `${data.item.title} · 抖库`;
   renderLibrary();
-  closeDrawers(false);
   state.lastOpenedEntryId = entryId;
   renderArticleToolbar(data.item);
   decorateChapterTimes(); decorateCallouts(); initReadingFocus(); buildReaderToc(); bindReadingProgress();
@@ -1958,7 +1949,6 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
   const readingIndex = preserveReading ? state.readingIndex : -1;
   const readingBlock = state.readingBlocks[readingIndex];
   const readingBookmark = readingBlock ? {text: readingBlock.textContent, tag: readingBlock.tagName} : null;
-  const drawerBefore = state.activeDrawer;
   const requestId = ++state.readerRequestId;
   state.pendingArticleRequest = requestId;
   closeEntryMenu();
@@ -2012,7 +2002,6 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
       $("#main-content").scrollTop = readingTop;
       const index = readingBookmark ? state.readingBlocks.findIndex((block) => block.tagName === readingBookmark.tag && block.textContent === readingBookmark.text) : -1;
       focusReadingBlock(index >= 0 ? index : Math.min(readingIndex, state.readingBlocks.length - 1), {scroll: false}); updateReadingMetrics();
-      if (drawerBefore === "chat") openDrawer("chat");
     }
     if (citation) window.setTimeout(() => { if (state.currentEntry === entryId) focusCitation(citation); }, 50);
   } catch (error) {
@@ -2043,7 +2032,6 @@ function positionFilterPopover() {
 }
 
 function openFilterPopover(focusTags = false) {
-  closeDrawers(false);
   if (state.panelPage !== "library") showLibrary();
   positionFilterPopover();
   $("#filter-popover").classList.remove("hidden");
@@ -2064,18 +2052,17 @@ const PANEL_PANES = {info: "info-pane", inspiration: "inspiration-pane", sources
 const PANEL_LABELS = {info: "信息", inspiration: "灵感", sources: "来源"};
 
 function panelBreakpoint() {
-  return window.innerWidth >= 1280 ? "desktop" : window.innerWidth >= 960 ? "overlay" : "drawer";
+  return window.innerWidth >= 1280 ? "desktop" : window.innerWidth >= 960 ? "overlay" : "desktop";
 }
 
 function isPanelOpen() {
-  if (panelBreakpoint() === "drawer") return state.activeDrawer === "chat";
   return state.panelOverride ?? (panelBreakpoint() === "desktop" && Boolean(PANEL_TABS[state.panelPage]) && !state.chatCollapsed);
 }
 
 function moveHeaderControls(page) {
   const header = $(`#${page}-view > .view-header`);
   if (!header) return;
-  $(".view-header-left", header).append($("#nav-toggle"), $("#sidebar-restore"));
+  $(".view-header-left", header).append($("#sidebar-restore"));
   $(".view-header-right", header).append($("#chat-toggle"));
 }
 
@@ -2091,7 +2078,6 @@ function renderPanelTabs(page) {
   $("#reader-toc").classList.toggle("hidden", page !== "article");
   if (page !== "article") { state.readerRequestId += 1; state.pendingArticleRequest = 0; clearReader(); }
   if (state.panelPage !== page) {
-    closeDrawers(false);
     state.panelOverride = null;
     state.panelPage = page;
   }
@@ -2254,11 +2240,11 @@ function renderInspirationsPanel(item) {
         + (value.end_ms != null ? `–${formatLocation({timestamp_ms: value.end_ms})}` : "");
       const jump = window.Douku.node("button", `${range} → 跳到正文`, "inspiration-jump");
       jump.type = "button";
-      jump.addEventListener("click", () => { closeDrawers(false); focusCitation({timestamp_ms: value.start_ms}); $("#main-content").focus({preventScroll: true}); });
+      jump.addEventListener("click", () => { focusCitation({timestamp_ms: value.start_ms}); $("#main-content").focus({preventScroll: true}); });
       card.append(jump);
     } else if (value.quote) {
       const jump = window.Douku.node("button", "跳到正文", "inspiration-jump"); jump.type = "button";
-      jump.addEventListener("click", () => { closeDrawers(false); focusCitation({snippet: value.quote}); $("#main-content").focus({preventScroll: true}); });
+      jump.addEventListener("click", () => { focusCitation({snippet: value.quote}); $("#main-content").focus({preventScroll: true}); });
       card.append(jump);
     }
     nodes.push(card);
@@ -2297,34 +2283,22 @@ async function copyText(value, successMessage) {
 function renderPanelState() {
   const shell = $("#app-shell");
   const mode = panelBreakpoint();
-  if (state.breakpoint && state.breakpoint !== mode) {
-    state.panelOverride = null;
-    state.activeDrawer = "";
-  }
+  if (state.breakpoint && state.breakpoint !== mode) state.panelOverride = null;
   state.breakpoint = mode;
-  const sidebarOpen = mode === "drawer" ? state.activeDrawer === "sidebar" : !state.sidebarCollapsed;
+  const sidebarOpen = !state.sidebarCollapsed;
   const panelOpen = isPanelOpen();
-  shell.classList.toggle("is-sidebar-collapsed", mode !== "drawer" && !sidebarOpen);
+  shell.classList.toggle("is-sidebar-collapsed", !sidebarOpen);
   shell.classList.toggle("is-panel-collapsed", !panelOpen);
   shell.classList.toggle("panel-overlay-open", mode === "overlay" && panelOpen);
-  shell.classList.toggle("sidebar-drawer-open", state.activeDrawer === "sidebar");
-  shell.classList.toggle("chat-drawer-open", state.activeDrawer === "chat");
   $("#library-sidebar").inert = !sidebarOpen;
   $("#side-panel").inert = !panelOpen;
-  $("#main-content").inert = Boolean(state.activeDrawer);
-  $("#nav-toggle").setAttribute("aria-expanded", String(sidebarOpen));
+  $("#main-content").inert = false;
   $("#chat-toggle").setAttribute("aria-expanded", String(panelOpen));
   $("#chat-toggle").setAttribute("aria-label", panelOpen ? "收起右侧面板" : "打开右侧面板");
-  $("#drawer-backdrop").classList.toggle("hidden", !state.activeDrawer);
-  document.body.classList.toggle("drawer-open", Boolean(state.activeDrawer));
   if (!$("#filter-popover").classList.contains("hidden")) positionFilterPopover();
 }
 
 function setSidebarOpen(open) {
-  if (panelBreakpoint() === "drawer") {
-    if (open) openDrawer("sidebar"); else closeDrawers();
-    return;
-  }
   state.sidebarCollapsed = !open;
   writePreference(STORAGE.sidebar, state.sidebarCollapsed);
   renderPanelState();
@@ -2335,10 +2309,6 @@ function setChatPanelOpen(open) {
   state.chatCollapsed = !open;
   writePreference(STORAGE.chat, state.chatCollapsed);
   state.panelOverride = open;
-  if (panelBreakpoint() === "drawer") {
-    if (open) openDrawer("chat"); else closeDrawers();
-    return;
-  }
   const focusInside = $("#side-panel").contains(document.activeElement);
   renderPanelState();
   if (!open && focusInside) $("#chat-toggle").focus({preventScroll: true});
@@ -2348,34 +2318,6 @@ function setChatPanelOpen(open) {
 function focusableElements(root) {
   return $$("a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])", root)
     .filter((node) => !node.closest(".hidden, [hidden], [inert]") && node.tabIndex >= 0 && node.getClientRects().length && getComputedStyle(node).visibility !== "hidden");
-}
-
-function openDrawer(kind) {
-  closeDrawers(false);
-  state.activeDrawer = kind;
-  renderPanelState();
-  focusableElements(kind === "sidebar" ? $("#library-sidebar") : $("#side-panel"))[0]?.focus({preventScroll: true});
-}
-
-function closeDrawers(restoreFocus = true) {
-  const previous = state.activeDrawer;
-  state.activeDrawer = "";
-  renderPanelState();
-  if (restoreFocus && previous) (previous === "sidebar" ? $("#nav-toggle") : $("#chat-toggle")).focus({preventScroll: true});
-}
-
-function trapDrawerFocus(event) {
-  if (!state.activeDrawer || event.key !== "Tab" || $("dialog[open]")) return;
-  const panel = state.activeDrawer === "sidebar" ? $("#library-sidebar") : $("#side-panel");
-  const focusable = focusableElements(panel);
-  if (!focusable.length) { event.preventDefault(); return; }
-  const first = focusable[0];
-  const last = focusable.at(-1);
-  if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
-    event.preventDefault(); last.focus();
-  } else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) {
-    event.preventDefault(); first.focus();
-  }
 }
 
 window.Douku.panel = {setTabs: renderPanelTabs, select: selectPanelTab, open: () => setChatPanelOpen(true), close: () => setChatPanelOpen(false)};
@@ -2585,8 +2527,6 @@ function handleGlobalKeydown(event) {
   const editing = Boolean(event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])"));
   const modal = $("dialog[open]");
   if (modal) return;
-  trapDrawerFocus(event);
-  if (event.defaultPrevented) return;
   if ((event.metaKey || event.ctrlKey) && key === "k") {
     event.preventDefault(); openCommandMenu(); return;
   }
@@ -2594,14 +2534,9 @@ function handleGlobalKeydown(event) {
     state.navigationPrefixAt = 0;
     if (!$("#entry-menu").classList.contains("hidden")) { closeEntryMenu(true); }
     else if (!$("#filter-popover").classList.contains("hidden")) { closeFilterPopover(); $("#filter-toggle").focus(); }
-    else if (state.activeDrawer) closeDrawers();
     else if (panelBreakpoint() === "overlay" && isPanelOpen()) setChatPanelOpen(false);
     else if (state.pendingArticleRequest) showLibrary(false);
     else if (state.panelPage === "article") showLibrary();
-    else if ($("#library-view > .view-header").classList.contains("is-search-open")) {
-      $("#library-view > .view-header").classList.remove("is-search-open");
-      $("#search-toggle").setAttribute("aria-expanded", "false"); $("#search-toggle").focus();
-    }
     return;
   }
   if (editing || event.metaKey || event.ctrlKey || event.altKey) {
@@ -2626,7 +2561,7 @@ function handleGlobalKeydown(event) {
   state.navigationPrefixAt = 0;
   if (state.panelPage === "article" && !event.target.closest("#entry-menu,#filter-popover")) {
     const interactive = Boolean(event.target.closest("button,a,[role='tab'],#library-sidebar"));
-    if (key === "u" && !interactive && !state.activeDrawer) { event.preventDefault(); showLibrary(); return; }
+    if (key === "u" && !interactive) { event.preventDefault(); showLibrary(); return; }
     if (state.currentArticleItem) {
       if (event.shiftKey && ["i", "n"].includes(key)) {
         event.preventDefault();
@@ -2636,7 +2571,7 @@ function handleGlobalKeydown(event) {
         else $("#panel-tab-info").focus();
         return;
       }
-      if (!interactive && !state.activeDrawer && !event.target.closest("#side-panel")) {
+      if (!interactive && !event.target.closest("#side-panel")) {
         if (key === "j" || event.key === "ArrowDown") { event.preventDefault(); moveReadingFocus(1); return; }
         if (key === "k" || event.key === "ArrowUp") { event.preventDefault(); moveReadingFocus(-1); return; }
         if (!event.shiftKey && ["n", "p"].includes(key)) { event.preventDefault(); openAdjacentArticle(key === "n" ? 1 : -1); return; }
@@ -2651,7 +2586,7 @@ function handleGlobalKeydown(event) {
       }
     }
   }
-  if (state.panelPage === "library" && !state.activeDrawer
+  if (state.panelPage === "library"
       && !event.target.closest("#side-panel, #library-sidebar, #filter-popover, #entry-menu")) {
     const items = $("#library-results").classList.contains("hidden") ? [] : filteredItems();
     if (key === "v") { event.preventDefault(); $(state.libraryView === "list" ? "#view-gallery" : "#view-list").click(); return; }
@@ -2687,13 +2622,10 @@ function handleGlobalKeydown(event) {
   }
   if (event.key === "/") {
     event.preventDefault();
-    if (state.panelPage === "library") {
-      $("#library-view > .view-header").classList.add("is-search-open");
-      $("#search-toggle").setAttribute("aria-expanded", "true");
-      $("#search-input").focus();
-    } else if (state.panelPage === "tags") $("#tags-search").focus();
+    if (state.panelPage === "library") $("#search-input").focus();
+    else if (state.panelPage === "tags") $("#tags-search").focus();
     else openCommandMenu();
-  } else if (event.key === "[") { event.preventDefault(); setSidebarOpen(panelBreakpoint() === "drawer" ? state.activeDrawer !== "sidebar" : state.sidebarCollapsed); }
+  } else if (event.key === "[") { event.preventDefault(); setSidebarOpen(state.sidebarCollapsed); }
   else if (event.key === "]") { event.preventDefault(); setChatPanelOpen(!isPanelOpen()); }
   else if (event.key === "?") { event.preventDefault(); $("#shortcuts-dialog").showModal(); }
 }
@@ -2763,12 +2695,9 @@ async function loadRecentImports() {
 }
 
 function bindEvents() {
-  const positionJobFilters = () => {
-    const filters = $("#jobs-view .favorites-controls");
-    if (window.innerWidth >= 960) $("#jobs-view .view-header").insertBefore(filters, $("#jobs-view .view-header-right"));
-    else $("#jobs-view").insertBefore(filters, $("#jobs-list"));
-  };
-  positionJobFilters(); window.addEventListener("resize", positionJobFilters);
+  const filters = $("#jobs-view .favorites-controls");
+  const header = $("#jobs-view .view-header");
+  if (filters && header) header.insertBefore(filters, $("#jobs-view .view-header-right"));
   $$(".nav-item[data-section]").forEach((node) => node.addEventListener("click", () => {
     state.section = node.dataset.section;
     state.authors = [];
@@ -2781,13 +2710,6 @@ function bindEvents() {
     writeStateToURL("push");
   }));
   $("#sidebar-search").addEventListener("click", openCommandMenu);
-  $("#search-toggle").addEventListener("click", () => {
-    const header = $("#library-view > .view-header");
-    const open = !header.classList.contains("is-search-open");
-    header.classList.toggle("is-search-open", open);
-    $("#search-toggle").setAttribute("aria-expanded", String(open));
-    if (open) $("#search-input").focus();
-  });
   $("#library-selection-cancel").addEventListener("click", () => {
     state.topicSelectionMode = false; state.selectedEntryIds.clear(); renderLibrary();
   });
@@ -2916,10 +2838,8 @@ function bindEvents() {
   $("#back-topics").addEventListener("click", () => showTopics());
   $("#sidebar-collapse").addEventListener("click", () => setSidebarOpen(false));
   $("#sidebar-restore").addEventListener("click", () => setSidebarOpen(true));
-  $("#nav-toggle").addEventListener("click", () => setSidebarOpen(true));
   $("#chat-toggle").addEventListener("click", () => setChatPanelOpen(!isPanelOpen()));
   $("#chat-close").addEventListener("click", () => setChatPanelOpen(false));
-  $("#drawer-backdrop").addEventListener("click", closeDrawers);
   $("#confirm-inspiration").addEventListener("click", (event) => {
     event.preventDefault();
     if (!$("#inspiration-form").reportValidity()) return;
@@ -3009,7 +2929,6 @@ function bindEvents() {
     }
   });
   window.addEventListener("resize", () => {
-    if (window.matchMedia("(min-width: 960px)").matches) closeDrawers(false);
     renderPanelState();
     if (state.libraryLoaded) renderLibrary();
     if (!$("#filter-popover")?.classList.contains("hidden")) positionFilterPopover();

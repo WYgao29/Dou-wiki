@@ -89,14 +89,9 @@ async def verify():
                     await page.wait_for_selector("#library-results:not(.hidden)")
                     await page.evaluate("document.fonts.ready")
 
-                async def assert_header_controls(*, drawer=False, sidebar_open=True):
-                    assert await page.locator("#nav-toggle").is_visible() == drawer
-                    assert await page.locator("#sidebar-restore").is_visible() == (
-                        not drawer and not sidebar_open
-                    )
-                    assert await page.locator("#sidebar-collapse").is_visible() == (
-                        not drawer and sidebar_open
-                    )
+                async def assert_header_controls(*, sidebar_open=True):
+                    assert await page.locator("#sidebar-restore").is_visible() == (not sidebar_open)
+                    assert await page.locator("#sidebar-collapse").is_visible() == sidebar_open
 
                 async def assert_shell(width, *, sidebar_open, panel_open):
                     await assert_header_controls(sidebar_open=sidebar_open)
@@ -210,18 +205,18 @@ async def verify():
                 await press("Escape")
                 await page.wait_for_selector("#library-view:not(.hidden)")
 
-                for width in [1280, 1100, 800, 390]:
+                for width in [1440, 1280, 1100, 960]:
                     await fresh(width)
-                    await assert_header_controls(drawer=width < 960)
+                    await assert_header_controls()
                     assert await page.evaluate(
                         "document.documentElement.scrollWidth <= innerWidth"
                     ), width
-                    if width == 1280:
+                    if width >= 1280:
                         assert (
                             await page.locator("#main-content").evaluate(
                                 "e => e.getBoundingClientRect().width"
                             )
-                            == 680
+                            == width - 240 - 360
                         )
                         continue
                     assert await page.locator("#side-panel").evaluate("e => e.inert")
@@ -230,72 +225,18 @@ async def verify():
                     await page.wait_for_timeout(260)
                     after = await page.locator("#main-content").bounding_box()
                     assert before == after
-                    if width == 1100:
-                        assert not await page.locator("#drawer-backdrop").is_visible()
-                        await page.click("#view-title")
-                        assert await page.locator("#side-panel").evaluate("e => e.inert")
-                        await page.click("#chat-toggle")
-                    else:
-                        assert await page.locator("#main-content").evaluate("e => e.inert")
-                        # Focus trap covers tabs and close button, excludes hidden panes.
-                        await page.locator("#info-pane .info-actions a").focus()
-                        await press("Tab")
-                        assert await page.evaluate("document.activeElement.id") == "panel-tab-info"
-                        await press("Shift+Tab")
-                        assert await page.evaluate(
-                            "document.activeElement.closest('#info-pane .info-actions') !== null"
-                        )
-                        await page.locator("#info-pane").focus()
-                        await press("]")
-                        assert await page.locator("#side-panel").evaluate("e => e.inert")
-                        await page.click("#chat-toggle")
+                    assert await page.locator("#app-shell").evaluate(
+                        "e => e.classList.contains('panel-overlay-open')"
+                    )
+                    await page.click("#view-title")
+                    assert await page.locator("#side-panel").evaluate("e => e.inert")
+                    await page.click("#chat-toggle")
                     await press("Escape")
                     assert await page.evaluate("document.activeElement.id") == "chat-toggle"
                     assert not await page.locator("#main-content").evaluate("e => e.inert")
-                    if width < 960:
-                        await page.click("#nav-toggle")
-                        await page.wait_for_timeout(260)
-                        await page.locator("#sidebar-search").focus()
-                        await press("?")
-                        await press("Escape")
-                        assert await page.evaluate("document.activeElement.id") == "sidebar-search"
-                        await press("Escape")
-                        assert await page.evaluate("document.activeElement.id") == "nav-toggle"
-                    if width == 390:
-                        await page.click("#search-toggle")
-                        assert await page.locator("#search-input").is_visible()
-                        await press("Escape")
-                        await page.click("#topic-select-toggle")
-                        await page.wait_for_selector("#library-selection-bar:not(.hidden)")
-                        await page.locator(
-                            "#library-results a[href='/articles/dy-123']"
-                        ).first.click()
-                        assert await page.locator("#library-selection-next").is_enabled()
-                        await page.click("#library-selection-next")
-                        assert await page.locator("#topic-dialog").evaluate("e => e.open")
-                        await press("Escape")
-                        await page.evaluate("document.activeElement?.blur()")
-                        await page.mouse.move(0, 0)
-                        footer = await page.locator("#library-selection-bar").bounding_box()
-                        assert footer and footer["y"] + footer["height"] <= 900
-                        if await page.locator("#toast.show").count():
-                            notice = await page.locator("#toast").bounding_box()
-                            assert notice and notice["y"] + notice["height"] <= footer["y"]
-                        await page.screenshot(
-                            path=out / "mobile-selection.png", animations="disabled"
-                        )
-                        await page.click("#library-selection-next")
-                        await page.fill("#topic-title-input", "阅读清单")
-                        await page.click("#confirm-topic")
-                        await page.wait_for_selector("#topic-view:not(.hidden) #chat-toggle")
-                        assert await page.locator("#panel-tabs [role=tab]").count() == 1
-                        assert (
-                            await page.locator("#panel-tab-sources").get_attribute("aria-selected")
-                            == "true"
-                        )
 
-                # Check all four collapse states at both sides of the desktop breakpoint.
-                collapse_widths = [1440, 1280, 1279, 1100, 960]
+                # Check all four collapse states at the supported desktop widths.
+                collapse_widths = [1440, 1280, 1100, 960]
                 for width in collapse_widths:
                     await fresh(width)
                     await page.evaluate("window.Douku.panel.close()")
@@ -324,24 +265,13 @@ async def verify():
                         await page.click("#sidebar-restore")
                         await assert_shell(width, sidebar_open=True, panel_open=False)
 
-                # Resize from a collapsed desktop sidebar into a mobile drawer and back.
-                for width in [800, 390]:
-                    await page.set_viewport_size({"width": width, "height": 900})
-                    await page.wait_for_function(
-                        "() => document.querySelector('#nav-toggle').getClientRects().length > 0"
-                    )
-                    await assert_header_controls(drawer=True, sidebar_open=False)
-                    await page.click("#nav-toggle")
-                    assert not await page.locator("#library-sidebar").evaluate("e => e.inert")
-                    assert await page.locator("#main-content").evaluate("e => e.inert")
-                    await press("Escape")
-                    assert await page.evaluate("document.activeElement.id") == "nav-toggle"
-                    await page.set_viewport_size({"width": 1440, "height": 900})
-                    await page.wait_for_function(
-                        "() => document.querySelector('#sidebar-restore')"
-                        ".getClientRects().length > 0"
-                    )
-                    await assert_shell(1440, sidebar_open=False, panel_open=False)
+                # Sidebar stays collapsed at 960. Widen to 1440 and confirm restore.
+                await page.set_viewport_size({"width": 1440, "height": 900})
+                await page.wait_for_function(
+                    "() => document.querySelector('#sidebar-restore')"
+                    ".getClientRects().length > 0"
+                )
+                await assert_shell(1440, sidebar_open=False, panel_open=False)
                 await page.click("#sidebar-restore")
                 await assert_shell(1440, sidebar_open=True, panel_open=False)
                 assert not errors, errors
@@ -349,20 +279,17 @@ async def verify():
                 assert not external, external
                 report = {
                     "desktopWidths": widths,
-                    "responsiveWidths": [1280, 1100, 800, 390],
+                    "responsiveWidths": [1440, 1280, 1100, 960],
                     "collapseWidths": collapse_widths,
                     "checks": [
                         "tab preference",
                         "collapse preference",
                         "four collapse states and overlay geometry",
-                        "header control visibility and mobile resize",
+                        "header control visibility and desktop resize",
                         "route headers",
                         "shortcuts",
                         "overlay dismissal",
-                        "drawer focus trap",
-                        "mobile topic selection",
                         "article information and inspiration tabs",
-                        "topic creation and tabs",
                     ],
                     "pageErrors": errors,
                     "failedRequests": failed,

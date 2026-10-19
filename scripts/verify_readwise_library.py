@@ -332,7 +332,7 @@ async def verify():
                     await page.mouse.move(0, 0)
                     await page.screenshot(path=out / f"article-{theme}.png", animations="disabled")
 
-                for width in [1280, 1100, 800, 390, 320]:
+                for width in [1440, 1280, 1100, 960]:
                     await page.set_viewport_size({"width": width, "height": 900})
                     await fresh("/?view=list")
                     assert await page.evaluate(
@@ -351,26 +351,14 @@ async def verify():
                         controls[i][1] <= controls[i + 1][0] for i in range(len(controls) - 1)
                     ), (width, controls)
                     row = await page.locator(".library-item").first.bounding_box()
-                    assert row["height"] == (64 if width < 640 else 88), (width, row)
-                    if width == 390:
-                        await page.evaluate("window.DoukuTheme.set('light')")
-                        await page.click("#topic-select-toggle")
-                        await page.locator(".library-item[data-entry-id='dy-123'] input").check()
-                        footer = await page.locator("#library-selection-bar").bounding_box()
-                        assert footer["y"] + footer["height"] <= 900
-                        await page.screenshot(
-                            path=out / "mobile-selection.png", animations="disabled"
-                        )
+                    assert row["height"] == 88, (width, row)
 
-                # Opening tag management from mobile navigation must release main inert.
-                await page.set_viewport_size({"width": 390, "height": 900})
+                await page.set_viewport_size({"width": 1440, "height": 900})
                 await fresh("/?view=list")
-                await page.click("#nav-toggle")
                 await page.click("#tags-nav")
-                assert not await page.locator("#main-content").evaluate("e => e.inert")
-                await page.wait_for_selector("#tags-view:not(.hidden) #tags-cards .tag-card")
+                await page.wait_for_selector("#tags-view:not(.hidden) #tags-rows tr")
                 assert await page.locator("#tags-search").is_visible()
-                await page.locator("#tags-cards .tag-card a").first.click()
+                await page.locator("#tags-rows a").first.click()
                 await page.wait_for_selector("#library-view:not(.hidden)")
                 assert await page.locator("#view-title").inner_text() != "资料库"
                 await page.set_viewport_size({"width": 1440, "height": 900})
@@ -410,7 +398,7 @@ async def verify():
                     json.dumps(
                         {
                             "row_dimensions": dimensions,
-                            "widths": [1440, 1280, 1100, 800, 390, 320],
+                            "widths": [1440, 1280, 1100, 960],
                             "checks": [
                                 "list preference migration",
                                 "roving focus and synchronized info",
@@ -420,9 +408,9 @@ async def verify():
                                 "menu focus return",
                                 "cross-filter topic creation",
                                 "delete to trash",
-                                "mobile tag management and filter",
+                                "tag management and filter",
                                 "empty/error/retry/loading",
-                                "responsive controls and mobile selection",
+                                "responsive controls",
                             ],
                             "topic_entry_ids": payload["entry_ids"],
                             "errors": errors,

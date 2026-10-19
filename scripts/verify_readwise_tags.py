@@ -218,7 +218,7 @@ async def verify():
                 assert await page.locator(".nav-item[data-section].active").count() == 0
                 await page.click("#tag-manage-link")
                 await page.wait_for_selector("#tags-view:not(.hidden) #tags-rows tr")
-                for width in [1100, 800, 390, 1440]:
+                for width in [1440, 1280, 1100, 960]:
                     await page.set_viewport_size({"width": width, "height": 900})
                     await page.wait_for_timeout(100)
                     assert await page.evaluate(
@@ -227,8 +227,6 @@ async def verify():
                     await page.locator("#main-content").focus()
                     await page.keyboard.press("/")
                     assert await page.evaluate("document.activeElement.id") == "tags-search"
-                    if width == 390:
-                        await page.screenshot(path=out / "tags-mobile.png", animations="disabled")
                 await page.reload()
                 await page.wait_for_selector("#tags-view:not(.hidden) #tags-rows tr")
                 assert pinned_names() == ["咖啡"]
@@ -250,7 +248,7 @@ async def verify():
                         "tag filter header and manage link",
                         "responsive and reload",
                     ],
-                    "widths": [1440, 1100, 800, 390],
+                    "widths": [1440, 1280, 1100, 960],
                     "pageErrors": errors,
                     "failedRequests": failed,
                     "externalRequests": external,

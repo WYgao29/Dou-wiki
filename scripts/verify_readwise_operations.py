@@ -518,7 +518,7 @@ async def verify(*, output_dir: Path | None = None):
                         await page.evaluate("theme=>window.DoukuTheme.set(theme)", theme)
                         await shot(name + "-" + theme)
                 await page.evaluate("window.DoukuTheme.set('light')")
-                widths = [1440, 1280, 1100, 800, 390, 320]
+                widths = [1440, 1280, 1100, 960]
                 pages = [
                     ("/imports", "#imports-view:not(.hidden)"),
                     ("/imports/single", "#imports-single-view:not(.hidden)"),
@@ -540,55 +540,6 @@ async def verify(*, output_dir: Path | None = None):
                     for path, ready in pages:
                         await fresh(path, ready)
                         await no_overflow((width, path))
-                        if width == 390 and path in {
-                            "/jobs",
-                            "/settings/system",
-                            f"/imports/favorites?job={favorites.id}",
-                        }:
-                            await shot(
-                                "mobile-"
-                                + ("favorites" if "favorites" in path else path.split("/")[-1])
-                            )
-                            if "favorites" in path:
-                                await page.locator(
-                                    "#favorites-confirm"
-                                ).scroll_into_view_if_needed()
-                                assert (
-                                    await page.locator(
-                                        "#imports-favorites-view .fav-confirm"
-                                    ).evaluate("e => getComputedStyle(e).position")
-                                    == "static"
-                                )
-                                await shot("mobile-favorites-selection")
-                                await page.check("#favorites-partial")
-                                await page.click("#favorites-confirm")
-                                await page.wait_for_function(
-                                    "() => document.querySelector('#favorites-confirm-dialog').open"
-                                )
-                                await no_overflow((width, "favorites confirmation"))
-                                await shot("mobile-favorites-confirm")
-                                await page.click("#favorites-confirm-form button[value='cancel']")
-                    if width == 390:
-                        await fresh(f"/topics/{topic['topic']['id']}", ".topic-artifact-card")
-                        await page.click("#chat-toggle")
-                        await page.click("#panel-tab-sources")
-                        await page.locator("#topic-sources-pane input").first.check()
-                        await wait_count("#topic-sources-pane h2", "2 / 2")
-                        assert await page.locator("#topic-sources-pane").is_visible()
-                        await page.wait_for_function(
-                            "() => document.activeElement.type === 'checkbox'"
-                            " && Boolean(document.activeElement.closest('#topic-sources-pane'))"
-                        )
-                        assert await page.evaluate("document.activeElement.type") == "checkbox"
-                        await shot("mobile-topic-sources")
-                    if width < 960:
-                        await fresh("/settings/system", ".system-metric")
-                        assert (
-                            await page.locator("#system-overview").evaluate(
-                                "e=>getComputedStyle(e).gridTemplateColumns.split(' ').length"
-                            )
-                            == 2
-                        )
                 assert not errors, errors
                 assert not external, external
                 assert not server_errors, server_errors
@@ -606,7 +557,7 @@ async def verify(*, output_dir: Path | None = None):
                                 "favorites confirmation cancellation creates no tasks",
                                 "favorites batch library, reload and clear filter",
                                 "favorites authorization targets the Douyin account",
-                                "favorites title layout and mobile footer/confirmation",
+                                "favorites title layout and confirmation",
                                 "jobs refresh focus, progress, retry and Enter",
                                 "topic source relocation, persistence and artifact expansion",
                                 "live settings summary, flat sections and metric columns",
