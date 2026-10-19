@@ -44,9 +44,10 @@ _BOUNDARY_PUNCTUATION = frozenset("，。、；：！？…,.!?;:\n")
 class AsrSegmentationError(Exception):
     """Segmentation failed. ``reason`` is the stable code; nothing partial is returned."""
 
-    def __init__(self, message: str, *, reason: str) -> None:
+    def __init__(self, message: str, *, reason: str, details: dict | None = None) -> None:
         super().__init__(message)
         self.reason = reason
+        self.details = {} if details is None else dict(details)
 
 
 @dataclass
@@ -272,7 +273,16 @@ def locate_anchor(source: str, query: str) -> AnchorMatch:
     distance, start, end = _best_anchor(source_key, query_key)
     if not _distance_accepted(distance, canonical):
         reason = "anchor_no_match" if distance >= canonical else "anchor_distance"
-        raise AsrSegmentationError("锚点未能唯一对上原文", reason=reason)
+        raise AsrSegmentationError(
+            "锚点未能唯一对上原文",
+            reason=reason,
+            details={
+                "distance": distance,
+                "canonical_chars": canonical,
+                "canonical_source_start": start,
+                "canonical_source_end": end,
+            },
+        )
     if _has_rival(source_key, query_key, distance, start, end):
         raise AsrSegmentationError("锚点存在另一个接近的匹配", reason="anchor_ambiguous")
     if end <= start:
@@ -337,8 +347,14 @@ def bound_alignment_times(
             or abs(native_end - raw_end) > MAX_REPAIR_MS
         ):
             raise AsrSegmentationError("上游修正超过 2000 毫秒", reason="gross_repair")
-        start_ms, start_limit = _clamp_edge(index, "start", native_start, limit, grid, origin)
-        end_ms, end_limit = _clamp_edge(index, "end", native_end, limit, grid, origin)
+        try:
+            start_ms, start_limit = _clamp_edge(index, "start", native_start, limit, grid, origin)
+            end_ms, end_limit = _clamp_edge(index, "end", native_end, limit, grid, origin)
+        except AsrSegmentationError as exc:
+            exc.details.update(
+                {"token_text": token.text, "char_start": char_start, "char_end": char_end}
+            )
+            raise
         if end_ms < start_ms:
             raise AsrSegmentationError("对齐时间倒序", reason="disordered")
         if start_limit is not None:
@@ -831,7 +847,19 @@ def _clamp_edge(
         return value, None
     overflow = value - limit
     if overflow > grid:
-        raise AsrSegmentationError("时间超出音频末端一个网格以上", reason="overflow")
+        raise AsrSegmentationError(
+            "时间超出音频末端一个网格以上",
+            reason="overflow",
+            details={
+                "token_index": index,
+                "edge": edge,
+                "predicted_ms": value,
+                "limit_ms": limit,
+                "overflow_ms": overflow,
+                "grid_ms": grid,
+                "audio_start_sample": origin,
+            },
+        )
     return limit, TimeLimit(index, edge, value, limit, limit - value, grid, origin)
 
 
@@ -1102,6 +1130,9 @@ def _locate_anchor_audio(
         except AsrSegmentationError as exc:
             if exc.reason != "anchor_distance":
                 raise
+            exc.details.update(
+                {"nominal_ms": nominal, "anchor_start_sample": start, "anchor_shift_ms": shift}
+            )
             last_error = exc
             continue
         return start, clip, match, shift
@@ -1244,6 +1275,7 @@ def _realign_anomalies(
         strategy = "anchor-30s" if len(audio) >= _ANCHOR_SAMPLES else "source-context"
         while True:
             budget.take()
+            offset = None
             try:
                 if strategy == "source-context":
                     offset, clip, local_start, local_text = _source_context(
@@ -1277,6 +1309,11 @@ def _realign_anomalies(
                 )
                 break
             except AsrSegmentationError as exc:
+                exc.details.update({"piece_start_sample": origin, "strategy": strategy})
+                if offset is not None:
+                    exc.details.update(
+                        {"local_start_sample": origin + offset, "local_samples": len(clip)}
+                    )
                 if strategy == "anchor-30s" and exc.reason in {
                     "anchor_too_short",
                     "anchor_distance",
@@ -1417,14 +1454,14 @@ def _merge_local_predictions(
             while left > 0 and merged[left - 1].native_end_ms > predictions[left].native_start_ms:
                 left -= 1
                 if left not in predictions:
-                    raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
+                    raise _missing_neighbor_error(merged, predictions, primary, left, "left")
             while (
                 right + 1 < len(merged)
                 and predictions[right].native_end_ms > merged[right + 1].native_start_ms
             ):
                 right += 1
                 if right not in predictions:
-                    raise AsrSegmentationError("局部对齐没有可衔接的相邻词", reason="disordered")
+                    raise _missing_neighbor_error(merged, predictions, primary, right, "right")
             group = range(left, right + 1)
             bound_alignment_times(
                 [predictions[i] for i in group],
@@ -1440,6 +1477,29 @@ def _merge_local_predictions(
             merged[neighbor] = predictions[neighbor]
             changed.add(neighbor)
     return merged, changed
+
+
+def _missing_neighbor_error(
+    replacements: Sequence[AlignedToken],
+    predictions: dict[int, AlignedToken],
+    primary: int,
+    neighbor: int,
+    side: str,
+) -> AsrSegmentationError:
+    predicted = predictions[primary]
+    return AsrSegmentationError(
+        "局部对齐没有可衔接的相邻词",
+        reason="disordered",
+        details={
+            "token_index": primary,
+            "token_text": replacements[primary].text,
+            "missing_neighbor_index": neighbor,
+            "missing_neighbor_text": replacements[neighbor].text,
+            "side": side,
+            "predicted_start_ms": int(predicted.native_start_ms),
+            "predicted_end_ms": int(predicted.native_end_ms),
+        },
+    )
 
 
 def _ms_on_slice(origin_sample: int, local_ms: int, end_sample: int) -> int:

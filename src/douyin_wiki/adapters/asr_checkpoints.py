@@ -50,7 +50,13 @@ class AsrCheckpoints:
 
     def _path(self, stage, start, samples, text=""):
         key = digest(
-            [stage, start, samples, text, self.alignment_version if stage == "alignment" else None]
+            [
+                stage,
+                start,
+                samples,
+                text,
+                self.alignment_version if stage in {"alignment", "alignment_failure"} else None,
+            ]
         )
         return self.directory / f"{stage}-{key}.json" if self.directory else None
 

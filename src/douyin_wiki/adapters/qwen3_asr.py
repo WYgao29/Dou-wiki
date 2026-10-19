@@ -34,6 +34,11 @@ from .media_models import BackendUnavailableError
 from .qwen3_runtime import Qwen3Runtime, RuntimeRecognition
 
 logger = logging.getLogger(__name__)
+# These reasons affect alignment only; recognition, coverage and numeric input
+# failures remain fatal. Retain the real recognition window, never repaired times.
+_WINDOW_DEGRADATION_REASONS = frozenset(
+    {"gross_repair", "anchor_token_missing", "anchor_distance", "disordered", "overflow"}
+)
 
 
 class _WindowRuntime:
@@ -205,11 +210,30 @@ class Qwen3Transcriber:
                             segment_seconds=self.settings.asr_segment_seconds,
                         )
                     except AsrSegmentationError as exc:
+                        try:
+                            checkpoints.write(
+                                "alignment_failure",
+                                window.start_sample,
+                                len(window.audio),
+                                {
+                                    "start_sample": window.start_sample,
+                                    "samples": len(window.audio),
+                                    "alignment_start_sample": alignment_window.start_sample,
+                                    "alignment_samples": len(alignment_window.audio),
+                                    "reason": exc.reason,
+                                    "message": str(exc),
+                                    "details": exc.details,
+                                    "policy": self.settings.alignment_failure_policy,
+                                },
+                                text,
+                            )
+                        except OSError:
+                            logger.warning("无法保存对齐失败诊断", exc_info=True)
                         if (
                             self.settings.alignment_failure_policy != "retain_window"
-                            or exc.reason not in {"gross_repair", "anchor_token_missing"}
+                            or exc.reason not in _WINDOW_DEGRADATION_REASONS
                             or not text.strip()
-                                or len(text) > 20_000
+                            or len(text) > 20_000
                         ):
                             raise
                         degraded_reason = exc.reason

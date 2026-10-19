@@ -1033,6 +1033,10 @@ def test_local_realign_rejects_conflicts_without_a_matching_neighbor_prediction(
             aligner=ScriptedAligner({source: broken, query: local}),
         )
     assert failed.value.reason == "disordered"
+    assert failed.value.details["token_index"] == 54
+    assert failed.value.details["side"] == side
+    assert failed.value.details["missing_neighbor_index"] == (53 if side == "left" else 55)
+    assert failed.value.details["piece_start_sample"] == 0
 
 
 @pytest.mark.parametrize("failure", ["unmatched", "still_invalid", "overlapping"])
