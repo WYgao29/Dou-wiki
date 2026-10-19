@@ -244,9 +244,9 @@ def job_display_title(job: JobRecord, *, hints: dict[str, str] | None = None) ->
         for candidate in (
             result.get("title"),
             result.get("entry_title"),
+            hints.get("entry_title"),
             metadata.get("title"),
             hints.get("work_title"),
-            hints.get("entry_title"),
             result.get("summary"),
             hints.get("entry_summary"),
             _share_caption(job.request.share_text),
@@ -407,8 +407,8 @@ def message_for_user(
         return "清点已完成，请选择要导入的作品并确认。"
     if job.status == JobStatus.AWAITING_AGENT_ANALYSIS:
         return (
-            "当前为 Gateway 模式。网页不会自动分析，需要外部 Agent 接续。"
-            "后台不会自动完成 AI 整理。"
+            "当前交给外部 Agent。网页不会自动分析，需要外部 Agent 接续。"
+            "后台不会自动完成整理。"
         )
     if job.status == JobStatus.ANALYZING:
         return "后台正在校验 Agent 提交的分析并写入知识库。"

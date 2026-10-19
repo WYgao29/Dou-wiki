@@ -16,6 +16,7 @@ from .operation import (
     TERMINAL_STATUSES,
     USER_ACTION_STATUSES,
     analysis_presentation,
+    child_job_ids,
     effective_job_status,
     job_display_title,
     job_is_in_progress,
@@ -72,7 +73,39 @@ class WebOperationService:
             merged["state_label"] = "等待同一作品处理"
             merged["message_for_user"] = f"同一作品已有任务。{executor['message_for_user']}"
         merged["display_title"] = job_display_title(job, hints=self._title_hints(job))
+        preview = self._warning_preview(job)
+        if preview and not (job.result or {}).get("warnings"):
+            merged.setdefault(
+                "result",
+                {
+                    **(job.result or {}),
+                    "warnings": preview,
+                    "warnings_from_children": True,
+                },
+            )
         return present_job(job, analysis_mode=self.analysis_mode, extra=merged)
+
+    def _warning_preview(self, job: JobRecord) -> list[str]:
+        own = [
+            text
+            for item in (job.result or {}).get("warnings") or []
+            if (text := str(item).strip())
+        ]
+        if own or job.status != JobStatus.COMPLETED_WITH_WARNINGS:
+            return own
+        preview: list[str] = []
+        for child_id in child_job_ids(job)[:12]:
+            try:
+                child = self.core.database.get_job(child_id)
+            except JobStateError:
+                continue
+            for item in (child.result or {}).get("warnings") or []:
+                text = str(item).strip()
+                if text and text not in preview:
+                    preview.append(text)
+                if len(preview) >= 3:
+                    return preview
+        return preview
 
     def dismiss_job(self, job_id: str):
         job = self.core.database.get_job(job_id)
@@ -270,6 +303,10 @@ class WebOperationService:
             extra["imported_entry_ids"] = list(
                 dict.fromkeys([*extra.get("imported_entry_ids", []), *imported_ids])
             )
+        extra["imported_entries"] = [
+            {"entry_id": entry_id, "title": self._entry_title(entry_id)}
+            for entry_id in extra.get("imported_entry_ids") or []
+        ]
         if child_warnings:
             extra["result"] = {
                 **(job.result or {}),
@@ -282,6 +319,13 @@ class WebOperationService:
                 for issue in self.core.database.get_review_issues(job_id, open_only=True)
             ]
         return self.present(job, extra=extra)
+
+    def _entry_title(self, entry_id: str) -> str:
+        try:
+            entry = self.core.database.get_entry(str(entry_id))
+        except EntryNotFoundError:
+            return ""
+        return (entry.title or "").strip()
 
     @staticmethod
     def _child_stats(children: list[dict[str, Any]]) -> dict[str, int]:
@@ -376,7 +420,7 @@ class WebOperationService:
             alerts.append(
                 {
                     "code": "worker",
-                    "message": "后台 Worker 未在运行，新提交的任务会排队等待。",
+                    "message": "后台处理程序没在运行，新提交的任务会排队等待。",
                     "actions": [{"label": "查看系统状态", "href": "/settings/system"}],
                 }
             )
@@ -676,7 +720,7 @@ class WebOperationService:
                 "preview": not confirmed,
                 "executed": confirmed,
                 "will_delete": ["可重建的 SQLite 知识缓存"] if confirmed else [],
-                "will_keep": ["Vault 知识资料", "任务队列", "收藏导入历史", "聊天记录"],
+                "will_keep": ["资料库文件夹中的知识资料", "任务队列", "收藏导入历史", "聊天记录"],
                 "report": report,
             }
         )
@@ -685,7 +729,7 @@ class WebOperationService:
         self.core.database.request_worker_reload()
         health = self.system_health()
         return {
-            "status": "已请求 Worker 在当前循环结束后退出，由 LaunchAgent 重新拉起",
+            "status": "已请求后台处理程序在当前循环结束后退出，由系统服务重新拉起",
             "worker": health["worker"],
             "note": "若未安装常驻 Worker，需要在终端运行 douyin-wiki worker run 或 service install",
         }

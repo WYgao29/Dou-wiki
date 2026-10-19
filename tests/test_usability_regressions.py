@@ -50,7 +50,9 @@ def test_merge_undo_restores_files_membership_index_pins_and_aliases(tmp_path):
         assert service.database.get_entry("dy-1000").tags == ["AI Agent", "咖啡"]
         assert service.tags.resolve(["Agent", "AI 代理"]) == ["AI Agent"]
         operation = merged.json()["operation_id"]
-        assert client.get("/api/tags").json()["undo_by_alias"]["AI 代理"] == operation
+        overview = client.get("/api/tags").json()
+        assert overview["undo_by_alias"]["AI 代理"] == operation
+        assert overview["undoable_by_alias"]["AI 代理"] == operation
         # Persistence across a new API instance; a repeat undo is harmless.
     with local_client(create_app(config, service=service, start_watcher=False)) as client:
         for _ in range(2):

@@ -40,6 +40,12 @@
     $("save-retry").hidden = !failedSelection;
     $("save-hint").textContent = failedSelection ? "选择尚未保存，请重试保存后再确认。"
       : busy ? "正在保存或读取…" : selectable() ? "选择已保存" : "";
+    syncRecordMode();
+  }
+  function syncRecordMode() {
+    const hasHistory = [...$("history").options].some((option) => option.value);
+    view.classList.toggle("is-idle", !current);
+    view.classList.toggle("no-records", !hasHistory);
   }
   function render(data) {
     current = data;
@@ -120,6 +126,7 @@
       option.value = row.job_id; select.append(option);
     });
     select.value = jobId || "";
+    syncRecordMode();
   }
   function run(action) {
     if (busy) return operation;

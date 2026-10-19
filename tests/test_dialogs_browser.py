@@ -24,6 +24,6 @@ async def test_single_import_displays_disabled_explanation_without_form(offline_
     end = template.index('<section id="imports-creators-view"', begin)
     await page.set_content(template[begin:end])
     await page.locator("#imports-single-view").evaluate("node => node.classList.remove('hidden')")
-    assert "已停用" in await page.locator("#imports-single-view").inner_text()
+    assert "去 Agent 里导入" in await page.locator("#imports-single-view").inner_text()
     assert await page.locator("form,textarea,input").count() == 0
     assert await page.get_by_role("link", name="查看已有任务").get_attribute("href") == "/jobs"

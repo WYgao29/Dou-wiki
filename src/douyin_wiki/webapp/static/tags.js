@@ -3,7 +3,7 @@
   const D = window.Douku;
   const $ = D.$;
   const node = D.node;
-  const state = {rows: [], duplicates: [], aliases: {}, undoByAlias: {}, selected: new Set(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
+  const state = {rows: [], duplicates: [], aliases: {}, undoByAlias: {}, undoableByAlias: {}, selected: new Set(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
   const PIN_LIMIT = 8;
   const narrowTags = () => window.matchMedia("(width < 480px)").matches;
   const active = () => $("app-shell").dataset.page === "tags";
@@ -28,6 +28,22 @@
     state.duplicates = data.duplicates || [];
     state.aliases = data.aliases || {};
     state.undoByAlias = data.undo_by_alias || {};
+    state.undoableByAlias = data.undoable_by_alias || {};
+  }
+  function groupNames(group) {
+    return Array.isArray(group) ? group : (group?.names || []);
+  }
+  function articleCount(names, group) {
+    if (group && !Array.isArray(group) && Number.isFinite(Number(group.article_count))) {
+      return Number(group.article_count);
+    }
+    const ids = new Set();
+    names.forEach((name) => {
+      const row = state.rows.find((item) => item.name === name);
+      (row?.entry_ids || []).forEach((id) => ids.add(id));
+    });
+    if (ids.size) return ids.size;
+    return names.reduce((sum, name) => sum + (state.rows.find((item) => item.name === name)?.count || 0), 0);
   }
   function actionMessage(action, payload) {
     if (action === "rename") return `已重命名为 ${payload.target}`;
@@ -46,7 +62,10 @@
       const data = await D.api(`/api/tags/${action}`, {method: "POST", body: JSON.stringify(payload)});
       state.request += 1;
       applyOverview(data);
-      if (selection) { state.selected = new Set(selection); state.focus = selection[0] || ""; }
+      if (action === "merge" || action === "delete") {
+        state.selected = new Set();
+        state.focus = "";
+      } else if (selection) { state.selected = new Set(selection); state.focus = selection[0] || ""; }
       $("tags-error").classList.add("hidden");
       await D.refreshLibrary();
       const text = data.warnings?.length ? `${actionMessage(action, payload)}；${data.warnings.join("；")}` : actionMessage(action, payload);
@@ -89,8 +108,9 @@
     if (mode === "rename" && names.length !== 1 || mode === "merge" && names.length < 2) return;
     const dialog = $("tag-edit-dialog"); dialog.dataset.mode = mode;
     $("tag-edit-title").textContent = mode === "rename" ? "重命名标签" : "合并标签";
+    const count = articleCount(names);
     $("tag-edit-description").textContent = mode === "rename" ? `重命名「${names[0]}」。旧名称会作为别名保留。`
-      : `合并 ${names.length} 个标签；源标签会成为目标标签的别名，后续写入沿用目标名称。`;
+      : `合并 ${names.length} 个标签，会影响 ${count} 篇文章。源标签会成为目标标签的别名，后续写入沿用目标名称。`;
     $("tag-name-label").classList.toggle("hidden", mode !== "rename");
     $("tag-target-label").classList.toggle("hidden", mode !== "merge");
     $("tag-new-name").required = mode === "rename";
@@ -176,7 +196,7 @@
       ...entries.map(([alias, canonical]) => {
         const row = node("div", null, "tag-alias-row");
         row.append(node("span", `${alias} → ${canonical}`));
-        const operation = state.undoByAlias[alias];
+        const operation = state.undoableByAlias[alias];
         if (operation) row.append(button("撤销操作", () => change("undo", {operation_id: operation}), "text-button"));
         row.append(button("解除别名", () => change("split", {name: alias}), "text-button"));
         return row;
@@ -276,15 +296,31 @@
       control.textContent = label + (selected ? state.direction < 0 ? " ↓" : " ↑" : "");
       control.closest("th").setAttribute("aria-sort", selected ? state.direction < 0 ? "descending" : "ascending" : "none");
     });
-    $("tag-duplicates").classList.toggle("hidden", !state.duplicates.length);
-    $("tag-duplicates").replaceChildren(node("h2", "可能重复"), node("p", "这些标签可能含义相近，选择目标后点击合并。", "hint-copy"), ...state.duplicates.map(names => {
-      const group = node("div", null, "tag-duplicate-group");
+    const duplicateGroups = state.duplicates.map((group) => ({group, names: groupNames(group)})).filter((item) => item.names.length > 1);
+    $("tag-duplicates").classList.toggle("hidden", !duplicateGroups.length);
+    const duplicateList = node("div", null, "tag-duplicate-list");
+    duplicateGroups.forEach(({group, names}) => {
+      const row = node("div", null, "tag-duplicate-group");
       const select = node("select"); select.setAttribute("aria-label", `选择合并目标：${names.join("、")}`);
       names.forEach(name => { const option = node("option", name); option.value = name; select.append(option); });
       select.disabled = state.busy;
-      group.append(node("span", names.join(" · ")), select, button("合并", () => change("merge", {names, target: select.value}, [select.value]), "secondary-button"));
-      return group;
-    }));
+      const count = articleCount(names, group);
+      row.append(node("span", names.join(" · ")), select, button("合并", async () => {
+        const target = select.value;
+        const confirmed = await D.confirmDanger({
+          title: "合并标签",
+          description: `将把 ${names.length} 个标签合并到「${target}」，会影响 ${count} 篇文章。`,
+          confirmLabel: "合并",
+        });
+        if (confirmed) await change("merge", {names, target}, []);
+      }, "secondary-button"));
+      duplicateList.append(row);
+    });
+    $("tag-duplicates").replaceChildren(
+      node("h2", duplicateGroups.length ? `可能重复 · ${duplicateGroups.length} 组` : "可能重复"),
+      node("p", "每组最多 5 个。合并前会说明影响的文章数，确认后才会合并。", "hint-copy"),
+      duplicateList,
+    );
     renderAliases();
     renderPanel();
   }
@@ -363,7 +399,7 @@
       const names = [...state.selected]; const mode = $("tag-edit-dialog").dataset.mode;
       const target = mode === "rename" ? $("tag-new-name").value.trim() : $("tag-target").value;
       $("tag-edit-submit").disabled = true;
-      const saved = await change(mode, {name: names[0], names, target}, [target]);
+      const saved = await change(mode, {name: names[0], names, target}, mode === "merge" ? [] : [target]);
       $("tag-edit-submit").disabled = false;
       if (saved) $("tag-edit-dialog").close();
       else { $("tag-edit-error").textContent = $("tags-error").textContent; $("tag-edit-error").classList.remove("hidden"); }

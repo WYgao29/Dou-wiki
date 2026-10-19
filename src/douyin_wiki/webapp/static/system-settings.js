@@ -16,7 +16,7 @@
     web: "Web 服务",
     browser: "本机浏览器",
     douyin_browser_profile: "抖音浏览器配置",
-    vault: "Vault",
+    vault: "资料库文件夹",
     obsidian_vault: "Obsidian 库",
     database: "数据库",
     embeddings: "向量检索",
@@ -112,7 +112,7 @@
     const analysis = health.analysis || {};
     D.$("system-overview").replaceChildren(
       metric(
-        "Worker",
+        "后台处理程序",
         worker.running ? "运行中" : "未运行",
         worker.running ? `队列 ${worker.queue_length || 0}` : "后台没有心跳",
       ),
@@ -130,7 +130,7 @@
       ),
     );
     D.$("system-health").replaceChildren(
-      row("Worker", worker.running ? "运行中" : "未运行", worker.running ? "authorized" : "failed"),
+      row("后台处理程序", worker.running ? "运行中" : "未运行", worker.running ? "authorized" : "failed"),
       row("最后心跳", shortTime(worker.last_heartbeat_display)),
       row("队列", String(worker.queue_length ?? 0)),
       row("正在执行", worker.running_job_id ? "有任务" : "空闲"),
@@ -143,7 +143,7 @@
       row("知识资料", `${storage.entry_count || 0} 篇`),
       row("永久保留媒体", `${storage.kept_media_count || 0} 份`),
       row("临时媒体", storage.retention_label || "—"),
-      row("Vault", formatBytes(storage.vault_bytes)),
+      row("资料库文件夹", formatBytes(storage.vault_bytes)),
       row("数据库", formatBytes(storage.database_bytes)),
     );
   }

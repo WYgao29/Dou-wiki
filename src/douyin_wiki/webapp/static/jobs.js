@@ -403,7 +403,7 @@
       const count = state.phase === "merge" ? ` · 已完成 ${state.completed_chunks} 次合并`
         : state.phase === "evidence" ? "" : ` · ${state.completed_chunks}/${state.total_chunks} 批`;
       const responseAt = state.last_response_at ? new Date(state.last_response_at).toLocaleString("zh-CN") : "等待首个响应";
-      const usage = state.usage?.prompt_tokens != null ? ` · 最近输入 ${state.usage.prompt_tokens} tokens，输出 ${state.usage.completion_tokens || 0} tokens${state.usage.retry_count ? `，重试 ${state.usage.retry_count} 次` : ""}` : "";
+      const usage = state.usage?.retry_count ? ` · 重试 ${state.usage.retry_count} 次` : "";
       const waitingMinutes = state.last_response_at ? Math.floor((Date.now() - Date.parse(state.last_response_at)) / 60000) : 0;
       const waiting = job.status === "analyzing" && waitingMinutes >= 5 ? ` · 当前批次已等待 ${waitingMinutes} 分钟` : "";
       const totalCalls = job.llm_stats?.successful_calls ? ` · 累计成功调用 ${job.llm_stats.successful_calls} 次` : "";
@@ -418,12 +418,13 @@
     const viewingChildren = job.next_action?.code === "view_children";
     const action = viewingChildren || selfProgressLink(job.next_action) ? null : actionButton(job.next_action);
     if (action) actions.append(action);
-    const importedIds = (job.imported_entry_ids || []).filter((entryId) => !(
-      job.next_action?.code === "open_entry" && job.entry_id === entryId
-    )).slice(0, 5);
-    importedIds.forEach((entryId, index) => {
-      const label = importedIds.length > 1 ? `打开已入库资料 ${index + 1}` : "打开已入库资料";
-      actions.append(followLink(`/articles/${encodeURIComponent(entryId)}`, label));
+    const importedEntries = (job.imported_entries?.length ? job.imported_entries : (job.imported_entry_ids || []).map((entryId) => ({entry_id: entryId, title: ""})))
+      .filter((entry) => !(job.next_action?.code === "open_entry" && job.entry_id === entry.entry_id))
+      .slice(0, 5);
+    importedEntries.forEach((entry, index) => {
+      const title = String(entry.title || "").trim();
+      const label = title ? `打开《${title}》` : (importedEntries.length > 1 ? `打开已入库资料 ${index + 1}` : "打开已入库资料");
+      actions.append(followLink(`/articles/${encodeURIComponent(entry.entry_id)}`, label));
     });
     const repaste = creatorRepaste(job);
     if (repaste) actions.append(repaste);
@@ -439,7 +440,7 @@
       link.href = `/articles/${encodeURIComponent(job.entry_id)}`;
       actions.append(link);
     }
-    const analysis = D.node("p", terminal.has(job.status) ? "" : "分析方式：" + (job.analysis_mode === "gateway" ? "网关 Agent" : job.analysis_mode_label || "当前模型"), "hint-copy");
+    const analysis = D.node("p", terminal.has(job.status) ? "" : "分析方式：" + (job.analysis_mode === "gateway" ? "外部 Agent" : job.analysis_mode_label || "当前方式"), "hint-copy");
     const media = D.node("section", null, "review-panel");
     const providers = job.media_provenance || {};
     if (providers.asr || providers.ocr) {
@@ -480,14 +481,19 @@
       const rows = D.node("div", null, "job-child-list"), pager = D.node("nav", null, "fav-toolbar fav-pager");
       const previous = D.node("button", "上一页子任务", "secondary-button"), next = D.node("button", "下一页子任务", "secondary-button"), label = D.node("span");
       previous.type = next.type = "button"; pager.append(previous, label, next);
+      const childWarnings = (child) => (Array.isArray(child.result?.warnings) ? child.result.warnings : []).map((item) => String(item).trim()).filter(Boolean);
       const renderChildren = () => {
         const filtered = childList.filter((child) => state.filter === "all" ||
           (state.filter === "failed" ? child.status === "failed" : !terminal.has(child.status)));
+        filtered.sort((left, right) => Number(childWarnings(right).length > 0) - Number(childWarnings(left).length > 0));
         const pages = Math.max(1, Math.ceil(filtered.length / 50));
         state.page = Math.min(pages, Math.max(1, state.page)); rows.replaceChildren();
         for (const child of filtered.slice((state.page - 1) * 50, state.page * 50)) {
+          const warnings = childWarnings(child);
           const row = D.node("button", null, "job-child");
-          row.append(statusCluster(child), D.node("strong", jobTitle(child)), D.node("span", child.message_for_user));
+          row.classList.toggle("has-warning", warnings.length > 0);
+          const hint = warnings[0] || child.message_for_user;
+          row.append(statusCluster(child), D.node("strong", jobTitle(child)), D.node("span", hint));
           row.type = "button"; row.addEventListener("click", () => D.navigate("/jobs/" + encodeURIComponent(child.id))); rows.append(row);
         }
         label.textContent = state.page + " / " + pages + " 页 · " + filtered.length + " 个任务";
@@ -499,13 +505,13 @@
       renderChildren(); children.append(toolbar, rows, pager);
     }
     if (viewingChildren && hasChildWork) {
-      const jump = D.node("button", job.next_action.label, "primary-button");
+      const jump = D.node("button", "子任务在下方", "text-button");
       jump.type = "button";
       jump.addEventListener("click", () => {
         children.scrollIntoView({behavior: "smooth", block: "start"});
         children.focus({preventScroll: true});
       });
-      actions.prepend(jump);
+      actions.append(jump);
     }
     const warningsPanel = D.node("section", null, "review-panel job-warnings");
     const warnings = Array.isArray(job.result?.warnings) ? job.result.warnings.filter(Boolean) : [];

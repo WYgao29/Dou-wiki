@@ -116,7 +116,7 @@
     || path === "/jobs" || path.startsWith("/jobs/")
     || path === "/settings" || path === "/auth"
     || path === "/settings/auth" || path === "/settings/system"
-    || path === "/settings/analysis" || path === "/settings/model"
+    || path === "/settings/analysis"
   );
   Douku.parseClockToMs = (value) => {
     const text = String(value ?? "").trim();
@@ -174,7 +174,7 @@
       event.preventDefault();
       Douku.navigate("/settings/system");
     });
-    banner.append(Douku.node("p", "后台 Worker 没在运行，新任务会一直排队。"), link);
+    banner.append(Douku.node("p", "后台处理程序没在运行，新任务会一直排队。"), link);
     const header = view.querySelector(".view-header");
     if (header?.nextSibling) view.insertBefore(banner, header.nextSibling);
     else view.prepend(banner);
@@ -210,11 +210,12 @@
     }
     return section;
   };
-  Douku.confirmDanger = ({title, description, confirmLabel, action}) => new Promise((resolve) => {
+  Douku.confirmDanger = ({title, description, confirmLabel, action, tone}) => new Promise((resolve) => {
     const dialog = Douku.$("destructive-dialog");
     if (dialog.open) { resolve(false); return; }
     const confirm = Douku.$("confirm-destructive");
     const error = Douku.$("destructive-error");
+    const normal = tone === "normal";
     let settled = false;
     let busy = false;
     const cleanup = () => {
@@ -224,7 +225,13 @@
       dialog.removeEventListener("submit", onSubmit);
       confirm.disabled = false;
       confirm.textContent = confirmLabel || "确认";
+      confirm.classList.toggle("danger-button", true);
+      confirm.classList.toggle("primary-button", false);
     };
+    if (normal) {
+      confirm.classList.remove("danger-button");
+      confirm.classList.add("primary-button");
+    }
     const finish = (value) => {
       if (settled) return;
       settled = true;

@@ -248,6 +248,25 @@ def test_duplicate_rules_are_candidates_only():
     assert duplicate_groups(rows) == [["AI Agent", "aiagent", "AI 代理", "AI 代理应用"]]
 
 
+def test_duplicate_groups_cap_exact_matches_and_ignore_short_chains():
+    exact = [
+        "AI Agent",
+        "ai agent",
+        "AIAGENT",
+        "Ai Agent",
+        "ＡＩ Agent",
+        "ai  agent",
+        "AI  Agent",
+    ]
+    groups = duplicate_groups([{"name": name} for name in exact])
+    assert groups
+    assert all(1 < len(group) <= 5 for group in groups)
+    assert sum(len(group) for group in groups) == len(exact)
+    chain = ["智能", "人工智能", "人工智能应用", "应用", "机器学习应用", "咖啡"]
+    chained = duplicate_groups([{"name": name} for name in chain])
+    assert chained == [["人工智能", "人工智能应用"]]
+
+
 def test_merge_preserves_pin_and_manual_source_tags(tmp_path):
     config, service = _web_fixture(tmp_path)
     path = source(service, "1000", ["源", "目标"], managed=True)

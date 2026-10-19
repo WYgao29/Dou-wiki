@@ -832,9 +832,10 @@ function openFocused() {
 
 async function reanalyzeItem(item, button) {
   const confirmed = await window.Douku.confirmDanger({
-    title: "重新分析这篇文章？",
-    description: "重新分析会调用模型并消耗 Token。确认后任务进入队列，你仍留在这篇文章。",
-    confirmLabel: "开始重新分析",
+    title: "重新交给 Agent 分析这篇？",
+    description: "重新交给 Agent 分析这篇。确认后任务进入队列，你仍留在这篇文章。",
+    confirmLabel: "重新交给 Agent 分析这篇",
+    tone: "normal",
   });
   if (!confirmed) return;
   button.disabled = true;
@@ -921,12 +922,33 @@ function renderLibraryEmptyState(items) {
   }
 }
 
+function syncSourceTabs() {
+  const items = state.allItems.length ? state.allItems : state.items;
+  const counts = {video: 0, image_note: 0};
+  items.forEach((item) => {
+    if (item.source_kind === "video" || item.source_kind === "image_note") counts[item.source_kind] += 1;
+  });
+  let dropped = false;
+  $$(".source-tab[data-source]").forEach((button) => {
+    const kind = button.dataset.source;
+    if (!kind) return;
+    const empty = counts[kind] === 0;
+    button.hidden = empty;
+    if (empty && state.sources.includes(kind)) {
+      state.sources = state.sources.filter((value) => value !== kind);
+      dropped = true;
+    }
+  });
+  if (dropped && location.pathname === "/") writeStateToURL();
+}
+
 function renderLibrary() {
   if (state.searchMode === "semantic" && state.query
       && state.libraryLoadedScope !== semanticScopeKey()) {
     if (state.pendingLibraryScope !== semanticScopeKey()) loadLibrary({showLoading: false});
     return;
   }
+  syncSourceTabs();
   const items = filteredItems();
   const titles = {all: "资料库", recent: "最近加入", favorite: "库内收藏", inspiration: "灵感"};
   const summaries = {
@@ -1133,9 +1155,7 @@ function renderTopicsList() {
     title.textContent = "还没有专题";
     const copy = document.createElement("p");
     copy.textContent = "回到资料库选择文章，创建一个严格限定来源的研究专题。";
-    const choose = window.Douku.node("button", "去资料库选择", "primary-button");
-    choose.type = "button"; choose.addEventListener("click", () => { showLibrary(); state.topicSelectionMode = true; renderLibrary(); });
-    empty.append(title, copy, choose);
+    empty.append(title, copy);
     root.replaceChildren(empty);
     return;
   }
@@ -1469,7 +1489,7 @@ function renderTopicData(value) {
     status.textContent = artifact.status === "needs_update" ? "需要更新" : "";
     if (artifact.status === "needs_update") status.prepend(svgIcon("rotate-ccw"));
     const meta = document.createElement("small");
-    meta.textContent = `${artifact.created_display}${artifact.model ? ` · ${artifact.model}` : ""}${artifact.total_tokens != null ? ` · ${artifact.total_tokens} token` : ""}`;
+    meta.textContent = `${artifact.created_display}${artifact.model ? ` · ${artifact.model}` : ""}`;
     heading.append(h3, status, meta);
     const body = document.createElement("div");
     body.className = "article-body";
@@ -1709,6 +1729,7 @@ function buildReaderToc() {
     if (time) {
       link.append(time.cloneNode(true), document.createTextNode(heading.textContent.slice(time.textContent.length).trim()));
     } else link.textContent = heading.textContent;
+    link.title = heading.textContent.trim();
     link.addEventListener("click", (event) => {
       event.preventDefault(); closeDrawers(false);
       heading.scrollIntoView({block: "start", behavior: "instant"});
@@ -2702,8 +2723,34 @@ async function loadSettingsSummary() {
   }
 }
 
+async function syncImportDestinations() {
+  const list = $(".destination-list", $("#imports-view"));
+  if (!list) return;
+  const [creators, favorites, collections, jobs] = await Promise.allSettled([
+    api("/api/creators"),
+    api("/api/favorites/imports"),
+    api("/api/collection-imports"),
+    api("/api/jobs?kind=creator_import&limit=1"),
+  ]);
+  const rowsOf = (result) => {
+    if (result.status !== "fulfilled") return [];
+    const value = result.value;
+    return Array.isArray(value) ? value : (value?.items || []);
+  };
+  const flags = {
+    creators: rowsOf(creators).length > 0 || rowsOf(jobs).length > 0 || Number(jobs.status === "fulfilled" ? jobs.value?.total || 0 : 0) > 0,
+    favorites: rowsOf(favorites).length > 0,
+    collections: rowsOf(collections).length > 0,
+  };
+  $$("[data-import-kind]", list).forEach((row) => {
+    row.classList.toggle("hidden", !flags[row.dataset.importKind]);
+  });
+  list.classList.toggle("hidden", !Object.values(flags).some(Boolean));
+}
+
 async function loadRecentImports() {
   const root = $("#recent-imports-list");
+  syncImportDestinations();
   try {
     const data = await api("/api/jobs");
     const jobs = (data.items || []).filter((job) => ["capture", "creator_import", "favorites_import", "collection_import"].includes(job.kind)).slice(0, 5);
@@ -2756,6 +2803,18 @@ function bindEvents() {
   $("#trash-clear-selection").addEventListener("click", () => setTrashSelection([]));
   $("#trash-restore-selected").addEventListener("click", () => openTrashBatchDialog("restore"));
   $("#trash-purge-selected").addEventListener("click", () => openTrashBatchDialog("purge"));
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-command]");
+    if (!button) return;
+    const command = button.dataset.copyCommand || "";
+    if (!command) return;
+    try {
+      await navigator.clipboard.writeText(command);
+      toast("已复制");
+    } catch (_error) {
+      toast("复制失败");
+    }
+  });
   $$("[data-route]").forEach((node) => node.addEventListener("click", (event) => {
     const path = node.getAttribute("data-route") || node.getAttribute("href");
     if (!path || !path.startsWith("/")) return;

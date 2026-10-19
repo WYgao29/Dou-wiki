@@ -308,7 +308,7 @@ host = "127.0.0.1"
 port = 8765
 ```
 
-浏览 Markdown、封面和文章不消耗 AI token。右栏保留信息、文章灵感和专题来源；用户灵感逐字保存。Web 支持已有任务重试 / 取消、批次选择 / 确认、资料删除 / 恢复、重新分析和维护预览。
+浏览 Markdown、封面和文章不调用模型。右栏保留信息、文章灵感和专题来源；用户灵感逐字保存。Web 支持已有任务重试 / 取消、批次选择 / 确认、资料删除 / 恢复、重新交给外部 Agent 分析和维护预览。
 
 视频详情页在正文末尾、来源之前显示默认折叠的「完整逐字稿」，按时间段完整保留文字；优先展示校正稿，没有校正稿时展示原始识别稿。顶部「本地视频」可打开已保留的视频，信息栏显示并可复制完整本机 URL。链接使用 `GET /api/articles/{entry_id}/video`，支持 `HEAD` 和播放所需的 Range 请求；文件已清理或不存在时不提供链接，接口返回 `404`。现有 `/media/` 继续只提供图片。
 
@@ -316,7 +316,7 @@ port = 8765
 
 资料库默认关键词搜索，可切到“语义”按文字含义查询，并按相关度查看证据片段及时间 / 图片位置。语义检索遵守当前作者、标签、类型、来源和收藏批次筛选；无本地模型或查询失败时会提示并显示关键词结果。只读 Markdown 继续使用关键词搜索。此功能复用文字索引，不增加生成模型或画面模型。
 
-`/imports` 展示 Agent 提示和已有博主、收藏、合集记录。`/imports/single` 显示停用说明；另外三个导入页不含新建表单，历史和 `?job=<新库任务ID>` 继续可用。`/settings/model` 显示停用说明，`/settings/analysis` 只显示 Gateway 状态。聊天 Tab、消息操作、模型设置、自动生成按钮、Cmd+I 新导入及分享文本粘贴导航已删除。
+`/imports` 提供「去 Agent 里导入」和可复制的示例指令；博主、收藏、合集入口只在已有记录时出现。`/imports/single` 同样是可复制指令；另外三个导入页不含新建表单，历史和 `?job=<新库任务ID>` 继续可用。`/settings/model` 不再提供设置页，打开后是「页面不存在」。`/settings/analysis` 只显示外部 Agent 状态。聊天 Tab、消息操作、模型设置、自动生成按钮、Cmd+I 新导入及分享文本粘贴导航已删除。
 
 以下新建请求直接返回 `410`，不创建任务：
 
@@ -331,7 +331,7 @@ port = 8765
 
 以下模型功能同样返回 `410`，不查询实体、访问密钥或连接模型：`POST /api/topics/{topic_id}/artifacts`；`GET / POST /api/chat/sessions`；`GET / DELETE /api/chat/sessions/{session_id}`；`POST /api/chat/sessions/{session_id}/messages`；`GET / POST /api/settings/model`；`POST /api/settings/model/test`；`GET /api/system/model-health`。原 Origin 安全检查仍适用。
 
-`GET /api/favorites/imports`、已有批次管理和不创建任务的 `POST /api/imports/classify` 保留。全部静态资源 URL 保留，停用页模块只提供说明页职责。
+`GET /api/favorites/imports`、已有批次管理和不创建任务的 `POST /api/imports/classify` 保留。全部静态资源 URL 保留。网页不再加载模型设置脚本，打开 `/settings/model` 显示页面不存在。
 
 ## Vault 数据边界
 

@@ -174,17 +174,17 @@ async def test_retired_links_and_preserved_right_panel(ui, width, theme):
     page, service, _client, calls = ui
     await page.set_viewport_size({"width": width, "height": 1000})
     await page.evaluate("theme => window.DoukuTheme.set(theme)", theme)
-    for path, view in (
-        ("/imports/single", "imports-single-view"),
-        ("/settings/model", "model-view"),
+    for path, view, text in (
+        ("/imports/single", "imports-single-view", "去 Agent 里导入"),
+        ("/settings/model", "not-found-view", "页面不存在"),
     ):
         await page.goto(f"http://testserver{path}")
-        await expect(page.locator(f"#{view}")).to_contain_text("已停用")
+        await expect(page.locator(f"#{view}")).to_contain_text(text)
     await expect(
         page.locator("#single-form, #model-settings-form, #imports-toggle, #chat-form")
     ).to_have_count(0)
     await page.goto("http://testserver/settings/analysis")
-    await expect(page.locator("#analysis-view")).to_contain_text("Gateway")
+    await expect(page.locator("#analysis-view")).to_contain_text("外部 Agent")
     await expect(page.locator("input[name='analysis-mode']")).to_have_count(0)
     await page.goto("http://testserver/articles/dy-123")
     await page.locator("#article-content h1").first.wait_for()
@@ -358,7 +358,7 @@ async def test_mobile_tag_controls_and_real_merge_undo(ui, tmp_path):
 async def test_retired_import_and_events_distinguish_background(ui):
     page, _service, _client, calls = ui
     await page.evaluate("window.Douku.navigate('/imports/single')")
-    await expect(page.locator("#imports-single-view")).to_contain_text("已停用")
+    await expect(page.locator("#imports-single-view")).to_contain_text("去 Agent 里导入")
     await expect(page.locator("#single-form")).to_have_count(0)
     assert ("POST", "/api/captures") not in calls
     await page.evaluate(

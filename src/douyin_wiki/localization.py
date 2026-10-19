@@ -24,7 +24,7 @@ JOB_STATUS_LABELS = {
     "waiting_confirmation": "等待用户确认",
     "analyzing": "正在分析",
     "completed": "已完成",
-    "completed_with_warnings": "已完成（有提示）",
+    "completed_with_warnings": "完成 · 有提示",
     "failed": "失败",
     "cancelled": "已取消",
 }
@@ -101,7 +101,7 @@ PHASE_LABELS = {
 }
 
 SOURCE_KIND_LABELS = {"video": "视频", "image_note": "图文", "article": "文章"}
-ANALYSIS_MODE_LABELS = {"gateway": "网关 Agent", "provider": "模型接口", "local": "本地模式"}
+ANALYSIS_MODE_LABELS = {"gateway": "外部 Agent", "provider": "模型接口", "local": "本地模式"}
 DISPLAY_MODE_LABELS = {"all": "全部", "paginated": "分页"}
 JOB_KIND_LABELS = {
     "capture": "单条采集",

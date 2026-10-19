@@ -110,7 +110,7 @@ async def verify():
             ("settings", "/settings", "#settings-view:not(.hidden)"),
             ("auth", "/settings/auth", "#auth-video-card .status-pill"),
             ("analysis", "/settings/analysis", "#analysis-status-title"),
-            ("model", "/settings/model", "#model-view:not(.hidden)"),
+            ("model", "/settings/model", "#not-found-view:not(.hidden)"),
             ("system", "/settings/system", ".system-metric"),
             ("not-found", "/no-such-page", "#not-found-view:not(.hidden)"),
         ]

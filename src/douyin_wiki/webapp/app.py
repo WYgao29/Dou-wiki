@@ -45,7 +45,7 @@ from .version import WEB_VERSION
 
 ANALYSIS_MODE_INFO = {
     "gateway": {
-        "label": "网关 Agent",
+        "label": "外部 Agent",
         "web_copy": "等待外部 Agent 接续",
         "detail": (
             "下载和本地提取由后台完成；校正和分析要等 OpenClaw/Hermes 等外部 Agent。"
@@ -545,16 +545,7 @@ def create_app(
 
     @app.get("/settings/model", response_class=HTMLResponse)
     async def model_settings_page(request: Request):
-        return templates.TemplateResponse(
-            request,
-            "app.html",
-            {
-                "page_title": "共用模型",
-                "initial_entry_id": "",
-                "initial_topic_id": "",
-                "web_version": WEB_VERSION,
-            },
-        )
+        return shell_page(request, title="页面不存在", missing=True)
 
     @app.get("/api/library")
     async def library(

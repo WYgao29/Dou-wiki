@@ -83,6 +83,7 @@
 
   function applyFocusMode() {
     const focused = Boolean(jobId);
+    D.$("imports-creators-view")?.classList.toggle("is-idle", !focused);
     D.$("creators-list")?.classList.toggle("hidden", focused);
     const bar = D.$("creator-focus-bar");
     if (bar) bar.classList.toggle("hidden", !focused);

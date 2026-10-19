@@ -4,6 +4,7 @@
 > 日期：2026-09-29
 > 适用范围：`src/douyin_wiki/webapp/templates/app.html` + `src/douyin_wiki/webapp/static/*`（单模板 SPA，Jinja2 + 原生 JS，服务于 127.0.0.1）
 > 当前界面约定：[Web UI 设计系统](web-ui-design-system.md)。本文保留设计起点、目标规格及各阶段的历史验证；代码行号、尺寸和测试数字属于对应设计或实施基准，不作为当前运行结果。
+> 2026-10-19：网页 AI 对话和「共用模型」设置页已移除。校正和分析由外部 Agent 完成。文中的聊天、模型设置和新建导入表单是历史规格。
 
 ---
 

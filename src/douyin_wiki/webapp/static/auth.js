@@ -35,23 +35,16 @@
     card.lastChild.dataset.state = channel.user_state;
     card.lastChild.prepend(D.icon(["authorized", "available"].includes(channel.user_state) ? "check" : "alert-circle"));
     card.append(D.node("p", `上次检查：${channel.checked_display || "尚未检查"}`));
-    if (channel.user_state === "unconfirmed" && channel.message) {
-      card.append(D.node("p", channel.message));
+    const conclusion = String(channel.message || "").trim();
+    if (conclusion && !/[A-Za-z]/.test(conclusion) && conclusion !== channel.user_state_label) {
+      card.append(D.node("p", conclusion));
     }
-    const technical = [];
-    if (channel.user_state !== "unconfirmed" && channel.user_state !== "checking" && channel.message) technical.push(channel.message);
-    if (channel.detail) technical.push(channel.detail);
-    if (channel.cookie_source_label) technical.push(channel.cookie_source_label);
-    if (channel.account_hint) technical.push(`账号：${channel.account_hint}`);
     if (channel.affected_job_count) {
-      technical.push(`受影响任务 ${channel.affected_job_count} 个`);
+      card.append(D.node("p", `受影响任务 ${channel.affected_job_count} 个`));
     }
-    if (technical.length) {
-      const folded = D.node("details", null, "auth-details");
-      folded.append(D.node("summary", "详情"));
-      technical.forEach((line) => folded.append(D.node("p", line, "hint-copy")));
-      card.append(folded);
-    }
+    const technical = [channel.message, channel.detail, channel.cookie_source_label, channel.account_hint]
+      .map((line) => String(line || "").trim())
+      .filter(Boolean);
     const actions = D.node("div", null, "operation-actions");
     const check = D.node("button", "检查", "secondary-button");
     check.type = "button";
@@ -81,6 +74,20 @@
         D.navigate("/jobs?requires_user_action=1");
       });
       actions.append(link);
+    }
+    if (technical.length) {
+      const copy = D.node("button", "复制诊断信息", "text-button");
+      copy.type = "button";
+      copy.addEventListener("click", async () => {
+        const text = technical.join("\n");
+        try {
+          await navigator.clipboard.writeText(text);
+          D.toast("已复制诊断信息");
+        } catch (_error) {
+          D.toast("复制失败");
+        }
+      });
+      actions.append(copy);
     }
     card.append(actions);
     container.append(card);

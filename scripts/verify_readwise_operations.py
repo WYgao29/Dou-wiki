@@ -228,12 +228,23 @@ async def verify(*, output_dir: Path | None = None):
                     assert not bad, (label, bad)
 
                 await fresh("/imports", "#imports-view:not(.hidden)")
-                assert await page.locator("#imports-view .destination-row").count() == 3
+                await page.wait_for_selector(
+                    "#imports-view .destination-row[data-import-kind='creators']:not(.hidden)"
+                )
+                await page.wait_for_selector(
+                    "#imports-view .destination-row[data-import-kind='favorites']:not(.hidden)"
+                )
+                visible_rows = page.locator("#imports-view .destination-row:not(.hidden)")
+                assert await visible_rows.count() == 2
+                assert (
+                    await page.locator(
+                        "#imports-view .destination-row[data-import-kind='collections'].hidden"
+                    ).count()
+                    == 1
+                )
                 assert await page.locator(".recent-import-row").count() <= 5
                 assert (
-                    await page.locator(".destination-row").first.evaluate(
-                        "e=>e.getBoundingClientRect().height"
-                    )
+                    await visible_rows.first.evaluate("e=>e.getBoundingClientRect().height")
                     == 56
                 )
                 before = len(mutations)
@@ -243,7 +254,7 @@ async def verify(*, output_dir: Path | None = None):
                 assert await page.locator("#creator-form").count() == 0
                 assert len(mutations) == before
                 await fresh("/imports/single", "#imports-single-view:not(.hidden)")
-                assert "已停用" in await page.locator("#imports-single-view").inner_text()
+                assert "去 Agent 里导入" in await page.locator("#imports-single-view").inner_text()
                 assert await page.locator("#single-form").count() == 0
                 assert len(mutations) == before
                 await shot("single-light")
@@ -400,7 +411,7 @@ async def verify(*, output_dir: Path | None = None):
                 for path, ready, name in [
                     ("/settings/auth", "#auth-video-card .status-pill", "auth"),
                     ("/settings/analysis", "#analysis-status-title", "analysis"),
-                    ("/settings/model", "#model-view:not(.hidden)", "model"),
+                    ("/settings/model", "#not-found-view:not(.hidden)", "model"),
                     ("/settings/system", ".system-metric", "system"),
                 ]:
                     await fresh(path, ready)
@@ -520,7 +531,7 @@ async def verify(*, output_dir: Path | None = None):
                     ("/settings", "#settings-view:not(.hidden)"),
                     ("/settings/auth", "#auth-video-card .status-pill"),
                     ("/settings/analysis", "#analysis-status-title"),
-                    ("/settings/model", "#model-view:not(.hidden)"),
+                    ("/settings/model", "#not-found-view:not(.hidden)"),
                     ("/settings/system", ".system-metric"),
                     ("/trash", ".trash-item"),
                 ]

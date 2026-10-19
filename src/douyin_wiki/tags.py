@@ -172,6 +172,23 @@ def replace_frontmatter_tags(frontmatter: str, tags: list[str]) -> str:
     return validated(result)
 
 
+DUPLICATE_GROUP_LIMIT = 5
+
+
+def _pair_strength(left_key: str, right_key: str, translations: dict[str, str]) -> int:
+    """3 exact key, 2 shared translation, 1 long-enough substring. 0 is not a match."""
+    if left_key == right_key:
+        return 3
+    if translations.get(left_key, left_key) == translations.get(right_key, right_key):
+        return 2
+    shorter, longer = (
+        (left_key, right_key) if len(left_key) <= len(right_key) else (right_key, left_key)
+    )
+    if len(shorter) >= 4 and shorter in longer and len(shorter) / len(longer) >= 0.6:
+        return 1
+    return 0
+
+
 def duplicate_groups(rows: list[dict[str, Any]]) -> list[list[str]]:
     translations = {
         "aiagent": "ai代理",
@@ -196,25 +213,134 @@ def duplicate_groups(rows: list[dict[str, Any]]) -> list[list[str]]:
     names = [row["name"] for row in rows]
     keys = {name: tag_key(name) for name in names}
     parents = {name: name for name in names}
+    sizes = {name: 1 for name in names}
 
-    def root(name):
+    def root(name: str) -> str:
         while parents[name] != name:
             name = parents[name]
         return name
 
-    for i, left in enumerate(names):
-        for right in names[i + 1 :]:
-            a, b = keys[left], keys[right]
-            if (
-                a == b
-                or translations.get(a, a) == translations.get(b, b)
-                or (min(len(a), len(b)) >= 2 and (a in b or b in a))
-            ):
-                parents[root(right)] = root(left)
+    pairs: list[tuple[int, str, str, str, str]] = []
+    for index, left in enumerate(names):
+        for right in names[index + 1 :]:
+            strength = _pair_strength(keys[left], keys[right], translations)
+            if strength:
+                pairs.append((-strength, left.casefold(), right.casefold(), left, right))
+    for _strength, _left_sort, _right_sort, left, right in sorted(pairs):
+        left_root, right_root = root(left), root(right)
+        if left_root == right_root:
+            continue
+        if sizes[left_root] + sizes[right_root] > DUPLICATE_GROUP_LIMIT:
+            continue
+        parents[right_root] = left_root
+        sizes[left_root] += sizes[right_root]
     groups: dict[str, list[str]] = defaultdict(list)
     for name in names:
         groups[root(name)].append(name)
     return [group for group in groups.values() if len(group) > 1]
+
+
+def snapshot_still_undoable(vault: VaultWriter, conn, snapshot: dict[str, Any]) -> bool:
+    """Read-only mirror of undo()'s conflict checks. False means a click would 409."""
+    try:
+        files = snapshot.get("files") or {}
+        entries = snapshot.get("entries") or {}
+        tag_rows = snapshot.get("tags") or {}
+        alias_rows = snapshot.get("aliases") or {}
+        for relative, values in files.items():
+            path = vault.vault_path / relative
+            vault._reject_vault_symlinks(path, field="tag undo")
+            current = path.read_text(encoding="utf-8") if path.exists() else None
+            if current != values.get("after"):
+                return False
+        for entry_id, values in entries.items():
+            current = conn.execute(
+                "SELECT tags_json, data_json FROM entries WHERE id=?", (entry_id,)
+            ).fetchone()
+            chunks = {
+                row["id"]
+                for row in conn.execute("SELECT id FROM chunks WHERE entry_id=?", (entry_id,))
+            }
+            expected_chunks = {row["id"] for row in values.get("chunks") or []}
+            if (
+                current is None
+                or dict(current) != values.get("after")
+                or chunks != expected_chunks
+            ):
+                return False
+        fields = ("name", "pinned_at", "position", "created_at")
+        for name, values in tag_rows.items():
+            row = conn.execute("SELECT * FROM tags WHERE name=?", (name,)).fetchone()
+            current = dict(row) if row else None
+            expected = values.get("after")
+            if (current is None) != (expected is None) or (
+                current and expected and any(current[key] != expected[key] for key in fields)
+            ):
+                return False
+        for name, values in alias_rows.items():
+            row = conn.execute(
+                "SELECT canonical FROM tag_aliases WHERE alias=?", (name,)
+            ).fetchone()
+            if (row[0] if row else None) != values.get("after"):
+                return False
+        standards = {row[0] for row in conn.execute("SELECT name FROM tags")}
+        alias_map = dict(conn.execute("SELECT alias, canonical FROM tag_aliases"))
+        restored_names: set[str] = set()
+        for name, values in tag_rows.items():
+            if values.get("before"):
+                standards.add(name)
+                restored_names.add(name)
+            else:
+                standards.discard(name)
+        for name, values in alias_rows.items():
+            if values.get("before"):
+                alias_map[name] = values["before"]
+                restored_names.add(name)
+            else:
+                alias_map.pop(name, None)
+        if restored_names.intersection(standards, alias_map):
+            return False
+        created = {name for name, values in tag_rows.items() if values.get("before") is None}
+        if created:
+            changed_paths = set(files)
+            sources = list((vault.vault_path / "wiki/sources").glob("*.md"))
+            sources += list((vault.vault_path / "creators").glob("*/sources/*.md"))
+            for path in sources:
+                vault._reject_vault_symlinks(path, field="tag undo source")
+                if str(path.relative_to(vault.vault_path)) in changed_paths:
+                    continue
+                text = path.read_text(encoding="utf-8")
+                match = re.match(r"\A---\n(.*?)\n---(?:\n|$)", text, re.S)
+                try:
+                    metadata = yaml.safe_load(match[1]) if match else None
+                except yaml.YAMLError:
+                    return False
+                if (
+                    isinstance(metadata, dict)
+                    and metadata.get("type") in {None, "source"}
+                    and isinstance(metadata.get("tags"), list)
+                    and created.intersection(metadata["tags"])
+                ):
+                    return False
+            for row in conn.execute("SELECT alias, canonical FROM tag_aliases"):
+                if row["canonical"] in created and row["alias"] not in alias_rows:
+                    return False
+            for row in conn.execute("SELECT id, tags_json FROM entries"):
+                if row["id"] not in entries and created.intersection(json.loads(row["tags_json"])):
+                    return False
+        pins = {
+            row["name"]: row["pinned_at"]
+            for row in conn.execute("SELECT name, pinned_at FROM tags")
+        }
+        for name, values in tag_rows.items():
+            before = values.get("before")
+            if before is None:
+                pins.pop(name, None)
+            else:
+                pins[name] = before.get("pinned_at")
+        return sum(1 for value in pins.values() if value) <= PIN_LIMIT
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return False
 
 
 class TagManager:
@@ -304,6 +430,24 @@ class TagManager:
                 "WHERE u.undone_at IS NULL ORDER BY u.created_at DESC"
             ):
                 undo_by_alias.setdefault(row["alias"], row["operation_id"])
+            undoable_by_alias: dict[str, str] = {}
+            checked: dict[str, bool] = {}
+            for alias, operation_id in undo_by_alias.items():
+                if operation_id not in checked:
+                    stored = conn.execute(
+                        "SELECT snapshot_json FROM tag_undo WHERE id=?", (operation_id,)
+                    ).fetchone()
+                    snapshot = None
+                    if stored is not None:
+                        try:
+                            snapshot = json.loads(stored["snapshot_json"])
+                        except json.JSONDecodeError:
+                            snapshot = None
+                    checked[operation_id] = isinstance(snapshot, dict) and snapshot_still_undoable(
+                        self.vault, conn, snapshot
+                    )
+                if checked[operation_id]:
+                    undoable_by_alias[alias] = operation_id
 
         rows = []
         for record in records:
@@ -341,18 +485,27 @@ class TagManager:
                     "recent": [
                         {"entry_id": item.entry_id, "title": item.title} for item in recent[:5]
                     ],
+                    "entry_ids": [item.entry_id for item in recent],
                 }
             )
         rows.sort(key=lambda row: (-row["count"], row["name"].casefold(), row["name"]))
         pinned = [row for row in rows if row["pinned_at"]]
         pinned.sort(key=lambda row: (row["position"], row["pinned_at"], row["name"]))
         sidebar = [row for row in (pinned if pinned else rows) if row["count"] > 0][:8]
+        entry_ids = {name: {item.entry_id for item in counts[name]} for name in counts}
+        duplicates = []
+        for names in duplicate_groups(rows):
+            affected: set[str] = set()
+            for name in names:
+                affected.update(entry_ids.get(name, ()))
+            duplicates.append({"names": names, "article_count": len(affected)})
         return {
             "tags": rows,
             "sidebar": sidebar,
-            "duplicates": duplicate_groups(rows),
+            "duplicates": duplicates,
             "aliases": aliases,
             "undo_by_alias": undo_by_alias,
+            "undoable_by_alias": undoable_by_alias,
         }
 
     def pin(self, name: str, pinned: bool) -> None:

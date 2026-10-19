@@ -549,7 +549,8 @@ def test_in_progress_filter_child_warnings_and_settings_aliases(tmp_path) -> Non
         settings = client.get("/settings")
         assert settings.status_code == 200
         assert 'id="settings-view"' in settings.text
-        assert "共用模型" in settings.text
+        assert "共用模型" not in settings.text
+        assert "导入分析" in settings.text
         creators = client.get("/static/imports-creators.js?v=" + WEB_VERSION).text
         assert "2500" in creators
         assert "source_kind_label" in creators
@@ -623,7 +624,8 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
         assert "侧栏「授权状态」" not in page.text
         assert "设置 › 授权状态" in page.text
         assert 'data-route="/settings/analysis"' in page.text
-        assert "共用模型配置已停用" in page.text
+        assert "共用模型" not in page.text
+        assert "去 Agent 里导入" in page.text
         for path in (
             "/settings",
             "/settings/auth",
@@ -642,10 +644,12 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
                 "app.js",
             )
         }
-        for name in ("auth.js", "analysis-settings.js", "model-settings.js", "system-settings.js"):
+        for name in ("auth.js", "analysis-settings.js", "system-settings.js"):
             assert 'setNav("settings-nav")' in scripts[name]
             for stale in ("auth-nav", "analysis-nav", "model-nav", "system-nav"):
                 assert f'setNav("{stale}")' not in scripts[name]
+        assert "showMissing" in scripts["model-settings.js"]
+        assert 'setNav("settings-nav")' not in scripts["model-settings.js"]
         assert "设置 › 授权状态" in scripts["app.js"]
         assert "/api/settings/model" not in scripts["app.js"]
         assert "授权状态页" not in scripts["app.js"]

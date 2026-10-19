@@ -336,7 +336,7 @@ async def test_delete_resets_the_list_summary_and_confirmation(ux_ui):
     await ux_ui.page.locator("#destructive-dialog[open]").wait_for()
     assert await ux_ui.page.locator("#destructive-title").inner_text() == "删除这条导入记录"
     await ux_ui.page.get_by_role("button", name="确认删除", exact=True).click()
-    await ux_ui.page.wait_for_timeout(100)
+    await ux_ui.page.get_by_text("已删除该导入记录，已入库资料仍保留。", exact=True).wait_for()
     assert await ux_ui.page.locator("#favorites-items input").count() == 0
     assert "0" in await ux_ui.page.locator("#favorites-selected-count").inner_text()
     assert await ux_ui.page.locator("#favorites-confirm").is_disabled()

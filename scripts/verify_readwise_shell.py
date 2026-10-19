@@ -186,7 +186,7 @@ async def verify():
                 assert await page.locator("#imports-popover").count() == 0
                 assert page.url.endswith("/jobs")
                 await navigate("/imports/single")
-                assert "已停用" in await page.locator("#imports-single-view").inner_text()
+                assert "去 Agent 里导入" in await page.locator("#imports-single-view").inner_text()
                 await navigate("/")
                 for theme in ["light", "dark"]:
                     await page.select_option("[data-theme-select]", theme)

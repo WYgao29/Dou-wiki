@@ -839,13 +839,15 @@ def test_model_settings_page_shares_theme_and_accessible_controls(tmp_path: Path
         assert page.status_code == 200
         assert "data-theme-select" in page.text
         assert 'id="app-shell"' in page.text
-        assert 'id="model-view"' in page.text
+        assert 'id="model-view"' not in page.text
+        assert 'id="not-found-view" class="content-view"' in page.text
+        assert 'data-missing="1"' in page.text
+        assert "页面不存在" in page.text
         assert 'id="analysis-view"' in page.text
         assert 'aria-label="显示 API Key"' not in page.text
         assert 'id="model-api-key"' not in page.text
-        assert f"/static/model-settings.js?v={WEB_VERSION}" in page.text
-        assert "共用模型配置已停用" in page.text
-        assert "共用模型" in page.text
+        assert f"/static/model-settings.js?v={WEB_VERSION}" not in page.text
+        assert "共用模型" not in page.text
         assert 'name="analysis-mode"' not in page.text
         assert "保存分析方式" not in page.text
         assert 'href="/settings/analysis"' in page.text
@@ -856,7 +858,8 @@ def test_model_settings_page_shares_theme_and_accessible_controls(tmp_path: Path
         analysis = client.get("/settings/analysis")
         assert analysis.status_code == 200
         assert 'id="app-shell"' in analysis.text
-        assert "Gateway Agent" in analysis.text
+        assert "外部 Agent" in analysis.text
+        assert "Gateway Agent" not in analysis.text
         assert 'value="provider"' not in analysis.text
         assert f"/static/analysis-settings.js?v={WEB_VERSION}" in analysis.text
         assert 'href="/settings/model"' not in analysis.text

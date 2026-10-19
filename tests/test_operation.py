@@ -141,6 +141,15 @@ def test_display_title_uses_work_title_summary_or_share_caption() -> None:
     assert job_display_title(caption) == "单条采集 · 春季穿搭"
     assert job_display_title(bare) == "单条采集"
     assert job_display_title(bare, hints={"entry_title": "资料标题"}) == "单条采集 · 资料标题"
+    analyzed = _job(
+        JobStatus.COMPLETED,
+        artifacts={"metadata": {"title": "🔥抖音原文案"}},
+        request=CaptureRequest(share_text="🔥抖音原文案\nhttps://v.douyin.com/abc/"),
+    )
+    assert (
+        job_display_title(analyzed, hints={"entry_title": "分析后的标题"})
+        == "单条采集 · 分析后的标题"
+    )
 
 
 def test_display_title_strips_hashtags_before_truncation() -> None:

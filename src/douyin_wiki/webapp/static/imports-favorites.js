@@ -82,6 +82,12 @@
       input.disabled = busy || !canSelect() || input.dataset.eligible !== "true";
     });
     selectionStatus();
+    syncRecordMode();
+  }
+  function syncRecordMode() {
+    const hasHistory = [...$("history").options].some((option) => option.value);
+    view.classList.toggle("is-idle", !current);
+    view.classList.toggle("no-records", !hasHistory);
   }
   async function run(action, {flush = true} = {}) {
     if (busy) return;
@@ -185,6 +191,7 @@
       option.value = item.job_id; $("history").append(option);
     }
     $("history").value = jobId || "";
+    syncRecordMode();
   }
   function elapsed() {
     if (!current?.created_at) { $("elapsed").hidden = true; return; }
@@ -311,7 +318,7 @@
     if (!canSelect()) throw new Error("本批已不能导入，请选择其他记录，需要新批次时请交给 Agent");
     const count = selectedCount(), preview = current.confirmation_preview || {};
     if (!count) throw new Error("请先选择尚未入库的作品");
-    const mode = "Gateway Agent，后续由 Agent 接续";
+    const mode = "外部 Agent，后续由外部 Agent 接续";
     $("confirm-description").textContent = "将处理 " + count + " 件所选作品" +
       (preview.new_tasks != null ? "：新建 " + preview.new_tasks + " 个任务，复用 " + (preview.reused_tasks || 0) + " 个进行中任务" : "") +
       "。清单中 " + (preview.already_imported ?? current.summary?.in_library ?? current.summary?.imported ?? 0) +
