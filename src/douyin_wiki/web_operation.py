@@ -17,6 +17,7 @@ from .operation import (
     USER_ACTION_STATUSES,
     analysis_presentation,
     child_job_ids,
+    chinese_conclusion,
     effective_job_status,
     job_display_title,
     job_is_in_progress,
@@ -35,6 +36,18 @@ from .web_auth import WebAuthManager
 _DOUYIN_URL_RE = re.compile(r"https?://[^\s]+(?:douyin|iesdouyin)\.com/[^\s]+", re.I)
 _USER_PROBE_PATH = re.compile(r"/(?:share/)?user(?:/|$)", re.I)
 _WORK_PROBE_PATH = re.compile(r"/(?:video|note|article)/\d+", re.I)
+
+
+def _warnings_from_result_json(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(result, dict):
+        return []
+    return [text for item in result.get("warnings") or [] if (text := str(item).strip())]
 
 
 def _probe_work_url(value: str) -> str | None:
@@ -58,7 +71,13 @@ class WebOperationService:
     def analysis_mode(self) -> str:
         return self.core.config.analysis_mode.value
 
-    def present(self, job, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    def present(
+        self,
+        job,
+        extra: dict[str, Any] | None = None,
+        *,
+        warning_preview: list[str] | None = None,
+    ) -> dict[str, Any]:
         merged = dict(extra or {})
         owner_id = shared_capture_job_id(job)
         if owner_id:
@@ -73,8 +92,16 @@ class WebOperationService:
             merged["state_label"] = "等待同一作品处理"
             merged["message_for_user"] = f"同一作品已有任务。{executor['message_for_user']}"
         merged["display_title"] = job_display_title(job, hints=self._title_hints(job))
-        preview = self._warning_preview(job)
-        if preview and not (job.result or {}).get("warnings"):
+        own = [
+            text for item in (job.result or {}).get("warnings") or [] if (text := str(item).strip())
+        ]
+        if own:
+            preview = own
+        elif warning_preview is None and "result" not in merged:
+            preview = self._warning_previews([job]).get(job.id, [])
+        else:
+            preview = list(warning_preview or [])
+        if preview and not own:
             merged.setdefault(
                 "result",
                 {
@@ -85,27 +112,46 @@ class WebOperationService:
             )
         return present_job(job, analysis_mode=self.analysis_mode, extra=merged)
 
-    def _warning_preview(self, job: JobRecord) -> list[str]:
-        own = [
-            text
-            for item in (job.result or {}).get("warnings") or []
-            if (text := str(item).strip())
-        ]
-        if own or job.status != JobStatus.COMPLETED_WITH_WARNINGS:
-            return own
-        preview: list[str] = []
-        for child_id in child_job_ids(job)[:12]:
-            try:
-                child = self.core.database.get_job(child_id)
-            except JobStateError:
+    def _warning_previews(self, jobs: list[JobRecord]) -> dict[str, list[str]]:
+        """One query for list-page warning text. Detail pages pass an empty preview."""
+        needed: dict[str, list[str]] = {}
+        for job in jobs:
+            own = [
+                text
+                for item in (job.result or {}).get("warnings") or []
+                if (text := str(item).strip())
+            ]
+            if own or job.status != JobStatus.COMPLETED_WITH_WARNINGS:
                 continue
-            for item in (child.result or {}).get("warnings") or []:
-                text = str(item).strip()
-                if text and text not in preview:
-                    preview.append(text)
+            child_ids = child_job_ids(job)[:12]
+            if child_ids:
+                needed[job.id] = child_ids
+        if not needed:
+            return {}
+        unique_ids = list(dict.fromkeys(child_id for ids in needed.values() for child_id in ids))
+        raw_results: dict[str, str] = {}
+        with self.core.database.connect() as conn:
+            for start in range(0, len(unique_ids), 400):
+                chunk = unique_ids[start : start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT id, result_json FROM jobs WHERE id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                raw_results.update({row["id"]: row["result_json"] for row in rows})
+        previews: dict[str, list[str]] = {}
+        for parent_id, child_ids in needed.items():
+            preview: list[str] = []
+            for child_id in child_ids:
+                for text in _warnings_from_result_json(raw_results.get(child_id)):
+                    if text not in preview:
+                        preview.append(text)
+                    if len(preview) >= 3:
+                        break
                 if len(preview) >= 3:
-                    return preview
-        return preview
+                    break
+            previews[parent_id] = preview
+        return previews
 
     def dismiss_job(self, job_id: str):
         job = self.core.database.get_job(job_id)
@@ -212,8 +258,11 @@ class WebOperationService:
         total = len(jobs)
         start = (page - 1) * limit
         sliced = jobs[start : start + limit]
+        previews = self._warning_previews(sliced)
         return {
-            "items": [self.present(job) for job in sliced],
+            "items": [
+                self.present(job, warning_preview=previews.get(job.id, [])) for job in sliced
+            ],
             "total": total,
             "page": page,
             "limit": limit,
@@ -243,7 +292,7 @@ class WebOperationService:
             try:
                 child = self.core.get_job(child_id)
                 if not child.artifacts.get("user_deleted"):
-                    children.append(self.present(child))
+                    children.append(self.present(child, warning_preview=[]))
             except JobStateError:
                 continue
         if job.kind == "favorites_import":
@@ -303,10 +352,9 @@ class WebOperationService:
             extra["imported_entry_ids"] = list(
                 dict.fromkeys([*extra.get("imported_entry_ids", []), *imported_ids])
             )
-        extra["imported_entries"] = [
-            {"entry_id": entry_id, "title": self._entry_title(entry_id)}
-            for entry_id in extra.get("imported_entry_ids") or []
-        ]
+        extra["imported_entries"] = self._imported_entry_titles(
+            extra.get("imported_entry_ids") or []
+        )
         if child_warnings:
             extra["result"] = {
                 **(job.result or {}),
@@ -318,14 +366,21 @@ class WebOperationService:
                 issue.model_dump(mode="json")
                 for issue in self.core.database.get_review_issues(job_id, open_only=True)
             ]
-        return self.present(job, extra=extra)
+        return self.present(job, extra=extra, warning_preview=[])
 
-    def _entry_title(self, entry_id: str) -> str:
-        try:
-            entry = self.core.database.get_entry(str(entry_id))
-        except EntryNotFoundError:
-            return ""
-        return (entry.title or "").strip()
+    def _imported_entry_titles(self, entry_ids: list[str]) -> list[dict[str, str]]:
+        """Titles for the first five imported entries. The full id list stays elsewhere."""
+        unique = list(dict.fromkeys(str(entry_id) for entry_id in entry_ids if entry_id))[:5]
+        if not unique:
+            return []
+        placeholders = ",".join("?" for _ in unique)
+        with self.core.database.connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, title FROM entries WHERE id IN ({placeholders})",
+                unique,
+            ).fetchall()
+        titles = {row["id"]: (row["title"] or "").strip() for row in rows}
+        return [{"entry_id": entry_id, "title": titles.get(entry_id, "")} for entry_id in unique]
 
     @staticmethod
     def _child_stats(children: list[dict[str, Any]]) -> dict[str, int]:
@@ -367,11 +422,15 @@ class WebOperationService:
         auth = await self.auth_status()
         counts = self.job_counts()
         counts["requires_user_action"] = self.list_jobs(requires_user_action=True, limit=1)["total"]
-        recent = [
-            self.present(job)
+        recent_jobs = [
+            job
             for job in self.core.list_jobs(limit=8)
             if job.kind in {"capture", "creator_import", "favorites_import", "collection_import"}
             and not job.artifacts.get("user_deleted")
+        ]
+        previews = self._warning_previews(recent_jobs)
+        recent = [
+            self.present(job, warning_preview=previews.get(job.id, [])) for job in recent_jobs
         ]
         alerts = []
         video = auth["channels"]["video"]
@@ -458,6 +517,11 @@ class WebOperationService:
             card["affected_job_count"] = self.auth.affected_count(name)
             card["session_stage"] = (session or {}).get("stage")
             card["session_stage_label"] = card.get("session_stage_label") or ""
+            if not str(card.get("conclusion") or "").strip():
+                card["conclusion"] = chinese_conclusion(
+                    str(card.get("message") or ""),
+                    str(card.get("user_state_label") or ""),
+                )
             channels[name] = card
         payload = {**payload, "channels": channels, "cached": cached}
         return sanitize_public_payload(payload)
@@ -525,6 +589,7 @@ class WebOperationService:
                 "cookie_source_label": "",
                 "account_hint": "",
                 "message": "正在检查…",
+                "conclusion": "",
                 "detail": "",
                 "checked_at": None,
                 "checked_display": "",
@@ -731,7 +796,7 @@ class WebOperationService:
         return {
             "status": "已请求后台处理程序在当前循环结束后退出，由系统服务重新拉起",
             "worker": health["worker"],
-            "note": "若未安装常驻 Worker，需要在终端运行 douyin-wiki worker run 或 service install",
+            "note": "若未安装常驻后台程序，需要在终端运行 douyin-wiki worker run，或安装系统服务",
         }
 
     def storage(self) -> dict[str, Any]:

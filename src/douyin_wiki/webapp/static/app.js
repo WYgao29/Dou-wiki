@@ -408,17 +408,16 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
     params.set("section", state.section);
   }
   try {
-    const [data, allData] = await Promise.all([
+    const needsCatalog = Boolean(favoritesJob) || (Boolean(query) && !state.allItems.length);
+    const [data, catalogData] = await Promise.all([
       api(`/api/library${semantic ? "/search" : ""}${params.size ? `?${params}` : ""}`),
-      favoritesJob ? api("/api/library") : null,
+      needsCatalog ? api("/api/library") : null,
     ]);
-    if (!isCurrent()) return;
-    if (query && !favoritesJob && !state.allItems.length) await ensureCommandItems();
     if (!isCurrent()) return;
     state.items = data.items;
     state.facets = data.facets;
     state.tags = [...new Set(state.tags.map(tag => state.facets.tag_aliases?.[tag] || tag))];
-    if (allData) state.allItems = allData.items;
+    if (catalogData) state.allItems = catalogData.items;
     else if (!query && !favoritesJob) state.allItems = data.items;
     state.catalogHasItems = Boolean(
       (!query && data.items.length)
@@ -450,7 +449,7 @@ async function ensureCommandItems() {
     const data = await api("/api/library");
     state.allItems = data.items;
   } catch (_error) {
-    state.allItems = state.items;
+    // Keep the catalog empty. Search hits must not become the source-tab counts.
   }
 }
 
@@ -832,7 +831,7 @@ function openFocused() {
 async function reanalyzeItem(item, button) {
   const confirmed = await window.Douku.confirmDanger({
     title: "重新交给 Agent 分析这篇？",
-    description: "重新交给 Agent 分析这篇。确认后任务进入队列，你仍留在这篇文章。",
+    description: "确认后任务进入队列，你仍留在这篇文章。",
     confirmLabel: "重新交给 Agent 分析这篇",
     tone: "normal",
   });
@@ -922,9 +921,9 @@ function renderLibraryEmptyState(items) {
 }
 
 function syncSourceTabs() {
-  const items = state.allItems.length ? state.allItems : state.items;
+  if (!state.allItems.length) return;
   const counts = {video: 0, image_note: 0};
-  items.forEach((item) => {
+  state.allItems.forEach((item) => {
     if (item.source_kind === "video" || item.source_kind === "image_note") counts[item.source_kind] += 1;
   });
   let dropped = false;

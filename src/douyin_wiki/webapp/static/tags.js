@@ -264,26 +264,59 @@
     const duplicateGroups = state.duplicates.map((group) => ({group, names: groupNames(group)})).filter((item) => item.names.length > 1);
     $("tag-duplicates").classList.toggle("hidden", !duplicateGroups.length);
     const duplicateList = node("div", null, "tag-duplicate-list");
-    duplicateGroups.forEach(({group, names}) => {
+    duplicateGroups.forEach(({names}) => {
       const row = node("div", null, "tag-duplicate-group");
-      const select = node("select"); select.setAttribute("aria-label", `选择合并目标：${names.join("、")}`);
-      names.forEach(name => { const option = node("option", name); option.value = name; select.append(option); });
-      select.disabled = state.busy;
-      const count = articleCount(names, group);
-      row.append(node("span", names.join(" · ")), select, button("合并", async () => {
+      const members = node("div", null, "tag-duplicate-members");
+      const select = node("select");
+      select.setAttribute("aria-label", `选择合并目标：${names.join("、")}`);
+      const checked = new Set(names);
+      const pickedNames = () => names.filter((name) => checked.has(name));
+      const merge = button("合并", async () => {
         const target = select.value;
+        const picked = pickedNames();
+        if (picked.length < 2 || !picked.includes(target)) return;
+        const count = articleCount(picked);
         const confirmed = await D.confirmDanger({
           title: "合并标签",
-          description: `将把 ${names.length} 个标签合并到「${target}」，会影响 ${count} 篇文章。`,
+          description: `将把 ${picked.length} 个标签合并到「${target}」，会影响 ${count} 篇文章。`,
           confirmLabel: "合并",
         });
-        if (confirmed) await change("merge", {names, target}, []);
-      }, "secondary-button"));
+        if (confirmed) await change("merge", {names: picked, target}, []);
+      }, "secondary-button");
+      const refreshSelect = () => {
+        const picked = pickedNames();
+        const previous = select.value;
+        select.replaceChildren(...picked.map((name) => {
+          const option = node("option", name);
+          option.value = name;
+          return option;
+        }));
+        if (picked.includes(previous)) select.value = previous;
+        const blocked = state.busy || picked.length < 2;
+        select.disabled = blocked;
+        merge.disabled = blocked;
+      };
+      names.forEach((name) => {
+        const label = node("label", null, "tag-duplicate-member");
+        const box = node("input");
+        box.type = "checkbox";
+        box.checked = true;
+        box.disabled = state.busy;
+        box.setAttribute("aria-label", `纳入合并：${name}`);
+        box.addEventListener("change", () => {
+          if (box.checked) checked.add(name); else checked.delete(name);
+          refreshSelect();
+        });
+        label.append(box, node("span", name));
+        members.append(label);
+      });
+      refreshSelect();
+      row.append(members, select, merge);
       duplicateList.append(row);
     });
     $("tag-duplicates").replaceChildren(
       node("h2", duplicateGroups.length ? `可能重复 · ${duplicateGroups.length} 组` : "可能重复"),
-      node("p", "每组最多 5 个。合并前会说明影响的文章数，确认后才会合并。", "hint-copy"),
+      node("p", "每组最多 5 个。可取消勾选不想合并的标签。合并前会说明影响的文章数。", "hint-copy"),
       duplicateList,
     );
     renderAliases();

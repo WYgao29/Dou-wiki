@@ -27,7 +27,7 @@ def install_tag_api(app, core, catalog, publish_mutation):
         with core.vault.entry_operations_locked():
             if catalog.compute_fingerprint() != catalog.fingerprint:
                 catalog.refresh()
-            return core.tags.overview(catalog.list_items())
+            return core.tags.overview(catalog.list_items(), include_undoable=True)
 
     @app.get("/api/tags")
     async def list_tags():

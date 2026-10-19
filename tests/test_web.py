@@ -836,7 +836,7 @@ def test_model_settings_page_shares_theme_and_accessible_controls(tmp_path: Path
     )
     with local_client(app) as client:
         page = client.get("/settings/model")
-        assert page.status_code == 200
+        assert page.status_code == 404
         assert "data-theme-select" in page.text
         assert 'id="app-shell"' in page.text
         assert 'id="model-view"' not in page.text

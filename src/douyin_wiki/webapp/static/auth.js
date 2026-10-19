@@ -35,8 +35,8 @@
     card.lastChild.dataset.state = channel.user_state;
     card.lastChild.prepend(D.icon(["authorized", "available"].includes(channel.user_state) ? "check" : "alert-circle"));
     card.append(D.node("p", `上次检查：${channel.checked_display || "尚未检查"}`));
-    const conclusion = String(channel.message || "").trim();
-    if (conclusion && !/[A-Za-z]/.test(conclusion) && conclusion !== channel.user_state_label) {
+    const conclusion = String(channel.conclusion || "").trim();
+    if (conclusion && conclusion !== channel.user_state_label) {
       card.append(D.node("p", conclusion));
     }
     if (channel.affected_job_count) {

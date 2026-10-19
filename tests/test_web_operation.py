@@ -633,7 +633,8 @@ def test_web_029_sidebar_keeps_settings_hub_and_paths(tmp_path) -> None:
             "/settings/model",
             "/settings/system",
         ):
-            assert client.get(path).status_code == 200
+            expected = 404 if path == "/settings/model" else 200
+            assert client.get(path).status_code == expected
         scripts = {
             name: client.get(f"/static/{name}?v={WEB_VERSION}").text
             for name in (

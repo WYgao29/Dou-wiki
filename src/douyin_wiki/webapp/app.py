@@ -545,7 +545,7 @@ def create_app(
 
     @app.get("/settings/model", response_class=HTMLResponse)
     async def model_settings_page(request: Request):
-        return shell_page(request, title="页面不存在", missing=True)
+        return shell_page(request, title="页面不存在", status_code=404, missing=True)
 
     @app.get("/api/library")
     async def library(

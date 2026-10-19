@@ -4,7 +4,7 @@
     "library-view", "article-view", "topics-view", "topic-view", "trash-view", "tags-view",
     "imports-view", "imports-single-view", "imports-creators-view", "imports-favorites-view", "imports-collections-view",
     "jobs-view", "job-detail-view", "auth-view", "system-view",
-    "analysis-view", "model-view", "settings-view", "not-found-view",
+    "analysis-view", "settings-view", "not-found-view",
   ];
   const Douku = window.Douku || {};
   Douku.$ = (id) => document.getElementById(id);

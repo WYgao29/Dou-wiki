@@ -137,6 +137,23 @@ def test_overview_alerts_unverified_video_channel(tmp_path) -> None:
     assert any(item["code"] == "video_auth_unverified" for item in overview["alerts"])
 
 
+def test_auth_conclusion_keeps_chinese_when_the_message_names_cookie() -> None:
+    from douyin_wiki.operation import chinese_conclusion, present_auth_check
+
+    assert chinese_conclusion("抖音 Cookie 失效", "需要重新登录") == "抖音登录凭证失效。"
+    shown = present_auth_check(
+        {"state": "expired", "ok": False, "message": "抖音 Cookie 失效", "detail": "Cookie"},
+        channel="douyin",
+    )
+    assert shown["message"] == "抖音 Cookie 失效"
+    assert shown["conclusion"] == "抖音登录凭证失效。"
+    assert "Cookie" not in shown["conclusion"]
+    assert chinese_conclusion("正在检查…", "正在检查…") == ""
+    technical = chinese_conclusion("专用浏览器中没有未过期的抖音登录 Cookie", "需要重新登录")
+    assert technical == "专用浏览器中没有未过期的抖音登录凭证。"
+    assert chinese_conclusion("Playwright profile ready", "可以下载") == ""
+
+
 def test_auth_and_app_scripts_clarify_channels_and_404(tmp_path) -> None:
     config, service = _web_fixture(tmp_path)
     app = create_app(config, service=service, start_watcher=False)

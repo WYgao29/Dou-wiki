@@ -406,10 +406,7 @@ def message_for_user(
     if job.status == JobStatus.NEEDS_SELECTION:
         return "清点已完成，请选择要导入的作品并确认。"
     if job.status == JobStatus.AWAITING_AGENT_ANALYSIS:
-        return (
-            "当前交给外部 Agent。网页不会自动分析，需要外部 Agent 接续。"
-            "后台不会自动完成整理。"
-        )
+        return "当前交给外部 Agent。网页不会自动分析，需要外部 Agent 接续。后台不会自动完成整理。"
     if job.status == JobStatus.ANALYZING:
         return "后台正在校验 Agent 提交的分析并写入知识库。"
     if job.status == JobStatus.COMPLETED:
@@ -528,6 +525,39 @@ def cookie_source_label(channel: str, cookie_source: str | None = None) -> str:
     return "抖库专用浏览器配置（账号/收藏等通道，与视频下载主路径相互独立）"
 
 
+def chinese_conclusion(message: str, user_state_label: str) -> str:
+    """Chinese sentence for the auth card. Technical wording stays in message."""
+    text = re.sub(r"\s+", " ", message or "").strip()
+    label = (user_state_label or "").strip()
+    if not text or text == label:
+        return ""
+    if not re.search(r"[A-Za-z]", text):
+        return text
+    for pattern, replacement in (
+        (r"登录\s*[Cc]ookies?", "登录凭证"),
+        (r"[Cc]ookies?", "登录凭证"),
+        (r"[Pp]laywright", "浏览器组件"),
+        (r"yt-dlp", "下载工具"),
+    ):
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not re.search(r"[A-Za-z]", text):
+        if text == label:
+            return ""
+        if text[-1:] not in "。！？":
+            text += "。"
+        return text
+    kept = [
+        clause.strip()
+        for clause in re.split(r"[。！？]", text)
+        if clause.strip() and not re.search(r"[A-Za-z]", clause)
+    ]
+    if not kept:
+        return ""
+    return "。".join(kept) + "。"
+
+
 def present_auth_check(
     check: dict[str, Any],
     *,
@@ -559,6 +589,7 @@ def present_auth_check(
         "cookie_source_label": cookie_source_label(channel, check.get("cookie_source")),
         "account_hint": account_hint or "",
         "message": message,
+        "conclusion": chinese_conclusion(message, user_label),
         "detail": detail,
         "checked_at": beijing_iso(timestamp),
         "checked_display": format_beijing(timestamp),

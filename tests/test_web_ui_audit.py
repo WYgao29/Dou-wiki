@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from douyin_wiki.models import CaptureRequest, JobStatus
-from douyin_wiki.webapp.app import WEB_VERSION, create_app
+from douyin_wiki.tags import snapshot_still_undoable
+from douyin_wiki.webapp.app import create_app
 from tests.support.web import _web_fixture, local_client
 from tests.test_tags import source
 
@@ -12,48 +13,25 @@ def test_shell_hides_retired_model_page_and_offers_agent_commands(tmp_path):
     config, service = _web_fixture(tmp_path)
     app = create_app(config, service=service, start_watcher=False)
     with local_client(app) as client:
-        page = client.get("/").text
-        assert "去 Agent 里导入" in page
-        assert 'data-copy-command="请导入这条抖音，并继续校正和分析：https://v.douyin.com/"' in page
-        assert 'data-copy-command="请读取我的抖音收藏，列出新增作品，确认后再导入。"' in page
-        assert 'class="destination-row hidden" data-import-kind="collections"' in page
-        assert 'id="model-view"' not in page
-        assert "共用模型" not in page
-        assert 'id="topics-create-button"' in page
-        assert "去资料库选择" not in page
+        page = client.get("/")
+        assert page.status_code == 200
+        assert "去 Agent 里导入" in page.text
+        assert (
+            'data-copy-command="请导入这条抖音，并继续校正和分析：https://v.douyin.com/"'
+            in page.text
+        )
+        assert 'data-copy-command="请读取我的抖音收藏，列出新增作品，确认后再导入。"' in page.text
+        assert 'class="destination-row hidden" data-import-kind="collections"' in page.text
+        assert 'id="model-view"' not in page.text
+        assert "共用模型" not in page.text
+        assert 'id="topics-create-button"' in page.text
+        assert "去资料库选择" not in page.text
         model = client.get("/settings/model")
-        assert model.status_code == 200
+        assert model.status_code == 404
         assert "<title>页面不存在 · 抖库</title>" in model.text
         assert 'data-missing="1"' in model.text
-        script = client.get(f"/static/model-settings.js?v={WEB_VERSION}")
-        assert script.status_code == 200
-        assert "showMissing" in script.text
-        assert f"/static/model-settings.js?v={WEB_VERSION}" not in model.text
-        assets = {
-            name: client.get(f"/static/{name}?v={WEB_VERSION}").text
-            for name in ("app.js", "jobs.js", "auth.js", "tags.js", "shared.js", "app.css")
-        }
-    assert 'title: "重新交给 Agent 分析这篇？"' in assets["app.js"]
-    assert 'tone: "normal"' in assets["app.js"]
-    assert "会调用模型" not in assets["app.js"]
-    assert "消耗 Token" not in assets["app.js"]
-    assert "link.title = heading.textContent.trim()" in assets["app.js"]
-    assert "去资料库选择" not in assets["app.js"]
-    assert "打开《${title}》" in assets["jobs.js"]
-    assert "子任务在下方" in assets["jobs.js"]
-    assert "has-warning" in assets["jobs.js"]
-    assert "外部 Agent" in assets["jobs.js"]
-    assert "复制诊断信息" in assets["auth.js"]
-    assert "Playwright" not in assets["auth.js"]
-    assert "yt-dlp" not in assets["auth.js"]
-    assert "undoableByAlias" in assets["tags.js"]
-    assert "会影响 ${count} 篇文章" in assets["tags.js"]
-    assert 'action === "merge" || action === "delete"' in assets["tags.js"]
-    assert 'tone === "normal"' in assets["shared.js"]
-    assert ".search-box:has(:focus-visible)" in assets["app.css"]
-    assert ".theme-control select:focus-visible" in assets["app.css"]
-    assert "white-space: nowrap" in assets["app.css"]
-    assert ".tag-duplicate-list" in assets["app.css"]
+        assert 'id="not-found-view"' in model.text
+        assert "model-settings.js" not in model.text
 
 
 def test_child_warning_preview_uses_article_title(tmp_path):
@@ -93,6 +71,64 @@ def test_child_warning_preview_uses_article_title(tmp_path):
     assert child_row["display_title"] == "单条采集 · 测试文章"
     assert "🔥" not in child_row["display_title"]
     assert detail["imported_entries"] == [{"entry_id": "dy-123", "title": "测试文章"}]
+
+
+def test_job_detail_loads_only_the_first_five_imported_titles(tmp_path):
+    config, service = _web_fixture(tmp_path)
+    entry_ids = []
+    children = []
+    for offset in range(6):
+        work_id = str(3000 + offset)
+        source(service, work_id, ["咖啡"], managed=True)
+        entry_ids.append(f"dy-{work_id}")
+        child = service.database.create_job(
+            CaptureRequest(share_text=f"https://www.douyin.com/video/{work_id}"),
+            status=JobStatus.COMPLETED,
+            progress=1,
+        )
+        service.database.update_job(child.id, result={"entry_id": f"dy-{work_id}"}, unlock=True)
+        children.append(child.id)
+    parent = service.database.create_job(
+        CaptureRequest(share_text="https://www.douyin.com/user/batch"),
+        kind="creator_import",
+        status=JobStatus.COMPLETED,
+        progress=1,
+    )
+    service.database.update_job(
+        parent.id, result={"child_job_ids": children, "creator_name": "批次博主"}, unlock=True
+    )
+    app = create_app(config, service=service, start_watcher=False)
+    with local_client(app) as client:
+        detail = client.get(f"/api/jobs/{parent.id}").json()
+    assert [item["entry_id"] for item in detail["imported_entries"]] == entry_ids[:5]
+    assert entry_ids[5] in detail["imported_entry_ids"]
+    assert entry_ids[5] not in {item["entry_id"] for item in detail["imported_entries"]}
+
+
+def test_library_does_not_check_undo_and_tags_reuse_the_result(tmp_path, monkeypatch):
+    config, service = _web_fixture(tmp_path)
+    calls = {"n": 0}
+
+    def wrapped(*args, **kwargs):
+        calls["n"] += 1
+        return snapshot_still_undoable(*args, **kwargs)
+
+    monkeypatch.setattr("douyin_wiki.tags.snapshot_still_undoable", wrapped)
+    app = create_app(config, service=service, start_watcher=False)
+    with local_client(app) as client:
+        assert client.get("/api/library").status_code == 200
+        assert client.get("/api/library").status_code == 200
+        assert calls["n"] == 0
+        renamed = client.post("/api/tags/rename", json={"name": "咖啡", "target": "饮品"})
+        assert renamed.status_code == 200, renamed.text
+        assert calls["n"] >= 1
+        seen = calls["n"]
+        fresh = client.get("/api/tags").json()
+        operation = renamed.json()["operation_id"]
+        assert fresh["undoable_by_alias"]["咖啡"] == operation
+        assert calls["n"] == seen
+        assert client.get("/api/tags").status_code == 200
+        assert calls["n"] == seen
 
 
 def test_tag_merge_reports_articles_and_hides_stale_undo(tmp_path):

@@ -245,7 +245,7 @@ def test_duplicate_rules_are_candidates_only():
         {"name": name, "count": 1}
         for name in ["AI Agent", "aiagent", "AI 代理", "AI 代理应用", "咖啡"]
     ]
-    assert duplicate_groups(rows) == [["AI Agent", "aiagent", "AI 代理", "AI 代理应用"]]
+    assert duplicate_groups(rows) == [["AI Agent", "aiagent", "AI 代理"]]
 
 
 def test_duplicate_groups_cap_exact_matches_and_ignore_short_chains():
@@ -263,8 +263,41 @@ def test_duplicate_groups_cap_exact_matches_and_ignore_short_chains():
     assert all(1 < len(group) <= 5 for group in groups)
     assert sum(len(group) for group in groups) == len(exact)
     chain = ["智能", "人工智能", "人工智能应用", "应用", "机器学习应用", "咖啡"]
-    chained = duplicate_groups([{"name": name} for name in chain])
-    assert chained == [["人工智能", "人工智能应用"]]
+    assert duplicate_groups([{"name": name} for name in chain]) == []
+
+
+def test_duplicate_groups_do_not_chain_indirect_names():
+    chained = duplicate_groups([{"name": name} for name in ["abcdefgh", "abcdefghij", "cdefghij"]])
+    assert chained == [["abcdefgh", "abcdefghij"]]
+    assert all("abcdefgh" not in group or "cdefghij" not in group for group in chained)
+    real = duplicate_groups(
+        [{"name": name} for name in ["AI Agent", "Agent", "智能体", "Agent 自进化", "AgentKey"]]
+    )
+    assert real == [["AI Agent", "Agent", "智能体"]]
+    assert duplicate_groups([{"name": "abcdef"}, {"name": "abcdefgh"}]) == [["abcdef", "abcdefgh"]]
+    assert duplicate_groups([{"name": "abcde"}, {"name": "abcdefg"}]) == []
+
+
+def test_merge_can_leave_out_a_duplicate_member(tmp_path):
+    config, service = _web_fixture(tmp_path)
+    source(service, "1000", ["AI Agent"], managed=True)
+    source(service, "1001", ["Agent"], managed=True)
+    source(service, "1002", ["智能体"], managed=True)
+    source(service, "1003", ["Agent 自进化"], managed=True)
+    app = create_app(config, service=service, start_watcher=False)
+    with local_client(app) as client:
+        overview = client.get("/api/tags").json()
+        group = next(item for item in overview["duplicates"] if "AI Agent" in item["names"])
+        assert set(group["names"]) == {"AI Agent", "Agent", "智能体"}
+        merged = client.post(
+            "/api/tags/merge", json={"names": ["AI Agent", "Agent"], "target": "AI Agent"}
+        )
+        assert merged.status_code == 200, merged.text
+        names = {row["name"] for row in merged.json()["tags"]}
+        assert "智能体" in names
+        assert "Agent 自进化" in names
+        assert "Agent" not in names
+        assert "AI Agent" in names
 
 
 def test_merge_preserves_pin_and_manual_source_tags(tmp_path):

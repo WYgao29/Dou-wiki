@@ -384,7 +384,9 @@
       const channel = data.channels?.douyin;
       if (!channel || !active()) return;
       const link = node("a", "检查抖音账号授权"); link.href = "/settings/auth?channel=douyin";
-      $("auth-state").replaceChildren(node("span", (channel.user_state_label || "授权状态需在设置页检查") + " · "), link);
+      const authLabel = channel.user_state_label || "授权状态需在设置页检查";
+      $("auth-state").replaceChildren(node("span", authLabel + " · "), link);
+      $("auth-state").title = `${authLabel} · 检查抖音账号授权`;
     }).catch(() => {});
   });
   $("history").addEventListener("change", () => {

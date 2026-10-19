@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import sqlite3
+import threading
 import unicodedata
 import uuid
 from collections import defaultdict
+from contextlib import closing
 from datetime import UTC
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import yaml
 
@@ -173,6 +178,13 @@ def replace_frontmatter_tags(frontmatter: str, tags: list[str]) -> str:
 
 
 DUPLICATE_GROUP_LIMIT = 5
+_UNDOABLE_CACHE: dict[tuple[str, str], bool] = {}
+_UNDOABLE_CACHE_LIMIT = 256
+_UNDOABLE_CACHE_LOCK = threading.Lock()
+_UNDO_CONFLICT = "操作后资料或标签已变化，无法撤销；后续修改已保留"
+_UNDO_NAME_CONFLICT = "后续标签与待恢复的标准标签或别名重名，无法撤销；后续关联已保留"
+_UNDO_YAML_CONFLICT = "资料格式已变化，无法安全撤销；请先修复 Markdown"
+_UNDO_PIN_CONFLICT = "固定标签已满，无法恢复原固定状态；请先取消一个固定标签"
 
 
 def _pair_strength(left_key: str, right_key: str, translations: dict[str, str]) -> int:
@@ -184,7 +196,7 @@ def _pair_strength(left_key: str, right_key: str, translations: dict[str, str]) 
     shorter, longer = (
         (left_key, right_key) if len(left_key) <= len(right_key) else (right_key, left_key)
     )
-    if len(shorter) >= 4 and shorter in longer and len(shorter) / len(longer) >= 0.6:
+    if len(shorter) >= 4 and shorter in longer and len(shorter) / len(longer) >= 0.75:
         return 1
     return 0
 
@@ -212,133 +224,180 @@ def duplicate_groups(rows: list[dict[str, Any]]) -> list[list[str]]:
     }
     names = [row["name"] for row in rows]
     keys = {name: tag_key(name) for name in names}
-    parents = {name: name for name in names}
-    sizes = {name: 1 for name in names}
-
-    def root(name: str) -> str:
-        while parents[name] != name:
-            name = parents[name]
-        return name
-
-    pairs: list[tuple[int, str, str, str, str]] = []
+    similar: dict[str, set[str]] = {name: set() for name in names}
     for index, left in enumerate(names):
         for right in names[index + 1 :]:
-            strength = _pair_strength(keys[left], keys[right], translations)
-            if strength:
-                pairs.append((-strength, left.casefold(), right.casefold(), left, right))
-    for _strength, _left_sort, _right_sort, left, right in sorted(pairs):
-        left_root, right_root = root(left), root(right)
-        if left_root == right_root:
+            if _pair_strength(keys[left], keys[right], translations):
+                similar[left].add(right)
+                similar[right].add(left)
+    # Every member must be similar to the seed and to every name already chosen.
+    # Indirect chains (A~B~C while A and C differ) stay in separate groups.
+    remaining = set(names)
+    groups: list[list[str]] = []
+    for seed in names:
+        if seed not in remaining or not (similar[seed] & remaining):
             continue
-        if sizes[left_root] + sizes[right_root] > DUPLICATE_GROUP_LIMIT:
-            continue
-        parents[right_root] = left_root
-        sizes[left_root] += sizes[right_root]
-    groups: dict[str, list[str]] = defaultdict(list)
-    for name in names:
-        groups[root(name)].append(name)
-    return [group for group in groups.values() if len(group) > 1]
+        group = [seed]
+        for name in names:
+            if name == seed or name not in remaining or name not in similar[seed]:
+                continue
+            if len(group) >= DUPLICATE_GROUP_LIMIT:
+                break
+            if all(name in similar[member] for member in group):
+                group.append(name)
+        if len(group) > 1:
+            groups.append(group)
+            remaining.difference_update(group)
+    return groups
+
+
+def _read_only_connection(path: Path) -> sqlite3.Connection:
+    uri = f"file:{quote(path.resolve().as_posix())}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    return conn
+
+
+def _undo_stamp(vault: VaultWriter, database_path: Path) -> str:
+    """Fingerprint the files and database pages that can make an undo stale.
+
+    A new connection's ``PRAGMA data_version`` does not move when another
+    connection commits, so it cannot invalidate this cache. Database, WAL and
+    source-file stamps do. Rewriting ``last_used_at`` to the same value does
+    not grow the WAL, so a quiet tags page can reuse the previous answer.
+    """
+    parts: list[str] = []
+    for candidate in (
+        database_path,
+        Path(f"{database_path}-wal"),
+        Path(f"{database_path}-shm"),
+    ):
+        try:
+            stat = candidate.stat()
+        except OSError:
+            parts.append(f"{candidate.name}:missing")
+        else:
+            parts.append(f"{candidate.name}:{stat.st_mtime_ns}:{stat.st_size}")
+    root = vault.vault_path
+    sources = sorted((root / "wiki" / "sources").glob("*.md"))
+    sources.extend(sorted((root / "creators").glob("*/sources/*.md")))
+    for path in sources:
+        relative = path.relative_to(root).as_posix()
+        try:
+            stat = path.stat()
+        except OSError:
+            parts.append(f"{relative}:missing")
+        else:
+            parts.append(f"{relative}:{stat.st_mtime_ns}:{stat.st_size}")
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+def _undo_conflict(conn, snapshot: dict[str, Any], vault: VaultWriter) -> str | None:
+    """Return why this snapshot cannot be undone.
+
+    ``vault`` is required because the checks read Markdown and reject symlinks.
+    Pin capacity is simulated from the rows undo would write, before any restore.
+    A truthy ``before`` restores that row, ``None`` deletes it, and an empty
+    mapping leaves the row unchanged.
+    """
+    for relative, values in snapshot["files"].items():
+        path = vault.vault_path / relative
+        vault._reject_vault_symlinks(path, field="tag undo")
+        current = path.read_text(encoding="utf-8") if path.exists() else None
+        if current != values["after"]:
+            return _UNDO_CONFLICT
+    for entry_id, values in snapshot["entries"].items():
+        current = conn.execute(
+            "SELECT tags_json, data_json FROM entries WHERE id=?", (entry_id,)
+        ).fetchone()
+        chunks = {
+            row["id"] for row in conn.execute("SELECT id FROM chunks WHERE entry_id=?", (entry_id,))
+        }
+        if (
+            current is None
+            or dict(current) != values["after"]
+            or chunks != {row["id"] for row in values["chunks"]}
+        ):
+            return _UNDO_CONFLICT
+    fields = ("name", "pinned_at", "position", "created_at")
+    for name, values in snapshot["tags"].items():
+        row = conn.execute("SELECT * FROM tags WHERE name=?", (name,)).fetchone()
+        current = dict(row) if row else None
+        expected = values["after"]
+        if (current is None) != (expected is None) or (
+            current and any(current[key] != expected[key] for key in fields)
+        ):
+            return _UNDO_CONFLICT
+    for name, values in snapshot["aliases"].items():
+        row = conn.execute("SELECT canonical FROM tag_aliases WHERE alias=?", (name,)).fetchone()
+        if (row[0] if row else None) != values["after"]:
+            return _UNDO_CONFLICT
+    standards = {row[0] for row in conn.execute("SELECT name FROM tags")}
+    alias_map = dict(conn.execute("SELECT alias, canonical FROM tag_aliases"))
+    restored_names: set[str] = set()
+    for name, values in snapshot["tags"].items():
+        if values["before"]:
+            standards.add(name)
+            restored_names.add(name)
+        else:
+            standards.discard(name)
+    for name, values in snapshot["aliases"].items():
+        if values["before"]:
+            alias_map[name] = values["before"]
+            restored_names.add(name)
+        else:
+            alias_map.pop(name, None)
+    if restored_names.intersection(standards, alias_map):
+        return _UNDO_NAME_CONFLICT
+    created = {name for name, values in snapshot["tags"].items() if values["before"] is None}
+    if created:
+        changed_paths = set(snapshot["files"])
+        sources = list((vault.vault_path / "wiki/sources").glob("*.md"))
+        sources += list((vault.vault_path / "creators").glob("*/sources/*.md"))
+        for path in sources:
+            vault._reject_vault_symlinks(path, field="tag undo source")
+            if str(path.relative_to(vault.vault_path)) in changed_paths:
+                continue
+            text = path.read_text(encoding="utf-8")
+            match = re.match(r"\A---\n(.*?)\n---(?:\n|$)", text, re.S)
+            try:
+                metadata = yaml.safe_load(match[1]) if match else None
+            except yaml.YAMLError:
+                return _UNDO_YAML_CONFLICT
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("type") in {None, "source"}
+                and isinstance(metadata.get("tags"), list)
+                and created.intersection(metadata["tags"])
+            ):
+                return _UNDO_CONFLICT
+        for row in conn.execute("SELECT alias, canonical FROM tag_aliases"):
+            if row["canonical"] in created and row["alias"] not in snapshot["aliases"]:
+                return _UNDO_CONFLICT
+        for row in conn.execute("SELECT id, tags_json FROM entries"):
+            if row["id"] not in snapshot["entries"] and created.intersection(
+                json.loads(row["tags_json"])
+            ):
+                return _UNDO_CONFLICT
+    pins = {
+        row["name"]: row["pinned_at"] for row in conn.execute("SELECT name, pinned_at FROM tags")
+    }
+    for name, values in snapshot["tags"].items():
+        before = values["before"]
+        if before:
+            pins[name] = before["pinned_at"]
+        elif before is None:
+            pins.pop(name, None)
+    if sum(1 for value in pins.values() if value) > PIN_LIMIT:
+        return _UNDO_PIN_CONFLICT
+    return None
 
 
 def snapshot_still_undoable(vault: VaultWriter, conn, snapshot: dict[str, Any]) -> bool:
     """Read-only mirror of undo()'s conflict checks. False means a click would 409."""
     try:
-        files = snapshot.get("files") or {}
-        entries = snapshot.get("entries") or {}
-        tag_rows = snapshot.get("tags") or {}
-        alias_rows = snapshot.get("aliases") or {}
-        for relative, values in files.items():
-            path = vault.vault_path / relative
-            vault._reject_vault_symlinks(path, field="tag undo")
-            current = path.read_text(encoding="utf-8") if path.exists() else None
-            if current != values.get("after"):
-                return False
-        for entry_id, values in entries.items():
-            current = conn.execute(
-                "SELECT tags_json, data_json FROM entries WHERE id=?", (entry_id,)
-            ).fetchone()
-            chunks = {
-                row["id"]
-                for row in conn.execute("SELECT id FROM chunks WHERE entry_id=?", (entry_id,))
-            }
-            expected_chunks = {row["id"] for row in values.get("chunks") or []}
-            if (
-                current is None
-                or dict(current) != values.get("after")
-                or chunks != expected_chunks
-            ):
-                return False
-        fields = ("name", "pinned_at", "position", "created_at")
-        for name, values in tag_rows.items():
-            row = conn.execute("SELECT * FROM tags WHERE name=?", (name,)).fetchone()
-            current = dict(row) if row else None
-            expected = values.get("after")
-            if (current is None) != (expected is None) or (
-                current and expected and any(current[key] != expected[key] for key in fields)
-            ):
-                return False
-        for name, values in alias_rows.items():
-            row = conn.execute(
-                "SELECT canonical FROM tag_aliases WHERE alias=?", (name,)
-            ).fetchone()
-            if (row[0] if row else None) != values.get("after"):
-                return False
-        standards = {row[0] for row in conn.execute("SELECT name FROM tags")}
-        alias_map = dict(conn.execute("SELECT alias, canonical FROM tag_aliases"))
-        restored_names: set[str] = set()
-        for name, values in tag_rows.items():
-            if values.get("before"):
-                standards.add(name)
-                restored_names.add(name)
-            else:
-                standards.discard(name)
-        for name, values in alias_rows.items():
-            if values.get("before"):
-                alias_map[name] = values["before"]
-                restored_names.add(name)
-            else:
-                alias_map.pop(name, None)
-        if restored_names.intersection(standards, alias_map):
-            return False
-        created = {name for name, values in tag_rows.items() if values.get("before") is None}
-        if created:
-            changed_paths = set(files)
-            sources = list((vault.vault_path / "wiki/sources").glob("*.md"))
-            sources += list((vault.vault_path / "creators").glob("*/sources/*.md"))
-            for path in sources:
-                vault._reject_vault_symlinks(path, field="tag undo source")
-                if str(path.relative_to(vault.vault_path)) in changed_paths:
-                    continue
-                text = path.read_text(encoding="utf-8")
-                match = re.match(r"\A---\n(.*?)\n---(?:\n|$)", text, re.S)
-                try:
-                    metadata = yaml.safe_load(match[1]) if match else None
-                except yaml.YAMLError:
-                    return False
-                if (
-                    isinstance(metadata, dict)
-                    and metadata.get("type") in {None, "source"}
-                    and isinstance(metadata.get("tags"), list)
-                    and created.intersection(metadata["tags"])
-                ):
-                    return False
-            for row in conn.execute("SELECT alias, canonical FROM tag_aliases"):
-                if row["canonical"] in created and row["alias"] not in alias_rows:
-                    return False
-            for row in conn.execute("SELECT id, tags_json FROM entries"):
-                if row["id"] not in entries and created.intersection(json.loads(row["tags_json"])):
-                    return False
-        pins = {
-            row["name"]: row["pinned_at"]
-            for row in conn.execute("SELECT name, pinned_at FROM tags")
-        }
-        for name, values in tag_rows.items():
-            before = values.get("before")
-            if before is None:
-                pins.pop(name, None)
-            else:
-                pins[name] = before.get("pinned_at")
-        return sum(1 for value in pins.values() if value) <= PIN_LIMIT
+        return _undo_conflict(conn, snapshot, vault) is None
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
         return False
 
@@ -386,7 +445,9 @@ class TagManager:
                 names.extend(json.loads(row[0]))
             return sorted(self._resolve(conn, names), key=str.casefold)
 
-    def overview(self, items, *, persist: bool = True) -> dict[str, Any]:
+    def overview(
+        self, items, *, persist: bool = True, include_undoable: bool = False
+    ) -> dict[str, Any]:
         now = iso_now()
         counts: dict[str, list] = defaultdict(list)
         resolve = self.resolver()
@@ -430,24 +491,10 @@ class TagManager:
                 "WHERE u.undone_at IS NULL ORDER BY u.created_at DESC"
             ):
                 undo_by_alias.setdefault(row["alias"], row["operation_id"])
-            undoable_by_alias: dict[str, str] = {}
-            checked: dict[str, bool] = {}
-            for alias, operation_id in undo_by_alias.items():
-                if operation_id not in checked:
-                    stored = conn.execute(
-                        "SELECT snapshot_json FROM tag_undo WHERE id=?", (operation_id,)
-                    ).fetchone()
-                    snapshot = None
-                    if stored is not None:
-                        try:
-                            snapshot = json.loads(stored["snapshot_json"])
-                        except json.JSONDecodeError:
-                            snapshot = None
-                    checked[operation_id] = isinstance(snapshot, dict) and snapshot_still_undoable(
-                        self.vault, conn, snapshot
-                    )
-                if checked[operation_id]:
-                    undoable_by_alias[alias] = operation_id
+
+        undoable_by_alias: dict[str, str] = {}
+        if include_undoable and undo_by_alias:
+            undoable_by_alias = self._undoable_aliases(undo_by_alias)
 
         rows = []
         for record in records:
@@ -507,6 +554,41 @@ class TagManager:
             "undo_by_alias": undo_by_alias,
             "undoable_by_alias": undoable_by_alias,
         }
+
+    def _undoable_aliases(self, undo_by_alias: dict[str, str]) -> dict[str, str]:
+        """Check undo snapshots on a read-only connection, cached by operation and stamp."""
+        undoable: dict[str, str] = {}
+        checked: dict[str, bool] = {}
+        with closing(_read_only_connection(self.database.path)) as conn:
+            stamp = _undo_stamp(self.vault, self.database.path)
+            for alias, operation_id in undo_by_alias.items():
+                if operation_id not in checked:
+                    key = (operation_id, stamp)
+                    with _UNDOABLE_CACHE_LOCK:
+                        hit = key in _UNDOABLE_CACHE
+                        if hit:
+                            checked[operation_id] = _UNDOABLE_CACHE[key]
+                    if not hit:
+                        stored = conn.execute(
+                            "SELECT snapshot_json FROM tag_undo WHERE id=?", (operation_id,)
+                        ).fetchone()
+                        snapshot = None
+                        if stored is not None:
+                            try:
+                                snapshot = json.loads(stored["snapshot_json"])
+                            except json.JSONDecodeError:
+                                snapshot = None
+                        still = isinstance(snapshot, dict) and snapshot_still_undoable(
+                            self.vault, conn, snapshot
+                        )
+                        with _UNDOABLE_CACHE_LOCK:
+                            if len(_UNDOABLE_CACHE) >= _UNDOABLE_CACHE_LIMIT:
+                                _UNDOABLE_CACHE.clear()
+                            _UNDOABLE_CACHE[key] = still
+                        checked[operation_id] = still
+                if checked[operation_id]:
+                    undoable[alias] = operation_id
+        return undoable
 
     def pin(self, name: str, pinned: bool) -> None:
         with self.vault.entry_operations_locked(), self.database.connect() as conn:
@@ -788,105 +870,13 @@ class TagManager:
                     if row["undone_at"]:
                         return
                     snapshot = json.loads(row["snapshot_json"])
-                    conflict = "操作后资料或标签已变化，无法撤销；后续修改已保留"
-                    paths = {}
-                    for relative, values in snapshot["files"].items():
-                        path = self.vault.vault_path / relative
-                        self.vault._reject_vault_symlinks(path, field="tag undo")
-                        current = path.read_text(encoding="utf-8") if path.exists() else None
-                        if current != values["after"]:
-                            raise TagUndoConflict(conflict)
-                        paths[path] = values
-                    for entry_id, values in snapshot["entries"].items():
-                        current = conn.execute(
-                            "SELECT tags_json, data_json FROM entries WHERE id=?", (entry_id,)
-                        ).fetchone()
-                        chunks = {
-                            r["id"]
-                            for r in conn.execute(
-                                "SELECT id FROM chunks WHERE entry_id=?", (entry_id,)
-                            )
-                        }
-                        if (
-                            current is None
-                            or dict(current) != values["after"]
-                            or chunks != {r["id"] for r in values["chunks"]}
-                        ):
-                            raise TagUndoConflict(conflict)
-                    for name, values in snapshot["tags"].items():
-                        row = conn.execute("SELECT * FROM tags WHERE name=?", (name,)).fetchone()
-                        current = dict(row) if row else None
-                        expected = values["after"]
-                        fields = ("name", "pinned_at", "position", "created_at")
-                        if (current is None) != (expected is None) or (
-                            current and any(current[key] != expected[key] for key in fields)
-                        ):
-                            raise TagUndoConflict(conflict)
-                    for name, values in snapshot["aliases"].items():
-                        row = conn.execute(
-                            "SELECT canonical FROM tag_aliases WHERE alias=?", (name,)
-                        ).fetchone()
-                        if (row[0] if row else None) != values["after"]:
-                            raise TagUndoConflict(conflict)
-                    # Validate the restored namespace before changing any files or rows.
-                    standards = {r[0] for r in conn.execute("SELECT name FROM tags")}
-                    aliases = dict(conn.execute("SELECT alias, canonical FROM tag_aliases"))
-                    restored_names = set()
-                    for name, values in snapshot["tags"].items():
-                        if values["before"]:
-                            standards.add(name)
-                            restored_names.add(name)
-                        else:
-                            standards.discard(name)
-                    for name, values in snapshot["aliases"].items():
-                        if values["before"]:
-                            aliases[name] = values["before"]
-                            restored_names.add(name)
-                        else:
-                            aliases.pop(name, None)
-                    if restored_names.intersection(standards, aliases):
-                        raise TagUndoConflict(
-                            "后续标签与待恢复的标准标签或别名重名，无法撤销；后续关联已保留"
-                        )
-                    created = {
-                        name
-                        for name, values in snapshot["tags"].items()
-                        if values["before"] is None
+                    conflict = _undo_conflict(conn, snapshot, self.vault)
+                    if conflict:
+                        raise TagUndoConflict(conflict)
+                    paths = {
+                        self.vault.vault_path / relative: values
+                        for relative, values in snapshot["files"].items()
                     }
-                    if created:
-                        changed_paths = set(snapshot["files"])
-                        sources = list((self.vault.vault_path / "wiki/sources").glob("*.md"))
-                        sources += list((self.vault.vault_path / "creators").glob("*/sources/*.md"))
-                        for path in sources:
-                            self.vault._reject_vault_symlinks(path, field="tag undo source")
-                            if str(path.relative_to(self.vault.vault_path)) in changed_paths:
-                                continue
-                            text = path.read_text(encoding="utf-8")
-                            match = re.match(r"\A---\n(.*?)\n---(?:\n|$)", text, re.S)
-                            try:
-                                metadata = yaml.safe_load(match[1]) if match else None
-                            except yaml.YAMLError as exc:
-                                raise TagUndoConflict(
-                                    "资料格式已变化，无法安全撤销；请先修复 Markdown"
-                                ) from exc
-                            if (
-                                isinstance(metadata, dict)
-                                and metadata.get("type") in {None, "source"}
-                                and isinstance(metadata.get("tags"), list)
-                                and created.intersection(metadata["tags"])
-                            ):
-                                raise TagUndoConflict(conflict)
-                        for row in conn.execute("SELECT alias, canonical FROM tag_aliases"):
-                            if (
-                                row["canonical"] in created
-                                and row["alias"] not in snapshot["aliases"]
-                            ):
-                                raise TagUndoConflict(conflict)
-                        for row in conn.execute("SELECT id, tags_json FROM entries"):
-                            if row["id"] not in snapshot["entries"] and created.intersection(
-                                json.loads(row["tags_json"])
-                            ):
-                                raise TagUndoConflict(conflict)
                     # Restore standards before aliases to preserve foreign-key validity.
                     for values in snapshot["tags"].values():
                         before = values["before"]
@@ -918,15 +908,6 @@ class TagManager:
                     for name, values in snapshot["tags"].items():
                         if values["before"] is None:
                             conn.execute("DELETE FROM tags WHERE name=?", (name,))
-                    if (
-                        conn.execute(
-                            "SELECT COUNT(*) FROM tags WHERE pinned_at IS NOT NULL"
-                        ).fetchone()[0]
-                        > PIN_LIMIT
-                    ):
-                        raise TagUndoConflict(
-                            "固定标签已满，无法恢复原固定状态；请先取消一个固定标签"
-                        )
                     for entry_id, values in snapshot["entries"].items():
                         before = values["before"]
                         conn.execute(

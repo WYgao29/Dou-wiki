@@ -1195,8 +1195,6 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   margin: var(--space-4) 0 0; padding-left: var(--space-6); color: var(--text-2);
   font-size: var(--fs-13);
 }
-.auth-details summary { cursor: pointer; font-weight: var(--fw-semibold); }
-.auth-details p { white-space: pre-wrap; }
 .content-view, .content-view.operation-view, .article-view, .topic-view {
   width: 100%; max-width: none; margin: 0; padding: 0 var(--space-6) var(--space-16);
 }
@@ -1333,7 +1331,7 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 }
 #settings-view > :not(.view-header), #imports-view > :not(.view-header),
 #imports-single-view > :not(.view-header), #analysis-view > :not(.view-header),
-#model-view > :not(.view-header), #auth-view > :not(.view-header) {
+#auth-view > :not(.view-header) {
   max-width: 640px;
 }
 .operation-view > .view-header + :not(.view-header) { margin-top: var(--space-8); }
@@ -1600,9 +1598,6 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 #jobs-view .favorites-controls label {
   display: flex; gap: var(--space-2); align-items: center; font-size: var(--fs-12);
 }
-.operation-breadcrumb {
-  gap: var(--space-2); font-size: var(--fs-13); color: var(--text-2); white-space: nowrap;
-}
 .operation-view > .fav-confirm:last-child { margin-bottom: 0; }
 #jobs-view > .jobs-list {
   width: calc(100% + 48px); max-width: none; margin-inline: calc(-1 * var(--space-6));
@@ -1621,10 +1616,13 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 .tag-duplicates h2 { margin: 0; font: var(--fw-semibold) var(--fs-14)/20px var(--font-ui); }
 .tag-duplicates > p { margin-block: var(--space-2) var(--space-3); }
 .tag-duplicate-group {
-  display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2);
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2);
 }
-.tag-duplicate-group > span {
-  flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-13);
+.tag-duplicate-members {
+  display: flex; flex: 1 1 16rem; flex-wrap: wrap; gap: var(--space-2) var(--space-3); min-width: 0;
+}
+.tag-duplicate-member {
+  display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--fs-13);
 }
 .tag-duplicate-list { max-height: 9.5rem; overflow: auto; }
 .tag-duplicate-group select {

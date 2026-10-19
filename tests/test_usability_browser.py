@@ -314,6 +314,65 @@ async def test_scope_changes_and_command_query_clears_old_results(ui):
     await page.locator("#command-results [data-entry-id='dy-123']").wait_for()
 
 
+async def test_duplicate_merge_excludes_unchecked_member(ui):
+    page, service, _client, _calls = ui
+    source(service, "1002", ["智能体"], managed=True)
+    await page.goto("http://testserver/tags")
+    group = page.locator(".tag-duplicate-group").filter(has_text="智能体")
+    await expect(group).to_be_visible()
+    await group.get_by_label("纳入合并：智能体").uncheck()
+    await group.get_by_role("button", name="合并", exact=True).click()
+    description = page.locator("#destructive-description")
+    await expect(description).to_contain_text("2 个标签")
+    await expect(description).not_to_contain_text("智能体")
+    await page.locator("#confirm-destructive").click()
+    await expect(page.locator("#tags-rows")).to_contain_text("智能体")
+    await expect(page.locator("#tags-rows")).not_to_contain_text("AI 代理")
+
+
+async def test_search_keeps_selected_image_note_source(ui):
+    page, service, client, _calls = ui
+    note = service.config.vault_path / "wiki" / "sources" / "图文_2001.md"
+    note.write_text(
+        "---\n"
+        "type: source\n"
+        'video_id: "2001"\n'
+        "title: 图文笔记\n"
+        "source_kind: image_note\n"
+        "tags: []\n"
+        "captured: 2026-09-30T09:00:00+08:00\n"
+        "---\n# 图文笔记\n\n正文。\n",
+        encoding="utf-8",
+    )
+    library = client.get("/api/library").json()["items"]
+    assert any(
+        item["title"] == "图文笔记" and item["source_kind"] == "image_note" for item in library
+    )
+    search = client.get("/api/library", params={"q": "测试文章"}).json()["items"]
+    assert search
+    assert all(item["source_kind"] != "image_note" for item in search)
+    await page.goto("http://testserver/?q=测试文章&source=image_note")
+    tab = page.locator(".source-tab[data-source='image_note']")
+    await expect(tab).to_be_visible()
+    await expect(tab).to_have_attribute("aria-pressed", "true")
+    assert "source=image_note" in page.url
+
+
+async def test_reanalyze_confirm_explains_without_repeating_the_title(ui):
+    page, _service, _client, calls = ui
+    await page.goto("http://testserver/articles/dy-123")
+    await page.locator("#reader-actions .entry-more").click()
+    await page.get_by_role("menuitem", name="重新分析", exact=True).click()
+    await expect(page.locator("#destructive-title")).to_have_text("重新交给 Agent 分析这篇？")
+    description = page.locator("#destructive-description")
+    await expect(description).to_have_text("确认后任务进入队列，你仍留在这篇文章。")
+    await expect(description).not_to_contain_text("重新交给 Agent 分析这篇")
+    await expect(page.locator("#confirm-destructive")).to_have_text("重新交给 Agent 分析这篇")
+    await page.keyboard.press("Escape")
+    await page.wait_for_function("!document.querySelector('#destructive-dialog').open")
+    assert not any(path.endswith("/reanalyze") for _method, path in calls)
+
+
 async def test_tag_controls_and_real_merge_undo(ui, tmp_path):
     page, service, _client, _calls = ui
     out = tmp_path / "usability"
