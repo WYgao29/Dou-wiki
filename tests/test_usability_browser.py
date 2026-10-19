@@ -168,7 +168,7 @@ async def test_video_detail_handles_missing_transcript_and_video(ui):
     await expect(page.locator("#chat-panel")).to_have_count(0)
 
 
-@pytest.mark.parametrize("width", [1440])
+@pytest.mark.parametrize("width", [1440, 1100])
 @pytest.mark.parametrize("theme", ["light", "dark"])
 async def test_retired_links_and_preserved_right_panel(ui, width, theme):
     page, service, _client, calls = ui
@@ -193,6 +193,21 @@ async def test_retired_links_and_preserved_right_panel(ui, width, theme):
     await expect(page.locator("#panel-tab-info")).to_be_visible()
     await expect(page.locator("#panel-tab-inspiration")).to_be_visible()
     await expect(page.locator("#panel-tab-chat")).to_have_count(0)
+    if width == 1100:
+        assert await page.locator("#app-shell").evaluate(
+            "element => element.classList.contains('panel-overlay-open')"
+        )
+        await page.locator("#article-content h1").first.click(position={"x": 8, "y": 8})
+        assert not await page.locator("#app-shell").evaluate(
+            "element => element.classList.contains('panel-overlay-open')"
+        )
+        await page.locator("#chat-toggle").click()
+        await page.keyboard.press("Escape")
+        assert await page.evaluate("document.activeElement.id") == "chat-toggle"
+        assert not await page.locator("#app-shell").evaluate(
+            "element => element.classList.contains('panel-overlay-open')"
+        )
+        await page.locator("#chat-toggle").click()
     await page.locator("#panel-tab-inspiration").click()
     await expect(page.locator("#inspiration-pane")).to_contain_text("保留这段方法")
     topic = service.create_topic("浏览器专题", ["dy-123"])

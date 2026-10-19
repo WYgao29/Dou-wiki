@@ -53,6 +53,10 @@ async def verify():
                 managed=index < 2,
             )
         source(service, "1100", ["AI Agent", "AI 代理"], managed=True)
+        # "咖啡" is too short to pair with "手冲咖啡". A longer name with the
+        # higher count stays the merge target, so the shorter row disappears.
+        source(service, "1200", ["手冲咖啡吧"], managed=True)
+        source(service, "1201", ["手冲咖啡吧"], managed=True)
         app = create_app(config, service=service, start_watcher=False)
         with local_client(app) as client:
             async with async_playwright() as p:
@@ -177,6 +181,7 @@ async def verify():
                 )
                 assert await row("AI Agent").count() == 0
                 assert service.tags.resolve(["AI Agent"]) == ["AI 代理"]
+                await row("AI 代理").locator("input").check()
                 await page.click("#tags-rename")
                 await page.fill("#tag-new-name", "智能体")
                 await page.click("#tag-edit-submit")
@@ -202,6 +207,7 @@ async def verify():
                     .get_by_role("button", name="合并", exact=True)
                     .click()
                 )
+                await page.click("#confirm-destructive")
                 await idle()
                 assert await row("手冲咖啡").count() == 0
                 await page.click("[data-tag-sort=name]")

@@ -1696,7 +1696,7 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   color: var(--text-3); text-decoration: none;
 }
 
-/* 10. Desktop widths. Below 960px the shell keeps min-width and the page scrolls sideways. */
+/* 10. Below 1280px the right panel is an overlay. Below 960px the shell keeps min-width and the page scrolls sideways. */
 
 @media (hover: hover) and (pointer: fine) {
   .icon-button:hover { background: var(--surface-hover); color: var(--text); }
@@ -1724,7 +1724,7 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
     background: color-mix(in srgb, currentColor 9%, transparent); opacity: 1;
   }
 }
-@media (960px <= width < 1280px) {
+@media (width < 1280px) {
   .app-shell, .app-shell.is-panel-collapsed {
     grid-template-columns: var(--sidebar-width) minmax(0, 1fr); grid-template-areas: "sidebar main";
   }
@@ -1776,12 +1776,12 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 
 /* Saved materials and scoped text search. */
 .article-keyframes { margin: 24px 0; padding: 16px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.article-keyframes summary { cursor: pointer; font-family: var(--font-ui); color: var(--text-2); font-size: 14px; }
+.article-keyframes summary { cursor: pointer; font-family: var(--font-ui); color: var(--text-2); font-size: var(--fs-14); }
 .keyframe-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin-top: 16px; }
 .keyframe-grid figure { min-width: 0; margin: 0; }
 .keyframe-grid img { display: block; width: 100%; height: 150px; margin: 0; object-fit: contain; border-radius: var(--radius); background: var(--surface-sunken); }
-.keyframe-grid figcaption { margin-top: 6px; text-align: center; font-size: 12px; font-family: var(--font-ui); color: var(--text-2); }
-.search-evidence { margin: 8px 0 0; font-size: 13px; color: var(--text-2); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.keyframe-grid figcaption { margin-top: 6px; text-align: center; font-size: var(--fs-12); font-family: var(--font-ui); color: var(--text-2); }
+.search-evidence { margin: 8px 0 0; font-size: var(--fs-13); color: var(--text-2); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .library-item:has(.search-evidence) { height: auto; padding-block: var(--space-3); }
 .search-capability { margin: 12px 0; }
 .library-toolbar .search-mode-control { flex: 0 0 82px; width: 82px; margin-left: 0; padding: 0; }

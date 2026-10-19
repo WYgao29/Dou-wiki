@@ -2051,7 +2051,7 @@ const PANEL_PANES = {info: "info-pane", inspiration: "inspiration-pane", sources
 const PANEL_LABELS = {info: "信息", inspiration: "灵感", sources: "来源"};
 
 function panelBreakpoint() {
-  return window.innerWidth >= 1280 ? "desktop" : window.innerWidth >= 960 ? "overlay" : "desktop";
+  return window.innerWidth >= 1280 ? "desktop" : "overlay";
 }
 
 function isPanelOpen() {
@@ -2291,7 +2291,6 @@ function renderPanelState() {
   shell.classList.toggle("panel-overlay-open", mode === "overlay" && panelOpen);
   $("#library-sidebar").inert = !sidebarOpen;
   $("#side-panel").inert = !panelOpen;
-  $("#main-content").inert = false;
   $("#chat-toggle").setAttribute("aria-expanded", String(panelOpen));
   $("#chat-toggle").setAttribute("aria-label", panelOpen ? "收起右侧面板" : "打开右侧面板");
   if (!$("#filter-popover").classList.contains("hidden")) positionFilterPopover();

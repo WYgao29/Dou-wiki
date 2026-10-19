@@ -161,7 +161,7 @@ async def verify():
                     ("/jobs", "jobs"),
                     ("/settings/auth", "auth"),
                     ("/settings/analysis", "analysis"),
-                    ("/settings/model", "model"),
+                    ("/settings/model", "not-found"),
                     ("/settings/system", "system"),
                     ("/no-such-page", "not-found"),
                 ]:
@@ -173,6 +173,11 @@ async def verify():
                 await press("?")
                 assert await page.locator("#shortcuts-dialog").evaluate("e => e.open")
                 await press("Escape")
+                await page.locator("#sidebar-search").focus()
+                await press("?")
+                await press("Escape")
+                assert await page.evaluate("document.activeElement.id") == "sidebar-search"
+                await page.locator("#main-content").focus()
                 await press("g")
                 await press("j")
                 await page.wait_for_selector("#jobs-view:not(.hidden)")
@@ -235,8 +240,8 @@ async def verify():
                     assert await page.evaluate("document.activeElement.id") == "chat-toggle"
                     assert not await page.locator("#main-content").evaluate("e => e.inert")
 
-                # Check all four collapse states at the supported desktop widths.
-                collapse_widths = [1440, 1280, 1100, 960]
+                # Check all four collapse states, including the 1279px overlay boundary.
+                collapse_widths = [1440, 1280, 1279, 1100, 960]
                 for width in collapse_widths:
                     await fresh(width)
                     await page.evaluate("window.Douku.panel.close()")
@@ -268,8 +273,7 @@ async def verify():
                 # Sidebar stays collapsed at 960. Widen to 1440 and confirm restore.
                 await page.set_viewport_size({"width": 1440, "height": 900})
                 await page.wait_for_function(
-                    "() => document.querySelector('#sidebar-restore')"
-                    ".getClientRects().length > 0"
+                    "() => document.querySelector('#sidebar-restore').getClientRects().length > 0"
                 )
                 await assert_shell(1440, sidebar_open=False, panel_open=False)
                 await page.click("#sidebar-restore")
