@@ -345,6 +345,187 @@ async def test_duplicate_merge_excludes_unchecked_member(ui):
     await expect(page.locator("#tags-rows")).not_to_contain_text("AI 代理")
 
 
+@pytest.mark.parametrize("refresh", ["sort", "search", "reload"])
+async def test_duplicate_merge_keeps_exclusions_and_target_after_refresh(ui, refresh):
+    page, service, _client, _calls = ui
+    source(service, "1002", ["智能体"], managed=True)
+    await page.goto("http://testserver/tags")
+    group = page.locator(".tag-duplicate-group").filter(has_text="智能体")
+    excluded = group.get_by_label("纳入合并：智能体", exact=True)
+    await excluded.uncheck()
+    await group.locator("select").select_option("AI 代理")
+    if refresh == "sort":
+        await page.locator("[data-tag-sort=name]").click()
+    elif refresh == "search":
+        await page.locator("#tags-search").fill("AI")
+    else:
+        await page.evaluate("window.Douku.tags.load()")
+    await expect(excluded).not_to_be_checked()
+    await expect(group.locator("select")).to_have_value("AI 代理")
+    await group.get_by_role("button", name="合并", exact=True).click()
+    await expect(page.locator("#destructive-description")).to_contain_text("2 个标签")
+    await page.locator("#confirm-destructive").click()
+    await expect(page.locator("#tags-rows")).not_to_contain_text("AI Agent")
+    assert service.database.get_entry("dy-1002").tags == ["智能体"]
+
+
+@pytest.mark.parametrize("failure", ["history", "detail"])
+async def test_collection_initial_failure_shows_error_and_can_reload(ui, failure):
+    from tests.test_collection_flow import ready
+
+    page, service, _client, _calls = ui
+    job_id = await ready(service)
+    failed_path = "/api/collection-imports" + (f"/{job_id}" if failure == "detail" else "")
+    failed_once = False
+
+    async def fail_once(route):
+        nonlocal failed_once
+        if urlsplit(route.request.url).path == failed_path and not failed_once:
+            failed_once = True
+            await route.fulfill(status=503, json={"detail": "合集记录暂时无法读取"})
+        else:
+            await route.fallback()
+
+    await page.route("**/api/collection-imports**", fail_once)
+    await page.goto(f"http://testserver/imports/collections?job={job_id}")
+    error = page.locator("#collection-error")
+    await expect(error).to_be_visible()
+    await expect(error).to_have_text("合集记录暂时无法读取")
+    retry = page.get_by_role("button", name="重新加载", exact=True)
+    await expect(retry).to_be_enabled()
+    await retry.click()
+    await expect(page.locator("#collection-summary")).to_contain_text("已读 2 件")
+    await expect(page.locator("#collection-items input")).to_have_count(2)
+    await expect(error).to_have_text("")
+
+
+async def test_empty_library_hides_source_tabs_and_restores_them_after_updates(ui):
+    page, _service, _client, _calls = ui
+    empty = True
+
+    async def catalog(route):
+        if empty:
+            await route.fulfill(json={"items": [], "facets": {}})
+        else:
+            await route.fallback()
+
+    await page.route("**/api/library", catalog)
+    await page.goto("http://testserver/?source=image_note")
+    await expect(page.locator("#result-count")).to_have_text("0")
+    await expect(page.locator(".source-tab[data-source='image_note']")).to_be_hidden()
+    await expect(page.locator(".source-tab[data-source='video']")).to_be_hidden()
+    await expect(page.locator(".source-tab[data-source='']")).to_have_attribute(
+        "aria-pressed", "true"
+    )
+    assert "source=" not in page.url
+
+    async def notify():
+        await page.evaluate(
+            "window.libraryEvents.dispatchEvent(new MessageEvent('library',"
+            " {data:JSON.stringify({origins:[window.Douku.clientId]})}));"
+        )
+
+    empty = False
+    await notify()
+    await expect(page.locator(".source-tab[data-source='video']")).to_be_visible()
+    empty = True
+    await notify()
+    await expect(page.locator("#result-count")).to_have_text("0")
+    await expect(page.locator(".source-tab[data-source='video']")).to_be_hidden()
+
+
+@pytest.mark.parametrize(
+    "stage,label",
+    [("failed", "授权失败"), ("timeout", "授权超时"), ("profile_locked", "专用浏览器正被占用")],
+)
+async def test_auth_session_keeps_technical_errors_in_copy_only(ui, stage, label):
+    page, service, _client, _calls = ui
+    session = service.database.create_auth_session(channel="video", scope="video", stage=stage)
+    diagnostic = "Playwright BrowserType.launch: browser process failed"
+    service.database.update_auth_session(session["id"], error_summary=diagnostic)
+
+    async def authorized(route):
+        def channel(key):
+            return {
+                "channel": key,
+                "channel_label": "视频下载授权" if key == "video" else "抖音账号授权",
+                "purpose": "本机授权",
+                "user_state": "authorized",
+                "user_state_label": "已授权",
+            }
+
+        await route.fulfill(json={"channels": {key: channel(key) for key in ("video", "douyin")}})
+
+    async def start(route):
+        await route.fulfill(status=202, json={"id": session["id"]})
+
+    await page.route("**/api/auth/status*", authorized)
+    await page.route("**/api/auth/sessions", start)
+    await page.evaluate("""Object.defineProperty(navigator, 'clipboard', {value: {
+      writeText: async text => { window.copiedAuthDiagnostic = text; }
+    }});""")
+    await page.evaluate("window.Douku.navigate('/settings/auth')")
+    await page.locator("#auth-video-card").get_by_role("button", name="重新授权").click()
+    panel = page.locator("#auth-session")
+    await expect(panel).to_contain_text(label)
+    await expect(panel).not_to_contain_text("Playwright")
+    await expect(panel).not_to_contain_text("failed")
+    await expect(page.locator("#toast")).not_to_contain_text("Playwright")
+    await panel.get_by_role("button", name="复制诊断信息").click()
+    copied = await page.evaluate("window.copiedAuthDiagnostic")
+    assert diagnostic in copied
+    assert stage in copied
+    if stage == "failed":
+        await page.wait_for_timeout(2700)
+        await expect(panel).to_be_visible()
+
+
+@pytest.mark.parametrize("failure", ["status", "start", "session"])
+async def test_auth_request_failure_uses_chinese_copy_and_keeps_diagnostics(ui, failure):
+    page, _service, _client, _calls = ui
+    diagnostic = "Playwright transport failed: ECONNRESET"
+
+    async def auth(route):
+        path = urlsplit(route.request.url).path
+        failed_path = {
+            "status": "/api/auth/status",
+            "start": "/api/auth/sessions",
+            "session": "/api/auth/sessions/failed-request",
+        }[failure]
+        if path == failed_path:
+            await route.fulfill(status=503, json={"detail": diagnostic})
+        elif path == "/api/auth/status":
+            await route.fulfill(
+                json={
+                    "channels": {
+                        key: {
+                            "channel": key,
+                            "channel_label": "本机授权",
+                            "user_state": "authorized",
+                            "user_state_label": "已授权",
+                        }
+                        for key in ("video", "douyin")
+                    }
+                }
+            )
+        else:
+            await route.fulfill(status=202, json={"id": "failed-request"})
+
+    await page.route("**/api/auth/**", auth)
+    await page.evaluate("""Object.defineProperty(navigator, 'clipboard', {value: {
+      writeText: async text => { window.copiedAuthDiagnostic = text; }
+    }});""")
+    await page.evaluate("window.Douku.navigate('/settings/auth')")
+    if failure != "status":
+        await page.locator("#auth-video-card").get_by_role("button", name="重新授权").click()
+    panel = page.locator("#auth-session")
+    await expect(panel).to_contain_text("请稍后重试")
+    await expect(panel).not_to_contain_text("Playwright")
+    await expect(page.locator("#toast")).not_to_contain_text("ECONNRESET")
+    await panel.get_by_role("button", name="复制诊断信息").click()
+    assert diagnostic in await page.evaluate("window.copiedAuthDiagnostic")
+
+
 async def test_search_keeps_selected_image_note_source(ui):
     page, service, client, _calls = ui
     note = service.config.vault_path / "wiki" / "sources" / "图文_2001.md"

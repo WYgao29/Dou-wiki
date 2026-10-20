@@ -558,6 +558,17 @@ def chinese_conclusion(message: str, user_state_label: str) -> str:
     return "。".join(kept) + "。"
 
 
+def present_auth_session(session: dict[str, Any]) -> dict[str, Any]:
+    label = AUTH_SESSION_STAGES.get(str(session.get("stage") or ""), "授权状态待确认")
+    return sanitize_public_payload(
+        {
+            **session,
+            "stage_label": label,
+            "conclusion": chinese_conclusion(str(session.get("error_summary") or ""), label),
+        }
+    )
+
+
 def present_auth_check(
     check: dict[str, Any],
     *,

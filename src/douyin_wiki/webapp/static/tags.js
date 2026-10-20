@@ -3,7 +3,7 @@
   const D = window.Douku;
   const $ = D.$;
   const node = D.node;
-  const state = {rows: [], duplicates: [], aliases: {}, undoByAlias: {}, undoableByAlias: {}, selected: new Set(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
+  const state = {rows: [], duplicates: [], aliases: {}, undoByAlias: {}, undoableByAlias: {}, selected: new Set(), excludedDuplicates: new Set(), duplicateTargets: new Map(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
   const PIN_LIMIT = 8;
   const active = () => $("app-shell").dataset.page === "tags";
   const date = (value) => value ? new Date(value).toLocaleString("zh-CN", {year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : "—";
@@ -28,9 +28,19 @@
     state.aliases = data.aliases || {};
     state.undoByAlias = data.undo_by_alias || {};
     state.undoableByAlias = data.undoable_by_alias || {};
+    const groups = state.duplicates.map(groupNames).filter(names => names.length > 1);
+    const names = new Set(groups.flat());
+    state.excludedDuplicates = new Set([...state.excludedDuplicates].filter(name => names.has(name)));
+    const keys = new Set(groups.map(duplicateKey));
+    for (const key of state.duplicateTargets.keys()) {
+      if (!keys.has(key)) state.duplicateTargets.delete(key);
+    }
   }
   function groupNames(group) {
     return Array.isArray(group) ? group : (group?.names || []);
+  }
+  function duplicateKey(names) {
+    return JSON.stringify([...names].sort());
   }
   function articleCount(names, group) {
     if (group && !Array.isArray(group) && Number.isFinite(Number(group.article_count))) {
@@ -269,8 +279,8 @@
       const members = node("div", null, "tag-duplicate-members");
       const select = node("select");
       select.setAttribute("aria-label", `选择合并目标：${names.join("、")}`);
-      const checked = new Set(names);
-      const pickedNames = () => names.filter((name) => checked.has(name));
+      const key = duplicateKey(names);
+      const pickedNames = () => names.filter((name) => !state.excludedDuplicates.has(name));
       const merge = button("合并", async () => {
         const target = select.value;
         const picked = pickedNames();
@@ -285,13 +295,14 @@
       }, "secondary-button");
       const refreshSelect = () => {
         const picked = pickedNames();
-        const previous = select.value;
+        const previous = state.duplicateTargets.get(key);
         select.replaceChildren(...picked.map((name) => {
           const option = node("option", name);
           option.value = name;
           return option;
         }));
         if (picked.includes(previous)) select.value = previous;
+        state.duplicateTargets.set(key, select.value);
         const blocked = state.busy || picked.length < 2;
         select.disabled = blocked;
         merge.disabled = blocked;
@@ -300,16 +311,17 @@
         const label = node("label", null, "tag-duplicate-member");
         const box = node("input");
         box.type = "checkbox";
-        box.checked = true;
+        box.checked = !state.excludedDuplicates.has(name);
         box.disabled = state.busy;
         box.setAttribute("aria-label", `纳入合并：${name}`);
         box.addEventListener("change", () => {
-          if (box.checked) checked.add(name); else checked.delete(name);
+          if (box.checked) state.excludedDuplicates.delete(name); else state.excludedDuplicates.add(name);
           refreshSelect();
         });
         label.append(box, node("span", name));
         members.append(label);
       });
+      select.addEventListener("change", () => state.duplicateTargets.set(key, select.value));
       refreshSelect();
       row.append(members, select, merge);
       duplicateList.append(row);

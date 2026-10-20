@@ -34,6 +34,29 @@ def test_shell_hides_retired_model_page_and_offers_agent_commands(tmp_path):
         assert "model-settings.js" not in model.text
 
 
+def test_auth_session_exposes_chinese_presentation_and_preserves_diagnostics(tmp_path):
+    from douyin_wiki.operation import present_auth_session
+
+    config, service = _web_fixture(tmp_path)
+    session = service.database.create_auth_session(channel="video", scope="video", stage="failed")
+    diagnostic = "Playwright BrowserType.launch: browser process failed"
+    service.database.update_auth_session(session["id"], error_summary=diagnostic)
+    app = create_app(config, service=service, start_watcher=False)
+    with local_client(app) as client:
+        response = client.get(f"/api/auth/sessions/{session['id']}")
+    assert response.status_code == 200
+    shown = response.json()
+    assert shown["stage"] == "failed"
+    assert shown["stage_label"] == "授权失败"
+    assert shown["conclusion"] == ""
+    assert shown["error_summary"] == diagnostic
+    assert present_auth_session({"stage": "unknown_stage"})["stage_label"] == "授权状态待确认"
+    assert (
+        present_auth_session({"stage": "timeout", "error_summary": "请重新登录"})["conclusion"]
+        == "请重新登录"
+    )
+
+
 def test_child_warning_preview_uses_article_title(tmp_path):
     config, service = _web_fixture(tmp_path)
     child = service.database.create_job(

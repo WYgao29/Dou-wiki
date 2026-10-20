@@ -17,6 +17,7 @@ const VALID_SECTIONS = new Set(["all", "recent", "favorite", "inspiration"]);
 const state = {
   items: [],
   allItems: [],
+  allItemsLoaded: false,
   facets: {},
   focusedEntryId: "",
   lastOpenedEntryId: "",
@@ -408,7 +409,7 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
     params.set("section", state.section);
   }
   try {
-    const needsCatalog = Boolean(favoritesJob) || (Boolean(query) && !state.allItems.length);
+    const needsCatalog = Boolean(favoritesJob) || (Boolean(query) && !state.allItemsLoaded);
     const [data, catalogData] = await Promise.all([
       api(`/api/library${semantic ? "/search" : ""}${params.size ? `?${params}` : ""}`),
       needsCatalog ? api("/api/library") : null,
@@ -417,8 +418,10 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
     state.items = data.items;
     state.facets = data.facets;
     state.tags = [...new Set(state.tags.map(tag => state.facets.tag_aliases?.[tag] || tag))];
-    if (catalogData) state.allItems = catalogData.items;
-    else if (!query && !favoritesJob) state.allItems = data.items;
+    if (catalogData || (!query && !favoritesJob)) {
+      state.allItems = (catalogData || data).items;
+      state.allItemsLoaded = true;
+    }
     state.catalogHasItems = Boolean(
       (!query && data.items.length)
       || data.facets.authors?.length
@@ -444,10 +447,11 @@ async function loadLibrary({showLoading = !state.libraryLoaded} = {}) {
 }
 
 async function ensureCommandItems() {
-  if (state.allItems.length) return;
+  if (state.allItemsLoaded) return;
   try {
     const data = await api("/api/library");
     state.allItems = data.items;
+    state.allItemsLoaded = true;
   } catch (_error) {
     // Keep the catalog empty. Search hits must not become the source-tab counts.
   }
@@ -921,7 +925,7 @@ function renderLibraryEmptyState(items) {
 }
 
 function syncSourceTabs() {
-  if (!state.allItems.length) return;
+  if (!state.allItemsLoaded) return;
   const counts = {video: 0, image_note: 0};
   state.allItems.forEach((item) => {
     if (item.source_kind === "video" || item.source_kind === "image_note") counts[item.source_kind] += 1;
@@ -937,16 +941,19 @@ function syncSourceTabs() {
       dropped = true;
     }
   });
-  if (dropped && location.pathname === "/") writeStateToURL();
+  if (dropped) {
+    renderToolbarState();
+    if (location.pathname === "/") writeStateToURL();
+  }
 }
 
 function renderLibrary() {
+  syncSourceTabs();
   if (state.searchMode === "semantic" && state.query
       && state.libraryLoadedScope !== semanticScopeKey()) {
     if (state.pendingLibraryScope !== semanticScopeKey()) loadLibrary({showLoading: false});
     return;
   }
-  syncSourceTabs();
   const items = filteredItems();
   const titles = {all: "资料库", recent: "最近加入", favorite: "库内收藏", inspiration: "灵感"};
   const summaries = {
@@ -2968,6 +2975,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     let origins = [null];
     try { origins = JSON.parse(event.data).origins || [null]; } catch (_error) {}
     state.allItems = [];
+    state.allItemsLoaded = false;
     await loadLibrary({showLoading: false});
     await loadTopics();
     if (!$("#trash-view").classList.contains("hidden")) await loadTrash();

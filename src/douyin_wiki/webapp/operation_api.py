@@ -17,7 +17,7 @@ from ..models import (
     CreatorWorkDecision,
     SourceKind,
 )
-from ..operation import analysis_presentation, sanitize_public_payload
+from ..operation import analysis_presentation, present_auth_session
 from ..web_operation import WebOperationService
 
 
@@ -284,12 +284,12 @@ def register_operation_routes(
         except (JobStateError, ValueError) as exc:
             raise _http_error(exc) from exc
         await notifier.publish("auth")
-        return sanitize_public_payload(session)
+        return present_auth_session(session)
 
     @app.get("/api/auth/sessions/{session_id}")
     async def get_auth_session(session_id: str):
         try:
-            return sanitize_public_payload(operations.auth.get(session_id))
+            return present_auth_session(operations.auth.get(session_id))
         except JobStateError as exc:
             raise _http_error(exc) from exc
 
@@ -300,7 +300,7 @@ def register_operation_routes(
         except JobStateError as exc:
             raise _http_error(exc) from exc
         await notifier.publish("auth")
-        return sanitize_public_payload(session)
+        return present_auth_session(session)
 
     @app.get("/api/system/health")
     async def system_health():

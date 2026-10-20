@@ -1628,12 +1628,14 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 .tag-duplicate-group select {
   max-width: 160px; min-width: 80px; height: 32px; padding: 0 var(--space-2);
 }
-.is-idle .import-workspace, .no-records .import-history { display: none; }
+.is-idle .import-workspace, .no-records:not(.has-error) .import-history { display: none; }
 #imports-collections-view.is-idle :is(
-  #collection-summary, #collection-result, #collection-warnings, #collection-error,
-  #collection-gateway, #collection-auth, #collection-refresh, #collection-retry,
+  #collection-summary, #collection-result, #collection-warnings,
+  #collection-gateway, #collection-auth, #collection-retry,
   #collection-stop, #collection-task
 ) { display: none; }
+#imports-collections-view.is-idle:not(.has-error) #collection-refresh,
+#imports-collections-view.no-records.has-error .import-history .fav-field { display: none; }
 .agent-commands { display: grid; gap: var(--space-2); margin: var(--space-3) 0 0; padding: 0; list-style: none; }
 .agent-commands li, .agent-command {
   display: flex; align-items: center; gap: var(--space-3); min-width: 0;

@@ -11,6 +11,30 @@
     timer = null;
   }
 
+  function diagnosticButton(text) {
+    const copy = D.node("button", "复制诊断信息", "text-button");
+    copy.type = "button";
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        D.toast("已复制诊断信息");
+      } catch (_error) {
+        D.toast("复制失败");
+      }
+    });
+    return copy;
+  }
+
+  function requestError(error, message) {
+    const session = D.$("auth-session");
+    session.hidden = false;
+    session.replaceChildren(
+      D.node("h2", "授权操作未完成"), D.node("p", message),
+      diagnosticButton(error.message || String(error)),
+    );
+    D.toast(message);
+  }
+
   function renderSkeleton() {
     [
       ["auth-video-card", "视频下载授权"],
@@ -56,7 +80,7 @@
         const current = data.channels?.[channel.channel];
         D.toast(current?.user_state_label || "检查完成");
       } catch (error) {
-        D.toast(error.message || "检查失败");
+        requestError(error, "授权检查失败，请稍后重试。");
       } finally {
         check.disabled = false;
         if (check.isConnected) check.textContent = "检查";
@@ -64,7 +88,9 @@
     });
     const authorize = D.node("button", "重新授权", "secondary-button");
     authorize.type = "button";
-    authorize.addEventListener("click", () => start(channel.channel));
+    authorize.addEventListener("click", () => {
+      start(channel.channel).catch(error => requestError(error, "授权未能开始，请稍后重试。"));
+    });
     actions.append(check, authorize);
     if (channel.affected_job_count) {
       const link = D.node("a", "查看受影响任务", "ghost-button");
@@ -76,18 +102,7 @@
       actions.append(link);
     }
     if (technical.length) {
-      const copy = D.node("button", "复制诊断信息", "text-button");
-      copy.type = "button";
-      copy.addEventListener("click", async () => {
-        const text = technical.join("\n");
-        try {
-          await navigator.clipboard.writeText(text);
-          D.toast("已复制诊断信息");
-        } catch (_error) {
-          D.toast("复制失败");
-        }
-      });
-      actions.append(copy);
+      actions.append(diagnosticButton(technical.join("\n")));
     }
     card.append(actions);
     container.append(card);
@@ -107,27 +122,37 @@
     if (sessionId) {
       const current = await D.api(`/api/auth/sessions/${encodeURIComponent(sessionId)}`);
       session.hidden = false;
+      const label = current.stage_label || "授权状态待确认";
       session.replaceChildren(
         D.node("h2", "当前授权会话"),
-        D.node("p", current.stage === "waiting_login" ? "请在本机打开的浏览器中完成登录、扫码或验证码。" : current.stage),
-        D.node("p", current.error_summary || ""),
+        D.node("p", current.stage === "waiting_login" ? "请在本机打开的浏览器中完成登录、扫码或验证码。" : label),
       );
+      if (current.conclusion && current.conclusion !== label) {
+        session.append(D.node("p", current.conclusion));
+      }
+      session.append(diagnosticButton([
+        `授权会话：${current.id}`, `阶段：${current.stage}`, current.error_summary,
+      ].filter(Boolean).join("\n")));
       if (current.stage === "succeeded") {
         D.toast(current.retried_job_ids?.length ? `授权成功，已继续 ${current.retried_job_ids.length} 个任务` : "授权已恢复");
         sessionId = null;
         stop();
       } else if (["failed", "timeout", "cancelled", "profile_locked", "account_changed"].includes(current.stage)) {
-        D.toast(current.error_summary || "授权未完成");
+        D.toast(current.conclusion || label);
         sessionId = null;
         stop();
       } else {
         const later = D.node("button", "稍后处理", "secondary-button");
         later.type = "button";
         later.addEventListener("click", async () => {
-          await D.api(`/api/auth/sessions/${encodeURIComponent(current.id)}/cancel`, {method: "POST", body: "{}"});
-          sessionId = null;
-          stop();
-          load(true);
+          try {
+            await D.api(`/api/auth/sessions/${encodeURIComponent(current.id)}/cancel`, {method: "POST", body: "{}"});
+            sessionId = null;
+            stop();
+            await load(true);
+          } catch (error) {
+            requestError(error, "暂时无法取消授权，请稍后重试。");
+          }
         });
         session.append(D.node("div", null, "progress-track is-indeterminate"), later);
       }
@@ -143,14 +168,14 @@
       body: JSON.stringify({channel}),
     });
     sessionId = session.id;
-    D.toast("正在打开本机浏览器，请完成登录。抖库不会读取密码或 Cookie。");
+    D.toast("正在打开本机浏览器，请完成登录。抖库不会读取密码或显示登录凭证。");
     await load(true);
     stop();
     const tick = async () => {
-      try { await load(true); } catch (error) { D.toast(error.message); }
+      try { await load(true); } catch (error) { requestError(error, "授权状态暂时无法读取，请稍后重试。"); }
       if (sessionId) timer = setTimeout(tick, 2500);
     };
-    timer = setTimeout(tick, 2500);
+    if (sessionId) timer = setTimeout(tick, 2500);
   }
 
   window.addEventListener("douku:route", async (event) => {
@@ -171,7 +196,7 @@
         || video?.user_state === "checking"
         || video?.user_state === "unconfirmed"
         || video?.user_state === "unverified";
-      if (needsVerify) load(true).catch((error) => D.toast(error.message));
-    }).catch((error) => D.toast(error.message));
+      if (needsVerify) load(true).catch((error) => requestError(error, "授权检查失败，请稍后重试。"));
+    }).catch((error) => requestError(error, "授权状态暂时无法读取，请稍后重试。"));
   });
 })();

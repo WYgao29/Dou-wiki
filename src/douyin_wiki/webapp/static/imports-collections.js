@@ -44,8 +44,11 @@
   }
   function syncRecordMode() {
     const hasHistory = [...$("history").options].some((option) => option.value);
+    const hasError = Boolean($("error").textContent.trim());
     view.classList.toggle("is-idle", !current);
     view.classList.toggle("no-records", !hasHistory);
+    view.classList.toggle("has-error", hasError);
+    $("refresh").textContent = hasError ? "重新加载" : "刷新结果";
   }
   function render(data) {
     current = data;
