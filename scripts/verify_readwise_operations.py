@@ -244,8 +244,7 @@ async def verify(*, output_dir: Path | None = None):
                 )
                 assert await page.locator(".recent-import-row").count() <= 5
                 assert (
-                    await visible_rows.first.evaluate("e=>e.getBoundingClientRect().height")
-                    == 56
+                    await visible_rows.first.evaluate("e=>e.getBoundingClientRect().height") == 56
                 )
                 before = len(mutations)
                 assert await page.locator("#import-paste-form").count() == 0

@@ -158,3 +158,59 @@ def test_tag_merge_reports_articles_and_hides_stale_undo(tmp_path):
         assert "咖啡" not in stale["undoable_by_alias"]
         undo = client.post("/api/tags/undo", json={"operation_id": operation})
         assert undo.status_code == 409
+
+
+def test_undo_availability_runs_after_the_entry_lock_is_released(tmp_path, monkeypatch):
+    import threading
+    from contextlib import contextmanager
+
+    from douyin_wiki.tags import TagManager
+
+    config, service = _web_fixture(tmp_path)
+    original_lock = service.vault.entry_operations_locked
+    original_overview = TagManager.overview
+    original_undo = TagManager._undoable_aliases
+    depth = {"n": 0}
+    collected_while_locked = []
+    checked_after_release = []
+
+    @contextmanager
+    def counting_lock(*args, **kwargs):
+        depth["n"] += 1
+        try:
+            with original_lock(*args, **kwargs) as acquired:
+                yield acquired
+        finally:
+            depth["n"] -= 1
+
+    def wrapped_overview(self, items, **kwargs):
+        collected_while_locked.append(depth["n"] > 0)
+        return original_overview(self, items, **kwargs)
+
+    def wrapped_undo(self, undo_by_alias):
+        acquired = {}
+
+        def competitor():
+            with original_lock(blocking=False) as ok:
+                acquired["ok"] = ok
+
+        thread = threading.Thread(target=competitor)
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        checked_after_release.append(acquired.get("ok") is True and depth["n"] == 0)
+        return original_undo(self, undo_by_alias)
+
+    monkeypatch.setattr(service.vault, "entry_operations_locked", counting_lock)
+    monkeypatch.setattr(TagManager, "overview", wrapped_overview)
+    monkeypatch.setattr(TagManager, "_undoable_aliases", wrapped_undo)
+    app = create_app(config, service=service, start_watcher=False)
+    with local_client(app) as client:
+        renamed = client.post("/api/tags/rename", json={"name": "咖啡", "target": "饮品"})
+        assert renamed.status_code == 200, renamed.text
+        fresh = client.get("/api/tags").json()
+    operation = renamed.json()["operation_id"]
+    assert fresh["undo_by_alias"]["咖啡"] == operation
+    assert fresh["undoable_by_alias"]["咖啡"] == operation
+    assert collected_while_locked and all(collected_while_locked)
+    assert checked_after_release and all(checked_after_release)

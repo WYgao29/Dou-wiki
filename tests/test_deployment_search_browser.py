@@ -131,68 +131,92 @@ async def test_search_cards_show_coarse_ranges_and_keep_exact_evidence():
 
         payload = {
             "items": [
-                card("三十秒", [
-                    {"snippet": "摘要", "timestamp_ms": None},
-                    {
-                        "snippet": quote,
-                        "timestamp_precision": "window",
-                        "timestamp_ms": None,
-                        "timestamp_start_ms": 0,
-                        "timestamp_end_ms": 30_000,
-                    },
-                ]),
-                card("五百九十九秒", [
-                    {"snippet": "摘要", "timestamp_ms": None},
-                    {
-                        "snippet": quote,
-                        "timestamp_precision": "window",
-                        "timestamp_ms": None,
-                        "timestamp_start_ms": 0,
-                        "timestamp_end_ms": 599_000,
-                    },
-                ]),
-                card("非零起点", [
-                    {
-                        "snippet": "后段原话",
-                        "timestamp_precision": "window",
-                        "timestamp_ms": None,
-                        "timestamp_start_ms": 90_000,
-                        "timestamp_end_ms": 150_000,
-                    },
-                ]),
-                card("缺端点", [
-                    {
-                        "snippet": "范围不完整",
-                        "timestamp_precision": "window",
-                        "timestamp_ms": 1_200,
-                        "timestamp_start_ms": 0,
-                        "timestamp_end_ms": None,
-                    },
-                ]),
-                card("范围颠倒", [
-                    {
-                        "snippet": "顺序无效",
-                        "timestamp_precision": "window",
-                        "timestamp_ms": None,
-                        "timestamp_start_ms": 5_000,
-                        "timestamp_end_ms": 1_000,
-                    },
-                ]),
-                card("精确时间", [
-                    {
-                        "snippet": "支持结果的原话。",
-                        "timestamp_precision": "aligned",
-                        "timestamp_ms": 1_200,
-                        "timestamp_start_ms": 1_200,
-                        "timestamp_end_ms": 1_800,
-                    },
-                ]),
-                card("图片序号", [
-                    {"snippet": "图片里的字", "image_index": 3, "timestamp_ms": None},
-                ]),
-                card("普通证据", [
-                    {"snippet": "没有时间的摘要", "timestamp_ms": None},
-                ]),
+                card(
+                    "三十秒",
+                    [
+                        {"snippet": "摘要", "timestamp_ms": None},
+                        {
+                            "snippet": quote,
+                            "timestamp_precision": "window",
+                            "timestamp_ms": None,
+                            "timestamp_start_ms": 0,
+                            "timestamp_end_ms": 30_000,
+                        },
+                    ],
+                ),
+                card(
+                    "五百九十九秒",
+                    [
+                        {"snippet": "摘要", "timestamp_ms": None},
+                        {
+                            "snippet": quote,
+                            "timestamp_precision": "window",
+                            "timestamp_ms": None,
+                            "timestamp_start_ms": 0,
+                            "timestamp_end_ms": 599_000,
+                        },
+                    ],
+                ),
+                card(
+                    "非零起点",
+                    [
+                        {
+                            "snippet": "后段原话",
+                            "timestamp_precision": "window",
+                            "timestamp_ms": None,
+                            "timestamp_start_ms": 90_000,
+                            "timestamp_end_ms": 150_000,
+                        },
+                    ],
+                ),
+                card(
+                    "缺端点",
+                    [
+                        {
+                            "snippet": "范围不完整",
+                            "timestamp_precision": "window",
+                            "timestamp_ms": 1_200,
+                            "timestamp_start_ms": 0,
+                            "timestamp_end_ms": None,
+                        },
+                    ],
+                ),
+                card(
+                    "范围颠倒",
+                    [
+                        {
+                            "snippet": "顺序无效",
+                            "timestamp_precision": "window",
+                            "timestamp_ms": None,
+                            "timestamp_start_ms": 5_000,
+                            "timestamp_end_ms": 1_000,
+                        },
+                    ],
+                ),
+                card(
+                    "精确时间",
+                    [
+                        {
+                            "snippet": "支持结果的原话。",
+                            "timestamp_precision": "aligned",
+                            "timestamp_ms": 1_200,
+                            "timestamp_start_ms": 1_200,
+                            "timestamp_end_ms": 1_800,
+                        },
+                    ],
+                ),
+                card(
+                    "图片序号",
+                    [
+                        {"snippet": "图片里的字", "image_index": 3, "timestamp_ms": None},
+                    ],
+                ),
+                card(
+                    "普通证据",
+                    [
+                        {"snippet": "没有时间的摘要", "timestamp_ms": None},
+                    ],
+                ),
             ],
             "facets": {},
             "notice": "当前范围的相关证据",
@@ -208,13 +232,15 @@ async def test_search_cards_show_coarse_ranges_and_keep_exact_evidence():
         await page.route("**/api/library/search**", response)
         await page.locator("#search-mode").select_option("semantic")
         await page.locator("#search-input").fill("原话出现在不同范围")
-        await expect(page.locator(".search-evidence")).to_have_text([
-            f"约 00:00{dash}00:30（时间未经精确对齐） · {quote}",
-            f"约 00:00{dash}09:59（时间未经精确对齐） · {quote}",
-            f"约 01:30{dash}02:30（时间未经精确对齐） · 后段原话",
-            "粗略时间范围 · 范围不完整",
-            "粗略时间范围 · 顺序无效",
-            "00:01 · 支持结果的原话。",
-            "第 3 张图片 · 图片里的字",
-            "相关证据 · 没有时间的摘要",
-        ])
+        await expect(page.locator(".search-evidence")).to_have_text(
+            [
+                f"约 00:00{dash}00:30（时间未经精确对齐） · {quote}",
+                f"约 00:00{dash}09:59（时间未经精确对齐） · {quote}",
+                f"约 01:30{dash}02:30（时间未经精确对齐） · 后段原话",
+                "粗略时间范围 · 范围不完整",
+                "粗略时间范围 · 顺序无效",
+                "00:01 · 支持结果的原话。",
+                "第 3 张图片 · 图片里的字",
+                "相关证据 · 没有时间的摘要",
+            ]
+        )

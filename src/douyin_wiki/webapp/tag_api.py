@@ -22,12 +22,23 @@ class TagCleanup(BaseModel):
 
 
 def install_tag_api(app, core, catalog, publish_mutation):
+    def snapshot():
+        if catalog.compute_fingerprint() != catalog.fingerprint:
+            catalog.refresh()
+        return core.tags.overview(catalog.list_items(), include_undoable=False)
+
+    def attach_undoable(result: dict):
+        # Source stats and YAML parsing follow the entry lock, so writers are not blocked.
+        undo_by_alias = result.get("undo_by_alias") or {}
+        if undo_by_alias:
+            result["undoable_by_alias"] = core.tags._undoable_aliases(undo_by_alias)
+        return result
+
     def overview():
         # Serialize against publication, and avoid resurrecting a deleted name from stale items.
         with core.vault.entry_operations_locked():
-            if catalog.compute_fingerprint() != catalog.fingerprint:
-                catalog.refresh()
-            return core.tags.overview(catalog.list_items(), include_undoable=True)
+            result = snapshot()
+        return attach_undoable(result)
 
     @app.get("/api/tags")
     async def list_tags():
@@ -36,7 +47,7 @@ def install_tag_api(app, core, catalog, publish_mutation):
     async def mutate(action, payload):
         def apply():
             with core.vault.entry_operations_locked():
-                overview()
+                snapshot()
                 operation_id = None
                 if action == "rename":
                     operation_id = core.tags.rename(payload.name, payload.target)
@@ -53,7 +64,9 @@ def install_tag_api(app, core, catalog, publish_mutation):
                 elif action == "undo":
                     core.tags.undo(payload.operation_id)
                 catalog.refresh()
-                return {**overview(), "operation_id": operation_id}
+                result = core.tags.overview(catalog.list_items(), include_undoable=False)
+                result["operation_id"] = operation_id
+            return attach_undoable(result)
 
         try:
             result = await asyncio.to_thread(apply)
@@ -127,12 +140,13 @@ def install_tag_api(app, core, catalog, publish_mutation):
                     raise TagUndoConflict("未使用标签已变化，请重新预览后确认清理")
                 operation_id = core.tags.delete(names) if names else None
                 catalog.refresh()
-                return {
-                    **overview(),
+                result = {
+                    **core.tags.overview(catalog.list_items(), include_undoable=False),
                     "deleted": names,
                     "confirmed": True,
                     "operation_id": operation_id,
                 }
+            return attach_undoable(result)
 
         try:
             result = await asyncio.to_thread(apply)

@@ -175,6 +175,7 @@ async def verify():
                 await press("Escape")
                 await page.locator("#sidebar-search").focus()
                 await press("?")
+                assert await page.locator("#shortcuts-dialog").evaluate("e => e.open")
                 await press("Escape")
                 assert await page.evaluate("document.activeElement.id") == "sidebar-search"
                 await page.locator("#main-content").focus()
