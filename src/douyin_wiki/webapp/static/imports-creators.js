@@ -112,11 +112,18 @@
       root.replaceChildren(D.emptyState("还没有已同步的博主", "请让 Agent 导入博主作品。"));
       return;
     }
-    root.replaceChildren(...data.items.map((creator) => {
+    const heading = D.node("div", null, "creator-records-heading");
+    ["博主", "作品数", "上次同步"].forEach((label) => heading.append(D.node("span", label)));
+    root.replaceChildren(heading, ...data.items.map((creator) => {
       const card = D.node("article", null, "creator-row");
+      const name = D.node("h2", creator.nickname); name.title = creator.nickname;
+      const updated = D.node("time", beijingStamp(creator.last_synced_at));
+      updated.title = `上次同步 ${beijingStamp(creator.last_synced_at)}`;
+      if (creator.last_synced_at) updated.dateTime = creator.last_synced_at;
       card.append(
-        D.node("h2", creator.nickname),
-        D.node("p", `${creator.work_count || 0} 个作品 · 上次同步 ${beijingStamp(creator.last_synced_at)}`),
+        name,
+        D.node("p", `${creator.work_count || 0} 个作品`),
+        updated,
       );
       return card;
     }));

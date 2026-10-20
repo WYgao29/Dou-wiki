@@ -392,6 +392,7 @@
         ? `阶段 ${job.stage_label} · 等待你`
         : `阶段 ${job.stage_label} · 进度 ${Math.round((job.progress || 0) * 100)}%`
     );
+    progress.className = "job-progress-copy";
     const track = D.node("div", null, "progress-track");
     track.hidden = job.status === "cancelled";
     track.classList.toggle("is-indeterminate", job.kind === "favorites_import" && ["queued", "inventorying"].includes(job.status));
@@ -466,10 +467,13 @@
       || Number(stats.waiting_user || 0) > 0 || Number(stats.failed || 0) > 0;
     if (hasChildWork) {
       children.tabIndex = -1;
-      children.append(D.node("h2", "子任务"));
+      const childHeader = D.node("header", null, "job-children-header");
+      const childHeading = D.node("div");
+      childHeading.append(D.node("h2", "子任务"));
       if (job.child_stats) {
-        children.append(D.node("p", `成功 ${stats.completed || 0} · 处理中 ${stats.running || 0} · 等待本人 ${stats.waiting_user || 0} · 失败 ${stats.failed || 0}`));
+        childHeading.append(D.node("p", `成功 ${stats.completed || 0} · 处理中 ${stats.running || 0} · 等待本人 ${stats.waiting_user || 0} · 失败 ${stats.failed || 0}`));
       }
+      childHeader.append(childHeading);
       const state = childPages.get(job.id) || {page: 1, filter: "all"};
       childPages.set(job.id, state);
       const toolbar = D.node("div", null, "fav-toolbar"), filter = D.node("select");
@@ -477,7 +481,7 @@
       for (const [value, text] of [["all", "全部子任务"], ["unfinished", "未完成子任务"], ["failed", "失败子任务"]]) {
         const option = D.node("option", text); option.value = value; filter.append(option);
       }
-      filter.value = state.filter; toolbar.append(filter);
+      filter.value = state.filter; toolbar.append(filter); childHeader.append(toolbar);
       const rows = D.node("div", null, "job-child-list"), pager = D.node("nav", null, "fav-toolbar fav-pager");
       const previous = D.node("button", "上一页子任务", "secondary-button"), next = D.node("button", "下一页子任务", "secondary-button"), label = D.node("span");
       previous.type = next.type = "button"; pager.append(previous, label, next);
@@ -493,7 +497,10 @@
           const row = D.node("button", null, "job-child");
           row.classList.toggle("has-warning", warnings.length > 0);
           const hint = warnings[0] || child.message_for_user;
-          row.append(statusCluster(child), D.node("strong", jobTitle(child)), D.node("span", hint));
+          const childTitle = D.node("strong", jobTitle(child), "job-child-title");
+          const childMessage = D.node("span", hint, "job-child-message");
+          childTitle.title = jobTitle(child); childMessage.title = hint || "";
+          row.append(statusCluster(child), childTitle, childMessage);
           row.type = "button"; row.addEventListener("click", () => D.navigate("/jobs/" + encodeURIComponent(child.id))); rows.append(row);
         }
         label.textContent = state.page + " / " + pages + " 页 · " + filtered.length + " 个任务";
@@ -502,7 +509,7 @@
       filter.addEventListener("change", () => { state.filter = filter.value; state.page = 1; renderChildren(); });
       previous.addEventListener("click", () => { state.page--; renderChildren(); });
       next.addEventListener("click", () => { state.page++; renderChildren(); });
-      renderChildren(); children.append(toolbar, rows, pager);
+      renderChildren(); children.append(childHeader, rows, pager);
     }
     if (viewingChildren && hasChildWork) {
       const jump = D.node("button", "子任务在下方", "text-button");

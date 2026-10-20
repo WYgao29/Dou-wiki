@@ -466,7 +466,7 @@ function makeChoice(label, value, key) {
     toggleListValue(key, value);
     renderFilters(); renderLibrary(); writeStateToURL();
     // The checked row is rebuilt along with the other facets.
-    const root = $(`#${key === "authors" ? "author" : key === "types" ? "type" : "tag"}-filters`);
+    const root = $(`#${key === "authors" ? "author" : "type"}-filters`);
     $$("label", root).find((row) => row.textContent === label)?.querySelector("input").focus();
   });
   node.append(check, window.Douku.node("span", label));
@@ -480,7 +480,6 @@ function renderFilters() {
     .filter((value) => value.toLocaleLowerCase("zh-CN").includes(authorQuery))
     .map((value) => makeChoice(value, value, "authors")));
   $("#type-filters").replaceChildren(...(state.facets.content_types || []).map((value) => makeChoice(value.label, value.value, "types")));
-  $("#tag-filters").replaceChildren(...(state.facets.tags || []).map((value) => makeChoice(value, value, "tags")));
   $("#inspiration-only").checked = state.inspirationOnly;
   if (state.panelPage === "library") {
     $$(".nav-item[data-section]").forEach((node) => node.classList.toggle("active", !state.tags.length && node.dataset.section === state.section));
@@ -1653,8 +1652,8 @@ function renderArticleToolbar(item) {
     nodes.push(original);
   }
   if (item.local_video_url) {
-    const video = window.Douku.node("a", "本地视频", "text-button reader-local-video");
-    video.prepend(svgIcon("video")); video.href = item.local_video_url;
+    const video = window.Douku.node("a", null, "text-button reader-local-video");
+    video.append(svgIcon("video"), window.Douku.node("span", "本地视频")); video.href = item.local_video_url;
     video.target = "_blank"; video.rel = "noopener noreferrer";
     video.setAttribute("aria-label", "打开本地视频");
     nodes.push(video);
@@ -1714,8 +1713,9 @@ function decorateCallouts() {
 function buildReaderToc() {
   state.readerObserver?.disconnect();
   const root = $("#reader-toc");
-  const back = window.Douku.node("button", "资料库", "text-button reader-back");
-  back.type = "button"; back.id = "reader-back"; back.prepend(svgIcon("arrow-left"), document.createTextNode(" "));
+  const back = window.Douku.node("button", null, "text-button reader-back");
+  back.type = "button"; back.id = "reader-back";
+  back.append(svgIcon("arrow-left"), window.Douku.node("span", "资料库"));
   back.addEventListener("click", () => showLibrary());
   const links = window.Douku.node("div", null, "reader-toc-items");
   const headings = $$("#article-content .article-body h2, #article-content .article-body h3");
@@ -2037,15 +2037,12 @@ function positionFilterPopover() {
   popover.style.setProperty("--filter-popover-left", `${left}px`);
 }
 
-function openFilterPopover(focusTags = false) {
+function openFilterPopover() {
   if (state.panelPage !== "library") showLibrary();
   positionFilterPopover();
   $("#filter-popover").classList.remove("hidden");
   $("#filter-toggle").setAttribute("aria-expanded", "true");
-  window.setTimeout(() => {
-    const target = focusTags ? $("#tag-filters .choice-button input") : $("#filter-popover");
-    target?.focus();
-  }, 0);
+  window.setTimeout(() => $("#filter-popover").focus(), 0);
 }
 
 function closeFilterPopover() {
