@@ -57,6 +57,8 @@
 
 ## 维护记录
 
+[2026-10-20 网页修复与本机更新](maintenance/2026-10-20-web-ui-review-fixes.md)记录四处网页问题的修复、复审、13 项新增回归、1863 项源码离线回归及 48 项实际 wheel 回归。Web / Worker 已更新为 Web 0.2.58，配置、依赖、业务数据和 Markdown 内容保持一致。
+
 [2026-10-19 三类时间对齐失败恢复](maintenance/2026-10-19-alignment-window-recovery.md)记录三条原音频的真实复现、有限粗略时间恢复、诊断信息及 review 与验证结果。
 
 [2026-10-13 项目与 Web 审查](maintenance/2026-10-13-project-review.md)记录 20 个页面的逐页检查、对齐修复和七项已复现的功能问题；后续七项修复、59 项新增行为回归、1610 项完整离线回归、212 项独立 wheel 测试及本机部署结果见[修复与复审记录](maintenance/2026-10-13-project-review-fixes.md)。Web / Worker 已更新为 Web 0.2.51，当前聊天在 2026-10-14 完成 MCP 重连验收，本轮工作全部完成。
