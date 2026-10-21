@@ -1,11 +1,5 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="src/douyin_wiki/webapp/static/dou-wiki-mark-dark.svg">
-  <img src="src/douyin_wiki/webapp/static/dou-wiki-mark.svg" alt="Dou-wiki logo" width="48" height="48">
-</picture>
-<h1>抖库 Dou-wiki</h1>
-
 <img src="docs/images/banner.png" alt="抖库 Dou-wiki" width="100%">
 
 **English** · [简体中文](README.zh-CN.md)
