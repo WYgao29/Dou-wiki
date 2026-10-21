@@ -66,6 +66,7 @@ const state = {
   panelTab: "info",
   breakpoint: "",
   navigationPrefixAt: 0,
+  navigationPrefixTimer: 0,
   commandIndex: 0,
   trashFocusId: "",
   trashSelectionAnchor: "",
@@ -376,6 +377,7 @@ async function refreshAuthChannelBanners() {
 }
 
 function beginNavigation({preserveLibraryRequests = false} = {}) {
+  resetNavigationPrefix();
   if (!preserveLibraryRequests) state.libraryNavigationId += 1;
   return ++state.navigationRequestId;
 }
@@ -895,7 +897,9 @@ function deleteLibraryItem(item) {
 }
 
 function closeEntryMenu(restoreFocus = false) {
-  $("#entry-menu").classList.add("hidden"); state.entryMenuTrigger?.setAttribute("aria-expanded", "false");
+  const menu = $("#entry-menu");
+  menu.inert = true; menu.setAttribute("aria-hidden", "true"); menu.classList.add("hidden");
+  state.entryMenuTrigger?.setAttribute("aria-expanded", "false");
   if (restoreFocus && state.entryMenuTrigger?.isConnected) state.entryMenuTrigger.focus({preventScroll: true});
 }
 
@@ -918,10 +922,15 @@ function openEntryMenu(item, trigger, {reader = false} = {}) {
   }
   if (!nodes.length) nodes.push(window.Douku.node("p", "只读 Markdown 资料"));
   nodes.forEach((node) => { if (node.matches("a,button")) { node.setAttribute("role", "menuitem"); node.addEventListener("click", () => closeEntryMenu()); } });
-  menu.replaceChildren(...nodes); menu.classList.remove("hidden"); trigger.setAttribute("aria-expanded", "true");
+  menu.replaceChildren(...nodes);
   const rect = trigger.getBoundingClientRect();
-  menu.style.left = `${Math.max(16, Math.min(rect.right - 200, innerWidth - 216))}px`;
-  menu.style.top = `${Math.max(16, Math.min(rect.bottom + 4, innerHeight - menu.offsetHeight - 16))}px`;
+  const left = Math.max(16, Math.min(rect.right - 200, innerWidth - 216));
+  const below = rect.bottom + 4 + menu.offsetHeight <= innerHeight - 16;
+  menu.style.left = `${left}px`;
+  menu.style.top = `${below ? rect.bottom + 4 : Math.max(16, rect.top - menu.offsetHeight - 4)}px`;
+  menu.style.setProperty("--popover-origin", `${Math.max(0, Math.min(200, rect.left + rect.width / 2 - left))}px ${below ? "top" : "bottom"}`);
+  menu.inert = false; menu.removeAttribute("aria-hidden"); menu.classList.remove("hidden");
+  trigger.setAttribute("aria-expanded", "true");
   focusableElements(menu)[0]?.focus();
 }
 
@@ -1086,7 +1095,7 @@ async function createTopicFromSelection() {
   }
 }
 
-function clearSearchAndFilters() {
+function resetLibraryFilters() {
   state.query = "";
   state.favoritesJob = "";
   state.authors = [];
@@ -1095,6 +1104,10 @@ function clearSearchAndFilters() {
   state.sources = [];
   state.inspirationOnly = false;
   $("#search-input").value = "";
+}
+
+function clearSearchAndFilters() {
+  resetLibraryFilters();
   renderFilters();
   writeStateToURL();
   loadLibrary();
@@ -1969,10 +1982,6 @@ function bindReadingProgress() {
   updateReadingMetrics();
 }
 
-function prefersReducedMotion() {
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
 function renderArticleData(data, entryId, push) {
   const root = $("#article-content");
   const transcriptOpen = state.currentEntry === entryId
@@ -2044,18 +2053,11 @@ function focusCitation(citation) {
     if (folded) folded.open = true;
     const block = state.readingBlocks.findIndex((node) => node.contains(mark));
     focusReadingBlock(block, {scroll: false});
-    mark.scrollIntoView({behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center"});
+    mark.scrollIntoView({behavior: window.Douku.motionAllowed() ? "smooth" : "instant", block: "center"});
     window.setTimeout(() => mark.classList.add("settled"), 1800);
     return;
   }
-  $("#article-content").scrollIntoView({behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start"});
-}
-
-function showArticleFallbackEntry() {
-  const view = $("#article-view");
-  view.classList.remove("article-fallback-enter");
-  window.requestAnimationFrame(() => view.classList.add("article-fallback-enter"));
-  window.setTimeout(() => view.classList.remove("article-fallback-enter"), 360);
+  $("#article-content").scrollIntoView({behavior: window.Douku.motionAllowed() ? "smooth" : "instant", block: "start"});
 }
 
 function renderArticleError(error) {
@@ -2097,6 +2099,7 @@ function hideCardOverlays(source) {
 }
 
 async function openArticle(entryId, push = true, transitionSource = null, citation = null) {
+  const animateNavigation = push && window.Douku.motionAllowed();
   beginNavigation();
   const root = $("#article-content");
   if (state.panelPage === "library") state.libraryScrollTop = $("#main-content").scrollTop;
@@ -2124,9 +2127,8 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
   try {
     const data = await api(`/api/articles/${encodeURIComponent(entryId)}`);
     if (requestId !== state.readerRequestId) return;
-    const canTransition = sourceIsUsable
-      && typeof document.startViewTransition === "function"
-      && !prefersReducedMotion();
+    const canTransition = animateNavigation && window.Douku.motionAllowed() && sourceIsUsable
+      && typeof document.startViewTransition === "function";
     if (canTransition) {
       transitionSource.style.viewTransitionName = "active-album-cover";
       const restoreOverlays = hideCardOverlays(transitionSource);
@@ -2185,19 +2187,24 @@ function positionFilterPopover() {
   );
   popover.style.setProperty("--filter-popover-top", `${rect.bottom + gap}px`);
   popover.style.setProperty("--filter-popover-left", `${left}px`);
+  popover.style.setProperty("--popover-origin", `${Math.max(0, Math.min(width, rect.left + rect.width / 2 - left))}px top`);
 }
 
 function openFilterPopover() {
   if (state.panelPage !== "library") showLibrary();
   positionFilterPopover();
-  $("#filter-popover").classList.remove("hidden");
+  const popover = $("#filter-popover");
+  popover.inert = false; popover.removeAttribute("aria-hidden"); popover.classList.remove("hidden");
   $("#filter-toggle").setAttribute("aria-expanded", "true");
-  window.setTimeout(() => $("#filter-popover").focus(), 0);
+  popover.focus({preventScroll: true});
 }
 
 function closeFilterPopover() {
-  $("#filter-popover").classList.add("hidden");
+  const popover = $("#filter-popover");
+  const restoreFocus = popover.contains(document.activeElement);
+  popover.inert = true; popover.setAttribute("aria-hidden", "true"); popover.classList.add("hidden");
   $("#filter-toggle").setAttribute("aria-expanded", "false");
+  if (restoreFocus) $("#filter-toggle").focus({preventScroll: true});
 }
 
 const PANEL_TABS = JSON.parse($("#panel-tabs").dataset.panelConfig);
@@ -2567,7 +2574,16 @@ function renderCommandResults() {
     if (item.commandId) {
       const icon = window.Douku.node("span", null, "command-icon"); icon.append(svgIcon(item.icon));
       button.append(icon, copy);
-      if (item.shortcut) button.append(window.Douku.node("kbd", item.shortcut));
+      if (item.shortcut) {
+        const keys = item.shortcut.toUpperCase().split(" ");
+        const shortcut = window.Douku.node("kbd", keys.join(" → "));
+        if (keys.length > 1) {
+          const help = `输入框外先按 ${keys[0]}，再按 ${keys[1]}，需在 1 秒内完成`;
+          shortcut.title = help;
+          button.setAttribute("aria-description", help);
+        }
+        button.append(shortcut);
+      }
     } else button.append(makeCover(item, "item-thumbnail"), copy);
     button.addEventListener("mouseenter", () => {
       if (state.commandIndex === index) return;
@@ -2591,6 +2607,7 @@ function renderCommandResults() {
 }
 
 async function openCommandMenu() {
+  resetNavigationPrefix();
   await ensureCommandItems();
   state.commandIndex = 0;
   $("#command-input").value = state.query;
@@ -2670,17 +2687,24 @@ async function saveInspiration() {
   }
 }
 
+function resetNavigationPrefix() {
+  window.clearTimeout(state.navigationPrefixTimer);
+  state.navigationPrefixTimer = 0;
+  state.navigationPrefixAt = 0;
+  window.Douku.chordPending = false;
+}
+
 function handleGlobalKeydown(event) {
   if (event.defaultPrevented || event.isComposing) return;
   const key = event.key.toLowerCase();
   const editing = Boolean(event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])"));
   const modal = $("dialog[open]");
-  if (modal) return;
+  if (modal) { resetNavigationPrefix(); return; }
   if ((event.metaKey || event.ctrlKey) && key === "k") {
     event.preventDefault(); openCommandMenu(); return;
   }
   if (event.key === "Escape") {
-    state.navigationPrefixAt = 0;
+    resetNavigationPrefix();
     if (!$("#entry-menu").classList.contains("hidden")) { closeEntryMenu(true); }
     else if (!$("#filter-popover").classList.contains("hidden")) { closeFilterPopover(); $("#filter-toggle").focus(); }
     else if (panelBreakpoint() === "overlay" && isPanelOpen()) setChatPanelOpen(false);
@@ -2689,25 +2713,25 @@ function handleGlobalKeydown(event) {
     return;
   }
   if (editing || event.metaKey || event.ctrlKey || event.altKey) {
-    state.navigationPrefixAt = 0;
-    window.Douku.chordPending = false;
+    resetNavigationPrefix();
     return;
   }
+  if (key === "g" && event.repeat) return;
   if (state.navigationPrefixAt && Date.now() - state.navigationPrefixAt < 1000) {
-    state.navigationPrefixAt = 0;
-    window.Douku.chordPending = false;
+    resetNavigationPrefix();
     const section = {l: "all", r: "recent", f: "favorite", i: "inspiration"}[key];
     const path = {t: "/topics", j: "/jobs", x: "/trash", s: "/settings", g: "/tags"}[key];
     if (section) { event.preventDefault(); $(`.nav-item[data-section='${section}']`).click(); return; }
     if (path) { event.preventDefault(); window.Douku.navigate(path); return; }
   }
   if (key === "g") {
+    resetNavigationPrefix();
     state.navigationPrefixAt = Date.now();
+    state.navigationPrefixTimer = window.setTimeout(resetNavigationPrefix, 1000);
     window.Douku.chordPending = true;
     return;
   }
-  window.Douku.chordPending = false;
-  state.navigationPrefixAt = 0;
+  resetNavigationPrefix();
   if (state.panelPage === "article" && !event.target.closest("#entry-menu,#filter-popover")) {
     const interactive = Boolean(event.target.closest("button,a,[role='tab'],#library-sidebar"));
     if (key === "u" && !interactive) { event.preventDefault(); showLibrary(); return; }
@@ -2911,10 +2935,15 @@ function bindEvents() {
     const hasManagedItems = [...state.items, ...state.allItems, state.currentArticleItem]
       .some(isDatabaseManaged);
     if (!hasManagedItems) return;
+    resetLibraryFilters();
+    state.section = "all";
+    if (state.sort === "relevance") state.sort = "captured_desc";
     state.topicSelectionMode = true;
     state.selectedEntryIds.clear();
+    // The cached results may still belong to a search or favorites batch.
+    state.libraryLoaded = false;
+    renderFilters();
     showLibrary();
-    renderLibrary();
   });
   $("#confirm-topic").addEventListener("click", (event) => {
     event.preventDefault();

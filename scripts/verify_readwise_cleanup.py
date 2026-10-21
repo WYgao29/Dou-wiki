@@ -38,7 +38,8 @@ def audit_tokens():
     assert set(radii) <= {"0", "50%", "inherit", "var(--radius)", "var(--radius-sm)"}, radii
     components = re.sub(r":root(?:\[data-theme=\"dark\"\])?\s*\{[^}]+\}", "", css)
     assert not re.search(r"#[\da-fA-F]{3,8}\b|rgba?\(|\b(?:white|black)\s*[;)]", components)
-    assert not re.search(r"linear-gradient|backdrop-filter|scale\(", css)
+    assert not re.search(r"linear-gradient|backdrop-filter", css)
+    assert all(.95 <= float(value) <= 1 for value in re.findall(r"scale\(([\d.]+)\)", css))
     declared = set(re.findall(r"(--[\w-]+)\s*:", css))
     used = set(re.findall(r"var\((--[\w-]+)", css))
     dynamic = {"--filter-popover-top", "--filter-popover-left", "--popover-origin"}

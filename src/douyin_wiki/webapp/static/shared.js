@@ -7,6 +7,20 @@
     "analysis-view", "settings-view", "not-found-view",
   ];
   const Douku = window.Douku || {};
+  const setInputMethod = (method) => {
+    if (document.documentElement.dataset.inputMethod !== method) {
+      document.documentElement.dataset.inputMethod = method;
+    }
+  };
+  document.addEventListener("pointerdown", () => setInputMethod("pointer"), {capture: true});
+  document.addEventListener("keydown", (event) => {
+    if (!["Shift", "Control", "Alt", "Meta"].includes(event.key)) setInputMethod("keyboard");
+  }, {capture: true});
+  document.addEventListener("click", (event) => {
+    if (event.detail === 0) setInputMethod("keyboard");
+  }, {capture: true});
+  Douku.motionAllowed = () => document.documentElement.dataset.inputMethod === "pointer"
+    && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   Douku.$ = (id) => document.getElementById(id);
   Douku.qs = (selector, root = document) => root.querySelector(selector);
   Douku.qsa = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -30,7 +44,13 @@
   const TOAST_MS = 2600;
   const toastState = {timer: 0, remaining: 0, started: 0, sticky: false};
   const toastNode = () => Douku.$("toast");
-  const hideToast = () => toastNode()?.classList.remove("show");
+  const hideToast = () => {
+    const node = toastNode();
+    if (node) {
+      node.querySelectorAll(".toast-action").forEach(action => { action.inert = true; });
+      node.classList.remove("show");
+    }
+  };
   const scheduleToastHide = (ms) => {
     window.clearTimeout(toastState.timer);
     toastState.started = Date.now();
@@ -43,6 +63,7 @@
   };
   Douku.revealToast = (node, {sticky = false, duration = TOAST_MS} = {}) => {
     if (!node) return;
+    node.querySelectorAll(".toast-action").forEach(action => { action.inert = false; });
     node.classList.add("show");
     window.clearTimeout(toastState.timer);
     toastState.sticky = sticky;

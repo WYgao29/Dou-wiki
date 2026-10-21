@@ -79,6 +79,181 @@ async def test_command_search_closes_with_one_escape_and_keeps_query(ui):
     assert await page.locator("#command-input").input_value() == "jev"
 
 
+@pytest.mark.parametrize(("second_key", "destination"), [
+    ("l", "/"), ("r", "/?section=recent"), ("f", "/?section=favorite"),
+    ("i", "/?section=inspiration"), ("j", "/jobs"), ("g", "/tags"),
+    ("t", "/topics"), ("x", "/trash"), ("s", "/settings"),
+])
+async def test_navigation_shortcuts_run_as_key_sequences(ui, second_key, destination):
+    page, _service, _client, _calls = ui
+    await page.locator("#main-content").focus()
+    await page.keyboard.press("g")
+    await page.keyboard.press(second_key)
+    await expect(page).to_have_url(f"http://testserver{destination}")
+
+
+async def test_holding_g_does_not_trigger_the_tags_shortcut(ui):
+    page, _service, _client, _calls = ui
+    await page.locator("#main-content").focus()
+    await page.keyboard.down("g")
+    await page.keyboard.down("g")  # OS key repeat, without releasing the first key.
+    await page.keyboard.up("g")
+    await expect(page).to_have_url("http://testserver/")
+    await expect(page.locator("#library-view")).to_be_visible()
+
+
+@pytest.mark.parametrize("cancel", ["escape", "timeout", "command_palette"])
+async def test_cancelled_navigation_sequence_releases_tag_list_keys(ui, cancel):
+    page, _service, _client, _calls = ui
+    await page.goto("http://testserver/tags")
+    rows = page.locator("#tags-rows [data-tag-name]")
+    await rows.first.focus()
+    await page.keyboard.press("g")
+    if cancel == "timeout":
+        await page.wait_for_timeout(1100)
+    elif cancel == "command_palette":
+        await page.keyboard.press("Meta+k")
+        await expect(page.locator("#command-dialog")).to_have_js_property("open", True)
+        await page.keyboard.press("Escape")
+    else:
+        await page.keyboard.press("Escape")
+    await page.keyboard.press("j")
+    await expect(page).to_have_url("http://testserver/tags")
+    await expect(rows.nth(1)).to_be_focused()
+
+
+async def test_command_palette_explains_sequences_and_keeps_typing_as_search(ui):
+    page, _service, _client, _calls = ui
+    await page.locator("#main-content").focus()
+    await page.keyboard.press("Meta+k")
+    await expect(page.locator('[data-command-id="jobs"] kbd')).to_have_text("G → J")
+    await expect(page.locator("#command-shortcut-help")).to_contain_text("先关闭面板")
+    await page.keyboard.type("gj")
+    await expect(page.locator("#command-input")).to_have_value("gj")
+    await expect(page.locator("#command-dialog")).to_have_js_property("open", True)
+    await expect(page).to_have_url("http://testserver/")
+    await page.keyboard.press("Escape")
+    await page.locator("#main-content").focus()
+    await page.keyboard.press("g")
+    await page.keyboard.press("j")
+    await expect(page).to_have_url("http://testserver/jobs")
+
+
+async def test_pointer_dialog_enters_and_exits_without_delaying_native_close(ui):
+    page, service, _client, calls = ui
+    await page.goto("http://testserver/articles/dy-123")
+    before = len(service.database.list_jobs())
+    for _ in range(2):
+        await page.locator("#reader-actions .entry-more").click()
+        await page.get_by_role("menuitem", name="重新分析", exact=True).click()
+        dialog = page.locator("#destructive-dialog")
+        await expect(dialog).to_have_js_property("open", True)
+        assert await dialog.evaluate(
+            "node => node.getAnimations().some(animation => animation.playState === 'running')"
+        )
+        await dialog.get_by_role("button", name="取消", exact=True).click()
+        # The native close and business state finish before the exit paint.
+        await expect(dialog).to_have_js_property("open", False)
+        assert await dialog.evaluate("node => getComputedStyle(node).pointerEvents") == "none"
+        await page.wait_for_function(
+            "getComputedStyle(document.querySelector('#destructive-dialog')).display === 'none'"
+        )
+    assert len(service.database.list_jobs()) == before
+    assert not any(method == "POST" and path.endswith("/reanalyze") for method, path in calls)
+
+
+async def test_keyboard_reader_and_command_palette_skip_motion(ui):
+    page, _service, _client, _calls = ui
+    await page.locator("#view-gallery").click()
+    await page.evaluate("""() => {
+        window.transitionCalls = 0;
+        const original = document.startViewTransition.bind(document);
+        document.startViewTransition = (...args) => {
+            window.transitionCalls++; return original(...args);
+        };
+    }""")
+    await page.locator('.gallery-card[data-entry-id="dy-123"] .gallery-card-link').focus()
+    await page.keyboard.press("Enter")
+    await expect(page.locator("#article-view")).to_be_visible()
+    await expect(page.locator(".article-body h2")).not_to_have_count(0)
+    assert await page.evaluate("window.transitionCalls") == 0
+    await page.keyboard.press("Meta+k")
+    dialog = page.locator("#command-dialog")
+    await expect(dialog).to_have_js_property("open", True)
+    assert await dialog.evaluate("node => node.getAnimations().length") == 0
+    await page.keyboard.press("Escape")
+    await expect(dialog).to_have_js_property("open", False)
+    assert await dialog.evaluate("node => getComputedStyle(node).display") == "none"
+
+
+async def test_pointer_cover_transition_returns_after_keyboard_use(ui):
+    page, _service, _client, _calls = ui
+    await page.keyboard.press("Meta+k")
+    await page.keyboard.press("Escape")
+    await page.locator("#view-gallery").click()
+    await page.evaluate("""() => {
+        window.transitionCalls = 0;
+        const original = document.startViewTransition.bind(document);
+        document.startViewTransition = (...args) => {
+            window.transitionCalls++; return original(...args);
+        };
+    }""")
+    await page.locator('.gallery-card[data-entry-id="dy-123"] .gallery-card-link').click()
+    await expect(page.locator(".article-body h2")).not_to_have_count(0)
+    assert await page.evaluate("window.transitionCalls") == 1
+    await page.wait_for_function(
+        "!document.querySelector('.article-cover').style.viewTransitionName"
+    )
+
+
+@pytest.mark.parametrize("reduced", [False, True])
+async def test_overlay_motion_does_not_move_content_and_escape_closes_immediately(ui, reduced):
+    page, _service, _client, _calls = ui
+    await page.set_viewport_size({"width": 1100, "height": 900})
+    await page.emulate_media(reduced_motion="reduce" if reduced else "no-preference")
+    main_width = await page.locator("#main-content").evaluate("node => node.clientWidth")
+    for _ in range(2):
+        await page.locator("#chat-toggle").click()
+        panel = page.locator("#side-panel")
+        await expect(panel).to_have_js_property("inert", False)
+        current_width = await page.locator("#main-content").evaluate("node => node.clientWidth")
+        assert current_width == main_width
+        if reduced:
+            assert await panel.evaluate("node => node.getAnimations().length") == 0
+        await page.keyboard.press("Escape")
+        await expect(panel).to_have_js_property("inert", True)
+        assert await panel.evaluate("node => getComputedStyle(node).visibility") == "hidden"
+        assert await panel.evaluate("node => node.getAnimations().length") == 0
+        await expect(page.locator("#chat-toggle")).to_be_focused()
+
+
+async def test_closing_popovers_and_toasts_cannot_keep_hidden_controls_focusable(ui):
+    page, _service, _client, _calls = ui
+    await page.locator("#filter-toggle").click()
+    popover = page.locator("#filter-popover")
+    await expect(popover).to_have_js_property("inert", False)
+    await page.keyboard.press("Escape")
+    await expect(popover).to_have_js_property("inert", True)
+    await expect(page.locator("#filter-toggle")).to_be_focused()
+    await page.locator("#filter-toggle").click()
+    await expect(popover).to_have_js_property("inert", False)
+    await expect(popover).to_be_visible()
+    await page.locator("#apply-filters").click()
+    await expect(popover).to_have_js_property("inert", True)
+    await page.evaluate("""() => {
+        window.Douku.toastAction('已完成测试', '撤销', () => {});
+        window.Douku.hideToast();
+    }""")
+    toast = page.locator("#toast")
+    await expect(toast.locator(".toast-action")).to_have_js_property("inert", True)
+    await toast.locator(".toast-action").focus()
+    await expect(toast.locator(".toast-action")).not_to_be_focused()
+    assert await toast.evaluate("node => getComputedStyle(node).pointerEvents") == "none"
+    await page.evaluate("window.Douku.toast('再次显示提示')")
+    await expect(toast).to_have_attribute("role", "status")
+    await expect(toast).to_contain_text("再次显示提示")
+
+
 async def test_existing_mcp_batch_remains_manageable_after_web_creation_is_removed(ui, monkeypatch):
     page, service, _client, calls = ui
     service.favorites.adapter = FakeFavoritesAdapter(snapshot(kinds=[(A, "video")]))
@@ -130,6 +305,59 @@ async def test_timestamped_inspiration_remains_readable_without_chat(ui):
     await page.locator("#view-list").click()
     await expect(row.locator(".item-summary")).to_have_text("这是一条本地资料。")
     await expect(row.locator(".item-inspirations")).to_have_count(0)
+
+
+@pytest.mark.parametrize("previous_scope", [
+    "section=inspiration",
+    "section=inspiration&view=gallery&sort=title_asc",
+    "section=favorite",
+    "section=recent",
+    "q=本地&author=测试博主&type=tutorial&tag=咖啡&source=video&has_inspiration=1",
+    "q=本地&search_mode=semantic&section=inspiration",
+    "favorites_batch",
+])
+async def test_topics_source_picker_starts_from_the_whole_library(ui, previous_scope):
+    page, service, _client, calls = ui
+    if previous_scope == "favorites_batch":
+        batch = await scan(service, snapshot(kinds=[(A, "video")]))
+        previous_scope = f"favorites_job={batch.id}"
+    await page.goto(f"http://testserver/?{previous_scope}")
+    await expect(page.locator("#view-title")).not_to_be_empty()
+    await page.locator("#topics-nav").click()
+    await expect(page.locator("#topics-view")).to_be_visible()
+    await page.locator("#topics-create-button").click()
+    await expect(page.locator("#view-title")).to_have_text("资料库")
+    await expect(page.locator('.nav-item[data-section="all"]')).to_have_class(
+        re.compile(r"\bactive\b")
+    )
+    await expect(page.locator("#search-input")).to_have_value("")
+    await expect(page.locator("#applied-filters")).to_be_hidden()
+    await expect(page.locator("#library-results [data-entry-id]")).to_have_count(3)
+    await expect(page.locator("#library-selection-count")).to_have_text("已选 0 篇")
+    params = urlsplit(page.url).query
+    assert not any(key in params for key in (
+        "section=", "q=", "author=", "type=", "tag=", "source=", "has_inspiration=",
+        "favorites_job=",
+    )), params
+    await page.locator(
+        '#library-results [data-entry-id="dy-1000"] .topic-selection-indicator'
+    ).check()
+    await page.locator("#library-selection-next").click()
+    await expect(page.locator("#topic-dialog")).to_have_js_property("open", True)
+    await expect(page.locator("#topic-selection-summary")).to_contain_text("已选择 1 篇")
+    assert ("POST", "/api/topics") not in calls
+
+
+async def test_library_source_selection_keeps_current_filters(ui):
+    page, _service, _client, _calls = ui
+    await page.goto("http://testserver/?tag=AI%20代理")
+    await expect(page.locator("#library-results [data-entry-id]")).to_have_count(1)
+    previous_url = page.url
+    await page.locator("#topic-select-toggle").click()
+    assert page.url == previous_url
+    await expect(page.locator("#library-results [data-entry-id]")).to_have_count(1)
+    await expect(page.locator("#applied-filters")).to_contain_text("AI 代理")
+    await expect(page.locator(".topic-selection-indicator")).to_be_visible()
 
 
 @pytest.mark.parametrize("width", [1440, 960])

@@ -31,9 +31,12 @@
   --fw-medium: 500; --fw-semibold: 600; --space-1: 4px; --space-2: 8px; --space-3: 12px;
   --space-4: 16px; --space-6: 24px; --space-8: 32px; --space-12: 48px; --space-16: 64px;
   --radius: 6px; --radius-sm: 4px; --border-width: 1px; --dur-fast: 100ms; --dur-base: 160ms;
-  --transition-control: background var(--dur-base) var(--ease),
-    color var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease);
-  --dur-panel: 240ms; --ease: cubic-bezier(.2, 0, 0, 1); --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  --transition-control: background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease, border-color var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease);
+  --dur-panel: 220ms; --dur-dialog: 200ms; --dur-exit: 120ms;
+  --ease: cubic-bezier(.23, 1, .32, 1); --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  --ease-panel: cubic-bezier(.32, .72, 0, 1);
   --z-base: 0; --z-main: 1; --z-sticky: 10; --z-panel: 20; --z-popover: 50;
   --z-modal: 100; --z-toast: 120; --sidebar-width: 240px; --panel-width: 360px;
   --header-height: 48px; --row-height: 88px; --thumb-w: 48px;
@@ -97,7 +100,7 @@ body:has(.app-shell[data-page="library"] .selection-bar:not(.hidden)) .toast {
 
 /* !important keeps hidden/hidden-attribute elements concealed despite component display rules. */
 
-.hidden:not(.filter-popover), [hidden] {
+.hidden:not(.filter-popover, .entry-menu), [hidden] {
   display: none !important;
 }
 .sr-only {
@@ -409,15 +412,16 @@ a { color: var(--accent-text); }
   flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); box-shadow: var(--shadow-overlay);
 }
-.filter-popover.hidden {
-  opacity: 0; pointer-events: none; visibility: hidden;
-  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
-  visibility 0s linear var(--dur-fast);
+.filter-popover, .entry-menu {
+  opacity: 1; visibility: visible; transform: translateY(0) scale(1);
+  transform-origin: var(--popover-origin, top right);
+  transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease),
+    visibility 0s;
 }
-.filter-popover.hidden { display: flex; }
-.filter-popover:not(.hidden) {
-  opacity: 1; pointer-events: auto; visibility: visible;
-  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), visibility 0s;
+.filter-popover.hidden, .entry-menu.hidden {
+  opacity: 0; pointer-events: none; visibility: hidden; transform: translateY(-4px) scale(.98);
+  transition-duration: var(--dur-exit), var(--dur-exit), 0s;
+  transition-delay: 0s, 0s, var(--dur-exit);
 }
 .control-count {
   display: inline-grid; min-width: 18px; height: 18px; place-items: center;
@@ -493,21 +497,38 @@ a { color: var(--accent-text); }
   visibility: hidden;
 }
 .error-state > svg, .error-state h2 { color: var(--danger); }
-@keyframes article-fallback-enter {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
 dialog {
   padding: 0; border: 1px solid var(--border); color: var(--text); background: var(--surface);
   box-shadow: var(--shadow-overlay); border-radius: var(--radius); max-height: calc(100dvh - 64px);
 }
-dialog::backdrop { background: color-mix(in srgb, var(--text) 36%, transparent); }
-dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
-@keyframes dialog-enter {
-  from { opacity: 0; }
-  to { opacity: 1; }
+dialog::backdrop { background: var(--overlay-backdrop); }
+/* Native close/focus behavior stays immediate; supporting browsers retain only the exit paint. */
+@supports (transition-behavior: allow-discrete) {
+  dialog:not(.command-dialog) {
+    opacity: 0; transform: translateY(8px) scale(.98); transform-origin: center;
+    transition: opacity var(--dur-exit) var(--ease), transform var(--dur-exit) var(--ease),
+      overlay var(--dur-exit) allow-discrete, display var(--dur-exit) allow-discrete;
+  }
+  dialog[open]:not(.command-dialog) {
+    opacity: 1; transform: translateY(0) scale(1);
+    transition-duration: var(--dur-dialog);
+  }
+  dialog:not([open]) { pointer-events: none; }
+  dialog:not(.command-dialog)::backdrop {
+    opacity: 0;
+    transition: opacity var(--dur-exit) var(--ease),
+      overlay var(--dur-exit) allow-discrete, display var(--dur-exit) allow-discrete;
+  }
+  dialog[open]:not(.command-dialog)::backdrop {
+    opacity: 1; transition-duration: var(--dur-dialog);
+  }
+  dialog:not([open])::backdrop { pointer-events: none; }
+  @starting-style {
+    dialog[open]:not(.command-dialog) { opacity: 0; transform: translateY(8px) scale(.98); }
+    dialog[open]:not(.command-dialog)::backdrop { opacity: 0; }
+  }
 }
-.command-dialog[open] { animation: none; }
+.command-dialog, .command-dialog::backdrop { animation: none; transition: none; }
 .command-shell { margin: 0; }
 .dialog-kicker {
   display: inline-flex; align-items: center; gap: var(--space-1); color: var(--accent-text);
@@ -528,14 +549,15 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   position: fixed; z-index: 100; bottom: var(--space-6); left: 50%;
   max-width: min(480px, calc(100vw - 32px)); border-radius: var(--radius); font-size: var(--fs-13);
   opacity: 0; pointer-events: none;
-  transition: opacity var(--dur-base) var(--ease-in-out), transform var(--dur-base) var(--ease-in-out);
+  transition: opacity var(--dur-exit) var(--ease), transform var(--dur-exit) var(--ease);
   min-height: 40px; padding: var(--space-2) var(--space-4); background: var(--text);
   color: var(--bg); border: 0; box-shadow: var(--shadow-overlay); transform: translate(-50%, 4px);
 }
-.toast.show { transform: translate(-50%, 0); opacity: 1; }
+.toast.show { transform: translate(-50%, 0); opacity: 1; transition-duration: var(--dur-base); }
 .toast:has(.toast-action) {
-  display: flex; align-items: center; gap: var(--space-3); pointer-events: auto;
+  display: flex; align-items: center; gap: var(--space-3);
 }
+.toast.show:has(.toast-action) { pointer-events: auto; }
 .toast-action {
   border: 0; background: transparent; padding: var(--space-1); font: inherit;
   font-weight: var(--fw-semibold); white-space: nowrap; cursor: pointer; color: inherit;
@@ -585,10 +607,10 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
   animation: none;
 }
 ::view-transition-old(root) {
-  animation: 160ms var(--ease) both vt-fade-out; mix-blend-mode: normal;
+  animation: var(--dur-exit) var(--ease) both vt-fade-out; mix-blend-mode: normal;
 }
 ::view-transition-new(root) {
-  animation: 160ms var(--ease) both vt-fade-in; mix-blend-mode: normal;
+  animation: var(--dur-base) var(--ease) both vt-fade-in; mix-blend-mode: normal;
 }
 ::view-transition-group(active-album-cover) {
   z-index: 1; animation-duration: var(--dur-panel); animation-timing-function: var(--ease-in-out);
@@ -934,7 +956,7 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 .gallery-card-link[aria-busy="true"] { cursor: progress; filter: saturate(.7); }
 .gallery-cover {
   position: relative; aspect-ratio: 3 / 4; border: 0;
-  transition: border-color 160ms var(--ease), box-shadow 160ms var(--ease);
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
 }
 .article-cover { position: relative; aspect-ratio: 3 / 4; border: 0; width: 96px; height: 128px; }
 .gallery-cover::after, .article-cover::after {
@@ -974,9 +996,6 @@ dialog[open] { animation: dialog-enter var(--dur-panel) var(--ease) both; }
 }
 .empty-state h2 { margin: 0 0 var(--space-2); color: var(--text); font-size: var(--fs-16); }
 .empty-state p { margin: 0 0 var(--space-4); font-size: var(--fs-14); line-height: 26px; }
-.article-view.article-fallback-enter {
-  animation: article-fallback-enter var(--dur-panel) var(--ease) both;
-}
 .article-hero {
   display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: var(--space-6);
   max-inline-size: var(--measure); margin: var(--space-12) auto var(--space-8); align-items: start;
@@ -1363,7 +1382,7 @@ details[open] > summary > .article-disclosure-icon { transform: rotate(90deg); }
 .article-body :is(pre, table).is-reading-focus::before { left: 0; }
 .article-body mark.citation-highlight {
   background: var(--accent-subtle); color: inherit; border-radius: var(--radius-sm);
-  transition: background 1200ms var(--ease);
+  transition: background-color var(--dur-base) var(--ease);
 }
 .article-body mark.citation-highlight.settled { background: transparent; }
 .inspiration-card {
@@ -1386,8 +1405,7 @@ details[open] > summary > .article-disclosure-icon { transform: rotate(90deg); }
 .operation-view > :not(.view-header) {
   width: 100%; max-width: 720px; margin-left: auto; margin-right: auto;
 }
-#settings-view > :not(.view-header), #imports-view > :not(.view-header),
-#imports-single-view > :not(.view-header), #analysis-view > :not(.view-header),
+#settings-view > :not(.view-header), #analysis-view > :not(.view-header),
 #auth-view > :not(.view-header) {
   max-width: 640px;
 }
@@ -1826,21 +1844,53 @@ details[open] > summary > .article-disclosure-icon { transform: rotate(90deg); }
 ) { display: none; }
 #imports-collections-view.is-idle:not(.has-error) #collection-refresh,
 #imports-collections-view.no-records.has-error .import-history .fav-field { display: none; }
-.agent-commands { display: grid; gap: var(--space-2); margin: var(--space-3) 0 0; padding: 0; list-style: none; }
-.agent-commands li, .agent-command {
-  display: flex; align-items: center; gap: var(--space-3); min-width: 0;
-}
-.agent-commands li > span:first-child { flex: 0 0 4.5rem; color: var(--text-2); font-size: var(--fs-13); }
-.agent-commands code, .agent-command code {
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: var(--fs-13);
-}
-#imports-view .agent-import > .hint-copy,
-#imports-single-view .agent-import > .hint-copy,
 #imports-collections-view > .hint-copy,
 #imports-favorites-view > .operation-section > .hint-copy,
 #collection-summary {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#imports-view > :not(.view-header), #imports-single-view > :not(.view-header) {
+  max-width: 720px; margin-inline: 0;
+}
+.app-shell:not(.is-sidebar-collapsed) #imports-view .view-header-left { display: none; }
+#imports-view > .view-header + .agent-import,
+#imports-single-view > .view-header + .agent-import { margin-top: var(--space-6); }
+#imports-view > :is([data-worker-banner], .auth-channel-banner, .todo-banner) {
+  margin-block: var(--space-6);
+}
+.agent-import > h2 { font: var(--fw-semibold) var(--fs-16)/24px var(--font-ui); }
+.agent-import > .hint-copy { margin: var(--space-2) 0 0; line-height: 20px; }
+.agent-commands { display: grid; margin: var(--space-4) 0 0; padding: 0; list-style: none; }
+.agent-commands li, .agent-command {
+  align-items: center; gap: var(--space-3); min-width: 0;
+}
+.agent-command { display: flex; margin-top: var(--space-4); }
+.agent-commands li {
+  display: grid; grid-template-columns: 64px minmax(0, 1fr) 48px;
+  min-height: 48px; padding-block: var(--space-2); border-bottom: 1px solid var(--border);
+}
+.agent-commands li:last-child { border-bottom: 0; }
+.agent-commands li > span:first-child { color: var(--text-2); font-size: var(--fs-13); }
+.agent-commands code, .agent-command code {
+  min-width: 0; white-space: normal; overflow-wrap: anywhere;
+  font: var(--fw-regular) var(--fs-13)/20px var(--font-ui);
+}
+.agent-command code { flex: 1; }
+.agent-commands button { justify-self: end; white-space: nowrap; }
+#imports-view .destination-list {
+  margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--border);
+}
+#imports-view .destination-row:last-child { border-bottom: 0; }
+#imports-view > .imports-recent {
+  margin-top: var(--space-6); padding-top: var(--space-6); border-top: 1px solid var(--border);
+}
+.imports-recent .recent-imports-title { margin-bottom: var(--space-3); }
+.imports-recent .recent-import-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 140px;
+  gap: var(--space-4); min-height: 48px; line-height: 20px;
+}
+.imports-recent .recent-import-row span, .imports-recent .recent-import-row time {
+  white-space: nowrap; text-align: right;
 }
 .sidebar-recent-topics { display: grid; gap: 2px; margin-top: var(--space-1); }
 .sidebar-recent-topics .nav-item { min-height: 32px; padding-inline: var(--space-3); }
@@ -1945,10 +1995,11 @@ details[open] > summary > .article-disclosure-icon { transform: rotate(90deg); }
   .side-panel {
     position: fixed; z-index: 80; inset: 0 0 0 auto; width: 360px; height: 100dvh;
     box-shadow: var(--shadow-overlay); transform: translateX(105%); visibility: hidden;
-    transition: transform var(--dur-panel) var(--ease-in-out), visibility 0s linear var(--dur-panel);
+    transition: transform var(--dur-exit) var(--ease-panel), visibility 0s linear var(--dur-exit);
   }
   .app-shell.panel-overlay-open .side-panel {
-    transform: translateX(0); visibility: visible; pointer-events: auto; transition-delay: 0s;
+    transform: translateX(0); visibility: visible; pointer-events: auto;
+    transition-duration: var(--dur-panel), 0s; transition-delay: 0s;
   }
 }
 .app-shell.is-sidebar-collapsed .sidebar-restore-button { display: inline-grid; }
@@ -1966,6 +2017,18 @@ details[open] > summary > .article-disclosure-icon { transform: rotate(90deg); }
   .trash-item:hover .trash-item-actions, .trash-item:focus-within .trash-item-actions {
     opacity: 1;
   }
+}
+
+/* Feedback stays on occasional action buttons; navigation and reading never scale. */
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  :root[data-input-method="pointer"] :is(.primary-button, .secondary-button, .danger-button, .icon-button):enabled:active {
+    transform: scale(.97);
+  }
+}
+
+/* Keyboard actions stay immediate, including native dialog and overlay exits. */
+:root[data-input-method="keyboard"] {
+  --dur-fast: 0ms; --dur-base: 0ms; --dur-panel: 0ms; --dur-dialog: 0ms; --dur-exit: 0ms;
 }
 
 /* 11. Reduced motion: !important overrides all component/state animations, including view transitions. */
