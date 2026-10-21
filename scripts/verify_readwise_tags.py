@@ -111,6 +111,10 @@ async def verify():
                     )
                 await page.click("#tags-nav")
                 await page.wait_for_selector("#tags-view:not(.hidden) #tags-rows tr")
+                assert await page.locator("#tags-tab-all").get_attribute("aria-selected") == "true"
+                assert await page.locator("#tag-aliases").is_hidden()
+                assert await page.locator("#tag-duplicates").is_hidden()
+                assert await page.locator("#tags-rename").is_hidden()
                 assert await page.locator("#tags-nav").evaluate(
                     "e => e.classList.contains('active')"
                 )
@@ -200,6 +204,7 @@ async def verify():
                 )
                 assert await row("智能体").count() == 0
                 assert client.get("/api/articles/dy-1100").status_code == 200
+                await page.locator("#tags-tab-duplicates").click()
                 assert await page.locator(".tag-duplicate-group").count() > 0
                 await (
                     page.locator(".tag-duplicate-group")
@@ -210,6 +215,7 @@ async def verify():
                 await page.click("#confirm-destructive")
                 await idle()
                 assert await row("手冲咖啡").count() == 0
+                await page.locator("#tags-tab-all").click()
                 await page.click("[data-tag-sort=name]")
                 assert await page.locator("[data-tag-sort=name]").inner_text() == "标签名 ↑"
                 await page.click("[data-tag-sort=last_used_at]")

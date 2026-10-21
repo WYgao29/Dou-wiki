@@ -686,7 +686,10 @@ def create_app(
     @app.get("/api/trash")
     async def list_trash():
         items = []
-        for raw in core.list_trashed_entries():
+        for raw in sorted(
+            [*core.list_trashed_entries(), *core.list_trashed_topics()],
+            key=lambda item: item["deleted_at"], reverse=True,
+        ):
             item = dict(raw)
             item["deleted_display"] = format_beijing(item.get("deleted_at"))
             items.append(item)
@@ -771,6 +774,18 @@ def create_app(
             return _topic_payload(await asyncio.to_thread(core.get_topic, topic_id))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.delete("/api/topics/{topic_id}")
+    async def trash_topic(topic_id: str, payload: ConfirmDestructiveActionRequest):
+        try:
+            result = await asyncio.to_thread(
+                core.trash_topic, topic_id, confirmed=payload.confirmed
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="专题不存在") from exc
+        except (ValueError, DouyinWikiError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await publish_mutation(result)
 
     @app.put("/api/topics/{topic_id}/sources")
     async def set_topic_sources(topic_id: str, payload: SetTopicSourcesRequest):

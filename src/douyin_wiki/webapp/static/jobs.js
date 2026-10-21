@@ -419,14 +419,6 @@
     const viewingChildren = job.next_action?.code === "view_children";
     const action = viewingChildren || selfProgressLink(job.next_action) ? null : actionButton(job.next_action);
     if (action) actions.append(action);
-    const importedEntries = (job.imported_entries?.length ? job.imported_entries : (job.imported_entry_ids || []).map((entryId) => ({entry_id: entryId, title: ""})))
-      .filter((entry) => !(job.next_action?.code === "open_entry" && job.entry_id === entry.entry_id))
-      .slice(0, 5);
-    importedEntries.forEach((entry, index) => {
-      const title = String(entry.title || "").trim();
-      const label = title ? `打开《${title}》` : (importedEntries.length > 1 ? `打开已入库资料 ${index + 1}` : "打开已入库资料");
-      actions.append(followLink(`/articles/${encodeURIComponent(entry.entry_id)}`, label));
-    });
     const repaste = creatorRepaste(job);
     if (repaste) actions.append(repaste);
     const dismiss = dismissButton(job, {reloadDetail: true});
@@ -510,15 +502,6 @@
       previous.addEventListener("click", () => { state.page--; renderChildren(); });
       next.addEventListener("click", () => { state.page++; renderChildren(); });
       renderChildren(); children.append(childHeader, rows, pager);
-    }
-    if (viewingChildren && hasChildWork) {
-      const jump = D.node("button", "子任务在下方", "text-button");
-      jump.type = "button";
-      jump.addEventListener("click", () => {
-        children.scrollIntoView({behavior: "smooth", block: "start"});
-        children.focus({preventScroll: true});
-      });
-      actions.append(jump);
     }
     const warningsPanel = D.node("section", null, "review-panel job-warnings");
     const warnings = Array.isArray(job.result?.warnings) ? job.result.warnings.filter(Boolean) : [];

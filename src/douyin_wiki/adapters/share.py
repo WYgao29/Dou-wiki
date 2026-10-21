@@ -26,7 +26,7 @@ class ResolvedShare:
     canonical_url: str
     video_id: str
     redirect_chain: tuple[str, ...]
-    source_kind: SourceKind = SourceKind.VIDEO
+    source_kind: SourceKind | None = SourceKind.VIDEO
 
 
 @dataclass(frozen=True)
@@ -46,11 +46,14 @@ def extract_douyin_url(share_text: str) -> str:
     raise InvalidShareTextError("分享文本中没有找到有效的抖音链接")
 
 
-def extract_work_identity(value: str) -> tuple[str, SourceKind] | None:
+def extract_work_identity(value: str) -> tuple[str, SourceKind | None] | None:
     for pattern in WORK_ID_PATTERNS:
         if match := pattern.search(value):
             kind = match.groupdict().get("kind")
-            source_kind = SourceKind.IMAGE_NOTE if kind in {"note", "gallery"} else SourceKind.VIDEO
+            source_kind = (
+                SourceKind.IMAGE_NOTE if kind in {"note", "gallery"}
+                else SourceKind.VIDEO if kind == "video" else None
+            )
             return match.group("id"), source_kind
     return None
 
@@ -111,13 +114,15 @@ def assert_creator_share(share_text: str) -> str:
 
 
 def _resolved(
-    original_url: str, identity: tuple[str, SourceKind], chain: list[str]
+    original_url: str, identity: tuple[str, SourceKind | None], chain: list[str]
 ) -> ResolvedShare:
     work_id, source_kind = identity
     route = "note" if source_kind == SourceKind.IMAGE_NOTE else "video"
     return ResolvedShare(
         original_url=original_url,
-        canonical_url=f"https://www.douyin.com/{route}/{work_id}",
+        canonical_url=(
+            f"https://www.douyin.com/{route}/{work_id}" if source_kind else chain[-1]
+        ),
         video_id=work_id,
         redirect_chain=tuple(chain),
         source_kind=source_kind,
@@ -125,16 +130,16 @@ def _resolved(
 
 
 def _merge_identity(
-    current: tuple[str, SourceKind] | None,
-    candidate: tuple[str, SourceKind],
+    current: tuple[str, SourceKind | None] | None,
+    candidate: tuple[str, SourceKind | None],
     chain: list[str],
-) -> tuple[str, SourceKind]:
+) -> tuple[str, SourceKind | None]:
     if current is not None and current[0] != candidate[0]:
         raise InvalidShareTextError(
             "短链重定向中的作品 ID 不一致",
             details={"redirect_chain": chain},
         )
-    return candidate
+    return current if current is not None and candidate[1] is None else candidate
 
 
 class DouyinShareResolver:
@@ -160,7 +165,7 @@ class DouyinShareResolver:
         async with httpx.AsyncClient(
             timeout=self.timeout_seconds, headers=headers, transport=self.transport
         ) as client:
-            identity: tuple[str, SourceKind] | None = None
+            identity: tuple[str, SourceKind | None] | None = None
             for _ in range(8):
                 current = extract_douyin_url(current)
                 try:
@@ -246,10 +251,10 @@ class DouyinShareResolver:
         original_url = extract_douyin_url(share_text)
         if mix_id := extract_collection_id(original_url):
             return "collection", f"https://www.douyin.com/collection/{mix_id}"
-        if extract_creator_sec_uid(original_url):
-            return "creator", original_url
         if extract_work_identity(original_url):
             return "work", original_url
+        if extract_creator_sec_uid(original_url):
+            return "creator", original_url
         if not is_douyin_short_link(original_url):
             return "unknown", original_url
         chain = [original_url]
@@ -281,10 +286,10 @@ class DouyinShareResolver:
                 for candidate in candidates:
                     if mix_id := extract_collection_id(candidate):
                         return "collection", f"https://www.douyin.com/collection/{mix_id}"
-                    if extract_creator_sec_uid(candidate):
-                        return "creator", candidate
                     if extract_work_identity(candidate):
                         return "work", candidate
+                    if extract_creator_sec_uid(candidate):
+                        return "creator", candidate
                 if not location:
                     break
             else:

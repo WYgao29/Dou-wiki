@@ -46,3 +46,9 @@ Gateway 协议1和2的任务查询均保留结果中的 `shared_capture_job_id` 
 所有作品校正、分析与重新分析由 Gateway 完成。`get_analysis_context` 和提交方法保留原公开参数、协议 1 / 2、阶段和材料版本校验；Worker 继续等待提交并在租约内发布。`CaptureOptions.processing_key()` 比较 `retention`，并在临时媒体长期保留关键帧时增加该标记；`keep / discard` 下帧标记不改变行为，旧授权字段仍序列化但不影响共享，不改变整个模型的相等语义。新建请求由 `resolve_capture_options()` 解析可选的 `keep_keyframes` 并保存配置快照，批次子任务继承已保存的选项，不能在处理时用当前配置重新解释。
 
 `generate_topic_artifact(topic_id, kind, *, provider=None)` 的异步 Service 签名保留，但在读专题或调用模型之前抛 `FeatureDisabledError`。专题笔记通过 `save_topic_note` 逐字保存，查询返回 `topic / artifacts` 字段仍保留，笔记 `kind="note"`。聊天执行器、数据库表和模型连接已删除。
+
+## 专题废纸篓
+
+`TopicTrashMixin` 通过 `trash_topic` 保存专题、来源选择及笔记快照，将专题目录移入 `.douyin-wiki/trash/topics/<trash_id>/`，再删除数据库中的专题投影；来源文章及其媒体不参与删除。`restore_trashed_entry`、`permanently_delete_trashed_entry` 和原有批量方法按废纸篓编号兼容分派专题操作；混合恢复先恢复文章，再恢复专题，保留来源关联。原文章废纸篓目录及格式不变，不增加数据库 schema 或 MCP 工具。
+
+操作持有 `entry_operations_locked()`；文档索引发布单独取得 `locked()`，避免重复取得不可重入的文件锁。删除与恢复阶段写入持久日志，`recover_entry_trash_operations_locked()` 同时接续专题操作。恢复时过滤已经不存在的来源并返回提示，笔记原文保留。

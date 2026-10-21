@@ -24,7 +24,7 @@
           <span class="brand-copy"><strong>抖库</strong></span>
         </a>
         <button class="icon-button sidebar-collapse-button" id="sidebar-collapse" type="button" aria-label="收起导航栏" title="收起导航栏">
-          <svg aria-hidden="true"><use href="/static/icons.svg#panel-left"></use></svg>
+          <svg aria-hidden="true"><use href="/static/icons.svg?v={{ web_version }}#panel-left"></use></svg>
         </button>
       </div>
 
@@ -56,7 +56,7 @@
     </aside>
 
     <main class="library-main" id="main-content" tabindex="-1">
-      <div id="header-controls" hidden><button class="icon-button sidebar-restore-button" id="sidebar-restore" type="button" aria-label="展开导航栏" title="展开导航栏"><svg aria-hidden="true"><use href="/static/icons.svg#panel-left"></use></svg></button><button class="toolbar-button chat-toggle-button" id="chat-toggle" type="button" aria-label="打开右侧面板" aria-controls="side-panel" aria-expanded="true"><svg aria-hidden="true"><use href="/static/icons.svg#panel-right"></use></svg></button></div>
+      <div id="header-controls" hidden><button class="icon-button sidebar-restore-button" id="sidebar-restore" type="button" aria-label="展开导航栏" title="展开导航栏"><svg aria-hidden="true"><use href="/static/icons.svg?v={{ web_version }}#panel-left"></use></svg></button><button class="toolbar-button chat-toggle-button" id="chat-toggle" type="button" aria-label="打开右侧面板" aria-controls="side-panel" aria-expanded="true"><svg aria-hidden="true"><use href="/static/icons.svg?v={{ web_version }}#panel-right"></use></svg></button></div>
       <section id="library-view" class="content-view{% if missing %} hidden{% endif %}" aria-labelledby="view-title">
         <header class="view-header" aria-label="资料库工具栏"><div class="view-header-left"></div><h1 id="view-title">资料库</h1><span id="result-count" class="result-count" aria-live="polite">正在加载…</span><label class="search-box" for="search-input"><svg aria-hidden="true"><use href="/static/icons.svg#search"></use></svg><input id="search-input" type="search" placeholder="搜索知识库" autocomplete="off"><kbd><svg aria-hidden="true"><use href="/static/icons.svg#command"></use></svg>K</kbd></label><div class="view-header-right"><a id="tag-manage-link" class="text-button hidden" href="/tags" data-route="/tags">管理</a></div></header>
         <div class="library-toolbar"><div class="source-tabs" role="group" aria-label="来源类型"><button class="source-tab" type="button" data-source="" aria-pressed="true">全部</button><button class="source-tab" type="button" data-source="video" aria-pressed="false">视频</button><button class="source-tab" type="button" data-source="image_note" aria-pressed="false">图文</button></div><div class="popover-anchor">
@@ -97,7 +97,7 @@
         </header><div id="article-content"></div>
       </article>
       <section id="topics-view" class="content-view hidden" aria-labelledby="topics-title"><header class="view-header"><div class="view-header-left"></div><div><h1 id="topics-title">专题</h1></div><button class="primary-button" id="topics-create-button" type="button">从资料库选择来源</button><div class="view-header-right"></div></header><div id="topics-list" class="topics-list"></div></section>
-      <article id="topic-view" class="topic-view hidden" aria-live="polite"><header class="view-header"><div class="view-header-left"></div><nav class="page-crumb" aria-label="页面位置"><button class="text-button" id="back-topics" type="button">专题</button><span class="page-crumb-sep" aria-hidden="true">/</span><h1 class="view-header-title" id="topic-header-title">{{ page_title if initial_topic_id | default('') else "专题" }}</h1></nav><div class="view-header-right"></div></header><div id="topic-content"></div></article>
+      <article id="topic-view" class="topic-view hidden" aria-live="polite"><header class="view-header"><div class="view-header-left"></div><nav class="page-crumb" aria-label="页面位置"><button class="text-button" id="back-topics" type="button">专题</button><span class="page-crumb-sep" aria-hidden="true">/</span><h1 class="view-header-title" id="topic-header-title">{{ page_title if initial_topic_id | default('') else "专题" }}</h1></nav><div class="view-header-right"><button id="topic-delete" class="text-button topic-delete-button" type="button"><svg aria-hidden="true"><use href="/static/icons.svg#trash-2"></use></svg><span>删除专题</span></button></div></header><div id="topic-content"></div></article>
       <section id="trash-view" class="content-view hidden" aria-labelledby="trash-title"><header class="view-header"><div class="view-header-left"></div><div><h1 id="trash-title">废纸篓</h1></div><span id="trash-count" class="result-count" aria-live="polite"></span><div class="view-header-right"></div></header><div id="trash-toolbar" class="fav-toolbar hidden"><button id="trash-select-all" type="button" class="ghost-button is-sm">全选</button><button id="trash-clear-selection" type="button" class="ghost-button is-sm">全不选</button></div><p class="trash-notice">删除的资料保存在本机，可恢复或彻底删除。</p><div id="trash-list" class="trash-list"></div><footer id="trash-confirm" class="fav-confirm hidden"><span id="trash-selection-count"></span><button id="trash-restore-selected" type="button" class="secondary-button"><svg aria-hidden="true"><use href="/static/icons.svg#rotate-ccw"></use></svg>恢复所选</button><button id="trash-purge-selected" type="button" class="danger-text-button"><svg aria-hidden="true"><use href="/static/icons.svg#trash-2"></use></svg>彻底删除所选</button></footer></section>
       <section id="imports-view" class="content-view operation-view page-stack hidden" aria-labelledby="imports-title">
         <header class="view-header"><div class="view-header-left"></div><nav class="page-crumb" aria-label="页面位置"><a class="text-button" href="/" data-route="/">资料库</a><span class="page-crumb-sep" aria-hidden="true">/</span><h1 id="imports-title">导入内容</h1></nav><div class="view-header-right"></div></header>
@@ -233,19 +233,27 @@
 
       <section class="content-view tags-view hidden" id="tags-view" aria-labelledby="tags-title">
         <header class="view-header"><div class="view-header-left"></div><h1 id="tags-title">标签管理</h1><label class="search-box tags-search"><svg aria-hidden="true"><use href="/static/icons.svg#search"></use></svg><input id="tags-search" type="search" placeholder="搜索标签" aria-label="搜索标签"><kbd>/</kbd></label><div class="view-header-right"></div></header>
-        <section id="tag-duplicates" class="tag-duplicates hidden" aria-label="可能重复的标签"></section>
-        <section id="tag-aliases" class="tag-aliases hidden" aria-label="标签别名"></section><div class="tags-toolbar"><span id="tags-count" class="hint-copy"></span><div class="tag-selection-actions"><span id="tags-selected" aria-live="polite"></span><button id="tags-rename" class="text-button" type="button" disabled>重命名</button><button id="tags-merge" class="secondary-button" type="button" disabled>合并到…</button><button id="tags-delete" class="danger-text-button" type="button" disabled>删除</button><button id="tags-cleanup" class="text-button" type="button">清理未使用标签</button></div></div>
+        <nav class="tags-tabs" role="tablist" aria-label="标签视图">
+          <button id="tags-tab-all" class="tags-tab" type="button" role="tab" aria-selected="true" aria-controls="tags-all-panel" data-tags-view="all">全部标签<span class="tags-tab-count" id="tags-all-count"></span></button>
+          <button id="tags-tab-duplicates" class="tags-tab" type="button" role="tab" aria-selected="false" aria-controls="tag-duplicates" data-tags-view="duplicates" tabindex="-1">可能重复<span class="tags-tab-count" id="tags-duplicates-count"></span></button>
+          <button id="tags-tab-aliases" class="tags-tab" type="button" role="tab" aria-selected="false" aria-controls="tag-aliases" data-tags-view="aliases" tabindex="-1">别名<span class="tags-tab-count" id="tags-aliases-count"></span></button>
+        </nav>
         <p id="tags-error" class="dialog-error hidden" role="alert"></p>
-        <div class="tag-table-wrap"><table class="tag-table"><thead><tr><th><input id="tags-select-all" type="checkbox" aria-label="选择所有搜索结果"></th><th><button type="button" data-tag-sort="name">标签名</button></th><th aria-sort="descending"><button type="button" data-tag-sort="count">数量 ↓</button></th><th><button type="button" data-tag-sort="last_used_at">最近使用时间</button></th><th>固定</th></tr></thead><tbody id="tags-rows"></tbody></table></div>
-        <p id="tags-empty" class="hint-copy hidden">没有符合条件的标签。</p>
-        <p class="hint-copy tags-help">最多固定 8 个标签。拖动已固定行可调整固定顺序，也可使用行内的上移 / 下移按钮。</p>
+        <section id="tags-all-panel" class="tags-panel" role="tabpanel" aria-labelledby="tags-tab-all">
+          <div class="tags-toolbar"><span id="tags-count" class="hint-copy"></span><div id="tags-batch-actions" class="tag-selection-actions hidden"><span id="tags-selected" aria-live="polite"></span><button id="tags-rename" class="text-button" type="button" disabled>重命名</button><button id="tags-merge" class="secondary-button" type="button" disabled>合并到…</button><button id="tags-delete" class="danger-text-button" type="button" disabled>删除</button><button id="tags-clear-selection" class="text-button" type="button">取消选择</button></div><button id="tags-cleanup" class="text-button" type="button">清理未使用标签</button></div>
+          <div class="tag-table-wrap"><table class="tag-table"><colgroup><col class="tag-check-col"><col><col class="tag-count-col"><col class="tag-date-col"><col class="tag-pin-col"></colgroup><thead><tr><th><input id="tags-select-all" type="checkbox" aria-label="选择所有搜索结果"></th><th><button type="button" data-tag-sort="name">标签名</button></th><th aria-sort="descending"><button type="button" data-tag-sort="count">数量 ↓</button></th><th><button type="button" data-tag-sort="last_used_at">最近使用时间</button></th><th>固定</th></tr></thead><tbody id="tags-rows"></tbody></table></div>
+          <p id="tags-empty" class="hint-copy hidden" role="status">没有符合条件的标签。</p>
+          <p class="hint-copy tags-help">最多固定 8 个标签，可拖动固定行或使用行内箭头调整固定顺序。</p>
+        </section>
+        <section id="tag-duplicates" class="tags-panel tag-duplicates hidden" role="tabpanel" aria-labelledby="tags-tab-duplicates"></section>
+        <section id="tag-aliases" class="tags-panel tag-aliases hidden" role="tabpanel" aria-labelledby="tags-tab-aliases"></section>
       </section>
     </main>
 
     <aside class="side-panel" id="side-panel" aria-label="右侧面板">
       <header class="side-panel-header"><div class="panel-tabs" id="panel-tabs" role="tablist" aria-label="右侧面板" data-panel-config="{{ panel_config | tojson | forceescape }}">
         {% for tab in panel_config.get(panel_page, ["info"]) %}<button type="button" id="panel-tab-{{ tab }}" class="panel-tab" data-panel-tab="{{ tab }}" role="tab" aria-controls="{{ panel_panes[tab] }}" aria-selected="{{ 'true' if loop.first else 'false' }}" tabindex="{{ '0' if loop.first else '-1' }}">{{ panel_labels[tab] }}</button>{% endfor %}
-      </div><button class="icon-button" id="chat-close" type="button" aria-label="收起右侧面板"><svg aria-hidden="true"><use href="/static/icons.svg#panel-right"></use></svg></button></header>
+      </div><button class="icon-button" id="chat-close" type="button" aria-label="收起右侧面板"><svg aria-hidden="true"><use href="/static/icons.svg?v={{ web_version }}#panel-right"></use></svg></button></header>
       <section class="panel-pane" id="info-pane" role="tabpanel" tabindex="0" hidden></section>
       <section class="panel-pane" id="inspiration-pane" role="tabpanel" tabindex="0" hidden></section>
       <section class="panel-pane" id="topic-sources-pane" role="tabpanel" tabindex="0" hidden></section>
@@ -273,10 +281,18 @@
   <dialog id="topic-dialog" class="inspiration-dialog" aria-labelledby="topic-dialog-title">
     <form method="dialog" id="topic-form">
       <header><div><span class="dialog-kicker">选定来源研究</span><h2 id="topic-dialog-title">创建专题</h2></div><button value="cancel" formnovalidate class="icon-button dialog-close" type="submit" aria-label="关闭"><svg aria-hidden="true"><use href="/static/icons.svg#x"></use></svg></button></header>
-      <p class="dialog-description">专题问答只会使用你选择并启用的文章，不会回退到全库。</p>
+      <p class="dialog-description">选好来源后，可以在 Agent 对话中开展研究，并把结果保存为专题笔记。</p>
       <label for="topic-title-input">专题标题<input id="topic-title-input" maxlength="200" required></label>
-      <label for="topic-goal-input">研究目标<textarea id="topic-goal-input" rows="3" maxlength="4000"></textarea></label>
-      <label for="topic-instructions-input">自定义指令（可选）<textarea id="topic-instructions-input" rows="3" maxlength="8000"></textarea></label>
+      <div class="topic-form-field">
+        <label for="topic-goal-input">研究目标（可选）</label>
+        <p id="topic-goal-help" class="topic-field-help">你想从这些资料中弄清什么？写一个具体问题即可，也可以留空，之后在 Agent 对话中补充。</p>
+        <textarea id="topic-goal-input" rows="3" maxlength="4000" aria-describedby="topic-goal-help" placeholder="例如：这几种 AI 视频工具各适合什么场景？哪种适合制作产品演示？"></textarea>
+      </div>
+      <div class="topic-form-field">
+        <label for="topic-instructions-input">自定义指令（可选）</label>
+        <p id="topic-instructions-help" class="topic-field-help">你希望怎样研究和呈现？可以补充分析角度、输出格式或限制，没有额外要求就留空。</p>
+        <textarea id="topic-instructions-input" rows="3" maxlength="8000" aria-describedby="topic-instructions-help" placeholder="例如：按适用场景、操作步骤和局限对比，用表格呈现，并注明来源。"></textarea>
+      </div>
       <p id="topic-selection-summary" class="dialog-description"></p>
       <p id="topic-error" class="dialog-error hidden" role="alert"></p>
       <div class="dialog-actions"><button value="cancel" formnovalidate class="secondary-button" type="submit">取消</button><button id="confirm-topic" class="primary-button" value="default" type="submit">创建专题</button></div>

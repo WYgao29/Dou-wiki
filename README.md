@@ -22,7 +22,7 @@
 - 从合集分享链接读取完整分页清单，选择后逐条入库，并保存可恢复的合集知识关系。
 - 博主同步按用户给出的目标执行；普通一次性同步不会扩展为定期主页订阅。
 - 博主作品按“待入库、已入库、未入库”分区；所有用户可见日期时间统一使用北京时间。
-- 视频优先用专用 Playwright Profile 拦截 CDN 地址再下载；失败时才回退 `yt-dlp`（优先读专用 Profile Cookie，系统 Chrome 仅作最后手段）。
+- 视频先用专用 Playwright Profile 获取 CDN 媒体地址，再由 `yt-dlp` 下载；未取得媒体地址时回退到页面提取（优先读专用 Profile Cookie，系统 Chrome 仅作最后手段）。
 - 图文与博主采集同样使用独立 Playwright 浏览器会话，不接触日常 Chrome Profile。
 - 通过 `ffmpeg`、Qwen3-ASR、Silero VAD 与 Qwen3 ForcedAligner 完成本地转录；OCR 使用 RapidOCR PP-OCRv6 small 或 macOS Vision。
 - 只由当前 Gateway Agent 的会话模型校正与分析文字；原视频不上传给模型。
@@ -189,6 +189,7 @@ uv run --no-sync douyin-wiki auth video
 `auth status` 只返回状态、Cookie 来源和修复动作，从不返回 Cookie 值。视频侧路径会优先检查专用 Profile，
 并在文案中标明与系统 Chrome 的双来源关系；本地检查只读 Cookie 名/域名/过期时间，不解密 Cookie 值。
 最终服务器可用性仍会在实际下载时验证。专用浏览器目录与用户日常 Chrome Profile 完全分离。
+收藏页弹窗等仅含 `modal_id` / `aweme_id` / `item_id` 的链接先确认真实作品类型，再选择图文或视频流程；已有资料可复用保存的类型，否则用专用浏览器读取匹配作品编号的结构化数据。无法确认时提示使用作品分享或详情链接，不默认按视频下载。旧失败任务重试时也会核对未确认的类型缓存。
 静态图文只执行图片下载和逐图 OCR（按配置使用 RapidOCR 或 Vision），不调用 yt-dlp、ffmpeg、ASR 或逐字稿校正；
 背景音乐只保存曲名和作者元数据。
 
@@ -231,7 +232,7 @@ Agent 使用 `search_knowledge` / `get_entry` 查找和读取资料，用 `creat
 
 专题内问答使用 `search_topic` 和 `get_topic`，仅引用当前启用来源。无相关证据时明确说明，不回退到全库。用户要求保存或已有授权覆盖保存时，用 `save_topic_note(..., confirmed=true)` 逐字保存专题笔记。
 
-专题仅保存笔记，没有总览、对比表、证据地图、决策简报等自动生成入口。`generate_topic_artifact` 已从 MCP 移除，`topic generate` 和 `POST /api/topics/{topic_id}/artifacts` 已停用。来源改变后可提示笔记需要更新，但不会自动重写。
+专题仅保存笔记，没有总览、对比表、证据地图、决策简报等自动生成入口。`generate_topic_artifact` 已从 MCP 移除，`topic generate` 和 `POST /api/topics/{topic_id}/artifacts` 已停用。来源改变后可提示笔记需要更新，但不会自动重写。专题详情提供可修改、可复制的研究指令；草稿满意后，在同一 Agent 对话中要求保存即可。删除专题会将其设置、来源选择和笔记移入废纸篓；来源文章、媒体和灵感保留，可从废纸篓恢复专题。
 
 ## MCP
 

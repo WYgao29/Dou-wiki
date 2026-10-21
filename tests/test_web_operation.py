@@ -580,7 +580,6 @@ def test_web_028_settings_health_and_favorite_copy(tmp_path) -> None:
     assert health.status_code == 307
     assert health.headers["location"].endswith("/api/system/health")
     assert 'children.id = "job-children"' in jobs_js
-    assert "scrollIntoView" in jobs_js
     assert "viewingChildren" in jobs_js
     assert "timestamp_ms}ms" not in jobs_js
     assert "clockFromMs" in jobs_js

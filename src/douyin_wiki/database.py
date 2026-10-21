@@ -3365,6 +3365,12 @@ class Database:
             rows = conn.execute("SELECT * FROM research_topics ORDER BY updated_at DESC").fetchall()
         return [self.get_topic(row["id"]) for row in rows]
 
+    def delete_topic_projection(self, topic_id: str) -> None:
+        """Remove only the topic, its source associations, and its saved notes."""
+        with self.connect() as conn:
+            if not conn.execute("DELETE FROM research_topics WHERE id=?", (topic_id,)).rowcount:
+                raise KeyError(f"专题不存在：{topic_id}")
+
     def set_topic_sources(
         self,
         topic_id: str,

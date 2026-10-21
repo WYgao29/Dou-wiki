@@ -178,6 +178,37 @@ content_type: explanation
         assert managed["database_managed"] is True
 
 
+@pytest.mark.parametrize("image_count", [1, 3])
+def test_image_note_reader_keeps_every_original_image(tmp_path: Path, image_count: int) -> None:
+    config, service = _web_fixture(tmp_path)
+    image_dir = config.vault_path / "raw" / "images" / "456"
+    image_dir.mkdir(parents=True)
+    for index in range(1, image_count + 1):
+        (image_dir / f"{index:03d}.webp").write_bytes(b"RIFFfakeIMAGE")
+    images = [
+        f"![抖音图文第 {index} 张](../../raw/images/456/{index:03d}.webp)"
+        for index in range(1, image_count + 1)
+    ]
+    source = config.vault_path / "wiki" / "sources" / "图文_456.md"
+    body = f"# 图文\n\n{images[0]}\n\n## 一句话\n\n摘要。\n"
+    if image_count > 1:
+        body += "\n## 原图\n\n" + "\n".join(images[1:]) + "\n"
+    body += "\n## 来源\n\n[打开原作品](https://www.douyin.com/note/456)\n"
+    source.write_text(
+        "---\ntype: source\nvideo_id: '456'\nsource_kind: image_note\n"
+        "cover_image: raw/images/456/001.webp\n---\n" + body,
+        encoding="utf-8",
+    )
+    with local_client(create_app(config, service=service, start_watcher=False)) as client:
+        article = client.get("/api/articles/dy-456").json()
+        assert article["item"]["cover_url"] == "/media/raw/images/456/001.webp"
+        urls = re.findall(r'<img[^>]+src="([^"]+)"', article["html"])
+        assert urls == [f"/media/raw/images/456/{index:03d}.webp"
+                        for index in range(1, image_count + 1)]
+        assert all(client.get(url).status_code == 200 for url in urls)
+    assert source.read_text(encoding="utf-8").endswith(body)
+
+
 def test_web_can_favorite_and_unfavorite_an_article(tmp_path: Path) -> None:
     config, service = _web_fixture(tmp_path)
     app = create_app(config, service=service, start_watcher=False)

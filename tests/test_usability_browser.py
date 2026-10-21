@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from urllib.parse import urlsplit
 
 import pytest
@@ -109,10 +110,86 @@ async def test_timestamped_inspiration_remains_readable_without_chat(ui):
     await page.locator("#panel-tab-inspiration").click()
     await expect(page.locator("#inspiration-pane")).to_contain_text("保留时间定位")
     await expect(page.locator("#inspiration-pane")).to_contain_text("00:01")
+    await page.goto("http://testserver/?section=inspiration&view=list")
+    row = page.locator('#library-results [data-entry-id="dy-123"]')
+    await expect(page.locator("#library-results [data-entry-id]")).to_have_count(1)
+    await expect(row.locator("h2")).to_have_text("测试文章")
+    await expect(row.locator(".item-inspiration span")).to_have_text(
+        ["保留这段方法", "保留时间定位"]
+    )
+    await expect(row.locator(".item-summary")).to_have_count(0)
+    await expect(row).not_to_contain_text("这是一条本地资料。")
+    await page.locator("#view-gallery").click()
+    await expect(row.locator(".item-inspiration span")).to_have_text(
+        ["保留这段方法", "保留时间定位"]
+    )
+    await expect(row.locator(".gallery-card-link")).to_have_accessible_name(
+        re.compile("灵感：保留这段方法，灵感：保留时间定位")
+    )
+    await page.locator('.nav-item[data-section="all"]').click()
+    await page.locator("#view-list").click()
+    await expect(row.locator(".item-summary")).to_have_text("这是一条本地资料。")
+    await expect(row.locator(".item-inspirations")).to_have_count(0)
+
+
+@pytest.mark.parametrize("width", [1440, 960])
+async def test_topic_guidance_and_delete_restore(ui, width):
+    page, service, _client, calls = ui
+    topic = service.create_topic("引导与删除测试", ["dy-123", "dy-1000"], goal="比较方法")
+    topic_id = topic["topic"]["id"]
+    await page.set_viewport_size({"width": width, "height": 1000})
+    await page.goto(f"http://testserver/topics/{topic_id}")
+    await expect(page.locator(".topic-guide > summary")).to_have_text("接下来怎么做")
+    assert await page.locator(".topic-guide").evaluate("node => node.open")
+    await expect(page.locator("#topic-delete-empty")).to_be_visible()
+    await expect(page.locator("#topic-delete")).to_be_hidden()
+    prompt = page.locator("#topic-research-prompt")
+    assert topic_id in await prompt.input_value()
+    await prompt.fill("只比较来源中的方法，保留我自己写的研究问题。")
+    await page.evaluate("""Object.defineProperty(navigator, 'clipboard', {configurable:true,
+        value:{writeText:async value => {window.copiedTopicPrompt=value}}})""")
+    await page.get_by_role("button", name="复制研究指令", exact=True).click()
+    assert await page.evaluate("window.copiedTopicPrompt") == await prompt.input_value()
+    await page.locator(".topic-guide-sources").click()
+    checks = page.locator("#topic-sources-pane input")
+    await checks.nth(1).uncheck()
+    await expect(page.locator(".topic-guide-sources")).to_contain_text("1 / 2")
+    assert await prompt.input_value() == "只比较来源中的方法，保留我自己写的研究问题。"
+    await checks.nth(0).uncheck()
+    await expect(page.get_by_role("button", name="复制研究指令", exact=True)).to_be_disabled()
+    await expect(page.locator("#topic-delete-empty")).to_be_enabled()
+    await checks.nth(0).check()
+    await expect(page.get_by_role("button", name="复制研究指令", exact=True)).to_be_enabled()
+    if width == 960:
+        await page.keyboard.press("Escape")
+    service.save_topic_note(topic_id, "需要随专题恢复的逐字笔记", confirmed=True)
+    await page.locator("#topic-delete-empty").click()
+    await expect(page.locator("#destructive-dialog")).to_contain_text("来源文章、视频和灵感保留")
+    await page.locator("#destructive-dialog").get_by_role("button", name="取消", exact=True).click()
+    assert service.database.get_topic(topic_id).id == topic_id
+    await page.locator("#topic-delete-empty").click()
+    await page.locator("#confirm-destructive").click()
+    await expect(page).to_have_url("http://testserver/topics")
+    await expect(page.locator("#topics-list")).not_to_contain_text("引导与删除测试")
+    await page.locator("#trash-nav").click()
+    row = page.locator(".trash-item", has_text="引导与删除测试")
+    await expect(row).to_contain_text("专题 · 2 篇来源 · 1 篇笔记")
+    await row.get_by_role("button", name="恢复", exact=True).click()
+    await page.locator("#confirm-destructive").click()
+    await expect(page).to_have_url(f"http://testserver/topics/{topic_id}")
+    await expect(page.locator(".topic-artifacts")).to_contain_text("需要随专题恢复的逐字笔记")
+    assert not await page.locator(".topic-guide").evaluate("node => node.open")
+    await expect(page.locator("#topic-delete")).to_be_visible()
+    await expect(page.locator("#topic-delete-empty")).to_have_count(0)
+    assert service.database.get_entry("dy-123").id == "dy-123"
+    assert service.database.get_entry("dy-1000").id == "dy-1000"
+    assert ("DELETE", f"/api/topics/{topic_id}") in calls
+    assert not any(method == "POST" and path.endswith("/artifacts") for method, path in calls)
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
 
 @pytest.mark.parametrize("width", [1440])
-async def test_video_detail_has_collapsed_complete_transcript_and_copyable_video_url(ui, width):
+async def test_video_detail_has_collapsed_complete_transcript_and_local_video_link(ui, width):
     page, service, _client, _calls = ui
     video = service.config.vault_path / "raw/assets/123/本地 视频.mp4"
     video.write_bytes(b"local video")
@@ -130,7 +207,8 @@ async def test_video_detail_has_collapsed_complete_transcript_and_copyable_video
     await page.set_viewport_size({"width": width, "height": 900})
     await page.goto("http://testserver/articles/dy-123")
     folded = page.locator(".article-transcript")
-    await expect(folded.locator("summary")).to_contain_text("校正稿 · 31 段")
+    await expect(folded.locator("summary")).to_contain_text("Transcript")
+    await expect(folded.locator("summary")).to_contain_text("Corrected · 31 segments")
     assert not await folded.evaluate("node => node.open")
     await expect(folded.locator(".transcript-text").first).not_to_be_visible()
     await folded.locator("summary").click()
@@ -144,13 +222,6 @@ async def test_video_detail_has_collapsed_complete_transcript_and_copyable_video
     await page.keyboard.press("Shift+i")
     await expect(page.locator(".local-video-url a")).to_have_text(
         "http://testserver/api/articles/dy-123/video"
-    )
-    await page.evaluate("""Object.defineProperty(navigator, 'clipboard', {
-        configurable: true, value: {writeText: async text => {window.copiedVideoUrl = text}}
-    })""")
-    await page.locator(".copy-video-url").click()
-    await page.wait_for_function(
-        "window.copiedVideoUrl === 'http://testserver/api/articles/dy-123/video'"
     )
     assert await page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
 
@@ -329,10 +400,44 @@ async def test_scope_changes_and_command_query_clears_old_results(ui):
     await page.locator("#command-results [data-entry-id='dy-123']").wait_for()
 
 
+async def test_tag_views_keep_records_first_and_scope_selection(ui):
+    page, service, _client, calls = ui
+    source(service, "1002", ["旧标签"], managed=True)
+    service.tags.rename("旧标签", "新标签")
+    await page.goto("http://testserver/tags")
+    await expect(page.locator("#tags-tab-all")).to_have_attribute("aria-selected", "true")
+    await expect(page.locator("#tags-all-panel")).to_be_visible()
+    await expect(page.locator("#tag-aliases")).to_be_hidden()
+    await expect(page.locator("#tag-duplicates")).to_be_hidden()
+    await expect(page.locator("#tags-rename")).to_be_hidden()
+
+    await page.get_by_role("checkbox", name="选择 AI Agent", exact=True).check()
+    await expect(page.locator("#tags-rename")).to_be_visible()
+    await page.locator("#tags-tab-aliases").click()
+    await expect(page.locator("#tag-aliases")).to_be_visible()
+    await expect(page.locator("#tag-aliases")).to_contain_text("旧标签")
+    await expect(page.locator("#tag-aliases")).to_contain_text("新标签")
+    await expect(page.locator("#tags-all-panel")).to_be_hidden()
+    await page.locator("#tags-search").fill("没有这个标签")
+    await expect(page.locator("#tag-aliases")).to_contain_text("没有符合条件的别名")
+    await page.locator("#tags-search").fill("新标签")
+    await expect(page.locator(".tag-alias-row")).to_have_count(1)
+    await page.locator("#tags-search").fill("")
+
+    await page.locator("#tags-tab-aliases").focus()
+    await page.keyboard.press("Home")
+    await expect(page.locator("#tags-tab-all")).to_be_focused()
+    await expect(page.locator("#tags-tab-all")).to_have_attribute("aria-selected", "true")
+    await expect(page.get_by_role("checkbox", name="选择 AI Agent", exact=True)).not_to_be_checked()
+    await expect(page.locator("#tags-rename")).to_be_hidden()
+    assert not any(method == "POST" and path.startswith("/api/tags/") for method, path in calls)
+
+
 async def test_duplicate_merge_excludes_unchecked_member(ui):
     page, service, _client, _calls = ui
     source(service, "1002", ["智能体"], managed=True)
     await page.goto("http://testserver/tags")
+    await page.locator("#tags-tab-duplicates").click()
     group = page.locator(".tag-duplicate-group").filter(has_text="智能体")
     await expect(group).to_be_visible()
     await group.get_by_label("纳入合并：智能体").uncheck()
@@ -350,12 +455,15 @@ async def test_duplicate_merge_keeps_exclusions_and_target_after_refresh(ui, ref
     page, service, _client, _calls = ui
     source(service, "1002", ["智能体"], managed=True)
     await page.goto("http://testserver/tags")
+    await page.locator("#tags-tab-duplicates").click()
     group = page.locator(".tag-duplicate-group").filter(has_text="智能体")
     excluded = group.get_by_label("纳入合并：智能体", exact=True)
     await excluded.uncheck()
     await group.locator("select").select_option("AI 代理")
     if refresh == "sort":
+        await page.locator("#tags-tab-all").click()
         await page.locator("[data-tag-sort=name]").click()
+        await page.locator("#tags-tab-duplicates").click()
     elif refresh == "search":
         await page.locator("#tags-search").fill("AI")
     else:
@@ -554,6 +662,63 @@ async def test_search_keeps_selected_image_note_source(ui):
     assert "source=image_note" in page.url
 
 
+@pytest.mark.parametrize("image_count", [1, 3])
+@pytest.mark.parametrize(("width", "theme"), [(1440, "light"), (960, "dark")])
+async def test_image_note_body_shows_all_originals_in_order(
+    ui, tmp_path, image_count, width, theme
+):
+    from scripts.verify_readwise_reader import png
+
+    page, service, client, _calls = ui
+    await page.set_viewport_size({"width": width, "height": 1000})
+    image_dir = service.config.vault_path / "raw" / "images" / "2001"
+    image_dir.mkdir(parents=True)
+    for index in range(1, image_count + 1):
+        (image_dir / f"{index:03d}.png").write_bytes(png(400, 800))
+    images = [f"![抖音图文第 {i} 张](../../raw/images/2001/{i:03d}.png)"
+              for i in range(1, image_count + 1)]
+    body = f"# 图文笔记\n\n{images[0]}\n\n## 一句话\n\n图片内容摘要。\n"
+    if image_count > 1:
+        body += "\n## 原图\n\n" + "\n".join(images[1:]) + "\n"
+    body += "\n## 来源\n\n[打开原作品](https://www.douyin.com/note/2001)\n"
+    source = service.config.vault_path / "wiki" / "sources" / "图文_2001.md"
+    source.write_text(
+        "---\ntype: source\nvideo_id: '2001'\nsource_kind: image_note\n"
+        "cover_image: raw/images/2001/001.png\n---\n" + body,
+        encoding="utf-8",
+    )
+    client.get("/api/library")
+    await page.goto("http://testserver/articles/dy-2001")
+    await page.evaluate("theme => document.documentElement.dataset.theme = theme", theme)
+    figures = page.locator(".article-body .article-original-image")
+    await expect(figures).to_have_count(image_count)
+    await expect(figures.locator("figcaption")).to_have_text(
+        [f"{i} / {image_count}" for i in range(1, image_count + 1)]
+    )
+    await expect(page.locator(".article-body > h2")).to_have_text(
+        ["Summary", "Original Images", "Sources"]
+    )
+    await expect(page.locator("#reader-toc")).to_contain_text("Original Images")
+    for index in range(image_count):
+        image = figures.nth(index).locator("img")
+        await image.scroll_into_view_if_needed()
+        await expect(image).to_have_attribute("loading", "lazy")
+        await expect(image).to_have_attribute("alt", f"抖音图文第 {index + 1} 张")
+        await expect(image).to_have_attribute("src", f"/media/raw/images/2001/{index + 1:03d}.png")
+        await expect(image).to_have_js_property("naturalWidth", 400)
+        assert await image.evaluate("img => Math.abs(img.height / img.width - 2) < 0.01")
+        await expect(figures.nth(index).locator("a")).to_have_attribute("target", "_blank")
+    await expect(page.locator(".article-body img")).to_have_count(image_count)
+    original_images_link = page.locator("#reader-toc").get_by_role(
+        "link", name="Original Images", exact=True
+    )
+    await original_images_link.click()
+    await page.keyboard.press("j")
+    await expect(page.locator(".article-original-image.is-reading-focus")).to_have_count(1)
+    await page.screenshot(path=str(tmp_path / f"original-images-{image_count}-{width}-{theme}.png"))
+    assert source.read_text(encoding="utf-8").endswith(body)
+
+
 async def test_reanalyze_confirm_explains_without_repeating_the_title(ui):
     page, _service, _client, calls = ui
     await page.goto("http://testserver/articles/dy-123")
@@ -593,6 +758,7 @@ async def test_tag_controls_and_real_merge_undo(ui, tmp_path):
     await page.click("#tag-edit-submit")
     await page.locator("#toast .toast-action").wait_for()
     assert service.database.get_entry("dy-1000").tags == ["AI Agent"]
+    await page.locator("#tags-tab-aliases").click()
     await page.locator("#tag-aliases").get_by_role("button", name="撤销操作", exact=True).click()
     await page.wait_for_function("document.querySelector('#toast').textContent.includes('已恢复')")
     assert service.database.get_entry("dy-1000").tags == ["AI 代理"]
@@ -673,7 +839,16 @@ async def test_reader_keyframes_and_semantic_search_fallback(ui):
 
 
 async def test_reader_focus_fonts_and_selection_guidance(ui, tmp_path):
-    page, _service, _client, calls = ui
+    page, service, client, calls = ui
+    source_path = service.config.vault_path / service.database.get_entry("dy-123").source_path
+    source_text = source_path.read_text().replace(
+        "## 来源",
+        "## 时间轴图解\n\n### ▶ 00:01　一、整理资料\n\n章节原文保留。\n\n"
+        "## 内容卡片 · 清单\n\n- 清单项目保留。\n\n"
+        "```markdown\n## 一句话\n```\n\n## 下一步\n\n- 按原文执行下一项行动。\n\n## 来源",
+    )
+    source_path.write_text(source_text)
+    client.app.state.catalog.refresh()
     assert not any(path.endswith("/reading.css") or "/fonts/reading/" in path for _, path in calls)
     await page.evaluate("window.Douku.navigate('/topics')")
     await page.click("#topics-create-button")
@@ -690,6 +865,34 @@ async def test_reader_focus_fonts_and_selection_guidance(ui, tmp_path):
         == "0px"
     )
     assert await page.locator("body").evaluate("node => getComputedStyle(node).fontSize") == "14px"
+    await expect(page.locator(".article-body h2.article-section-title")).to_have_text(
+        ["Summary", "Key Takeaways", "Chapters", "Quick Reference · List", "Next Steps", "Sources"]
+    )
+    await expect(page.locator("#reader-toc .toc-h2")).to_have_text(
+        [
+            "灵感", "Summary", "Key Takeaways", "Chapters", "Quick Reference · List",
+            "Next Steps", "Sources",
+        ]
+    )
+    await expect(page.locator(".article-transcript .article-section-title")).to_have_text(
+        "Transcript"
+    )
+    await expect(page.locator(".article-keyframes .article-section-title")).to_have_text(
+        "Video Snapshots"
+    )
+    await expect(page.locator(".article-body pre")).to_have_text("## 一句话\n")
+    assert source_path.read_text() == source_text
+    for selector, expected in (
+        (".article-body h2.article-section-title", ["Inter", "20px", "600", "28px"]),
+        (".article-transcript > summary", ["Inter", "16px", "500", "24px"]),
+        (".article-keyframes > summary", ["Inter", "16px", "500", "24px"]),
+    ):
+        typography = await page.locator(selector).first.evaluate("""node => {
+            const style = getComputedStyle(node);
+            return [style.fontFamily.split(',')[0].replaceAll('"', ''),
+                style.fontSize, style.fontWeight, style.lineHeight];
+        }""")
+        assert typography == expected, typography
     out = tmp_path / "usability"
     out.mkdir(parents=True, exist_ok=True)
     for theme in ("light", "dark"):

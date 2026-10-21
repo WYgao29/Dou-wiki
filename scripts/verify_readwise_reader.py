@@ -307,7 +307,8 @@ async def verify():
                     ".getAttribute('aria-valuenow') === '100'"
                 )
                 assert (
-                    await page.locator("#reader-toc [aria-current=location]").inner_text() == "来源"
+                    await page.locator("#reader-toc [aria-current=location]").inner_text()
+                    == "Sources"
                 )
                 await page.locator("#main-content").focus()
                 await key("u")

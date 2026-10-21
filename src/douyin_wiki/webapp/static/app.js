@@ -54,6 +54,7 @@ const state = {
   currentArticleItem: null,
   currentTopic: document.body.dataset.topicId || "",
   topics: [],
+  topicPrompts: new Map(),
   trashItems: [],
   selectedTrashIds: new Set(),
   topicSelectionMode: false,
@@ -672,6 +673,7 @@ function galleryAccessibleName(item) {
     item.content_type_label || "其他",
     sourceLabel(item),
     formatDate(item.published_at),
+    ...(state.section === "inspiration" ? (item.inspirations || []).map((value) => `灵感：${value.text}`) : []),
   ].join("，");
 }
 
@@ -733,6 +735,19 @@ function makeSearchEvidence(item) {
   return window.Douku.node("p", `${location} · ${evidence.snippet}`, "search-evidence");
 }
 
+function makeInspirationPreview(item) {
+  if (state.section !== "inspiration" || !item.inspirations?.length) return null;
+  const preview = window.Douku.node("div", null, "item-inspirations");
+  item.inspirations.forEach((value) => {
+    const row = window.Douku.node("p", null, "item-inspiration");
+    const text = window.Douku.node("span", value.text);
+    text.title = value.text;
+    row.append(svgIcon("quote"), text);
+    preview.append(row);
+  });
+  return preview;
+}
+
 function makeListItem(item) {
   const article = window.Douku.node("article", null, "library-item row--entry");
   article.dataset.entryId = item.entry_id;
@@ -742,7 +757,9 @@ function makeListItem(item) {
   const link = window.Douku.node("a", null, "library-item-link");
   bindEntryLink(link, item);
   const copy = window.Douku.node("div", null, "item-copy");
-  copy.append(window.Douku.node("h2", item.title), window.Douku.node("p", item.summary || "暂无一句话摘要", `item-summary${item.summary ? "" : " is-empty"}`), makeMetadata(item, {tags: true}));
+  copy.append(window.Douku.node("h2", item.title),
+    makeInspirationPreview(item) || window.Douku.node("p", item.summary || "暂无一句话摘要", `item-summary${item.summary ? "" : " is-empty"}`),
+    makeMetadata(item, {tags: true}));
   const evidence = makeSearchEvidence(item); if (evidence) copy.append(evidence);
   link.append(makeCover(item, "item-thumbnail"), copy);
   const side = window.Douku.node("div", null, "item-side");
@@ -790,7 +807,9 @@ function makeGalleryCard(item) {
   const accessibleName = galleryAccessibleName(item); link.setAttribute("aria-label", `打开文章：${accessibleName}`); link.title = accessibleName;
   const cover = makeCover(item, "gallery-cover"); bindEntryLink(link, item, cover);
   const copy = window.Douku.node("div", null, "gallery-copy");
-  copy.append(window.Douku.node("h2", item.title || "未命名文章"), makeMetadata(item));
+  copy.append(window.Douku.node("h2", item.title || "未命名文章"));
+  const inspirations = makeInspirationPreview(item); if (inspirations) copy.append(inspirations);
+  copy.append(makeMetadata(item));
   const evidence = makeSearchEvidence(item); if (evidence) copy.append(evidence);
   link.append(cover, copy); article.append(link);
   if (item.favorite) { const badge = window.Douku.node("span", null, "gallery-favorite"); badge.append(svgIcon("bookmark")); badge.setAttribute("aria-label", "库内收藏"); cover.append(badge); }
@@ -1242,7 +1261,7 @@ function renderTrash() {
     const title = document.createElement("h2");
     title.textContent = "废纸篓是空的";
     const copy = document.createElement("p");
-    copy.textContent = "从文章页面删除的资料会暂存在这里。";
+    copy.textContent = "删除的资料和专题会暂存在这里。";
     empty.append(title, copy);
     root.replaceChildren(empty);
     updateTrashSelection();
@@ -1286,14 +1305,16 @@ function renderTrash() {
       updateTrashSelection();
     });
     const icon = document.createElement("span");
-    icon.className = `trash-item-icon ${item.source_kind === "image_note" ? "is-image" : "is-video"}`;
-    icon.append(svgIcon(item.source_kind === "image_note" ? "image" : "video"));
+    const isTopic = item.kind === "topic";
+    icon.className = `trash-item-icon ${isTopic ? "is-topic" : item.source_kind === "image_note" ? "is-image" : "is-video"}`;
+    icon.append(svgIcon(isTopic ? "layers" : item.source_kind === "image_note" ? "image" : "video"));
     const copy = document.createElement("div");
     copy.className = "trash-item-copy";
     const title = document.createElement("h2");
     title.textContent = item.title;
     const meta = document.createElement("p");
-    meta.textContent = `${item.author || "未知作者"} · 删除于 ${item.deleted_display || "时间未知"} · ${formatBytes(item.size_bytes)}`;
+    const context = isTopic ? `专题 · ${item.source_count} 篇来源 · ${item.note_count} 篇笔记` : item.author || "未知作者";
+    meta.textContent = `${context} · 删除于 ${item.deleted_display || "时间未知"} · ${formatBytes(item.size_bytes)}`;
     copy.append(title, meta);
     const actions = document.createElement("div");
     actions.className = "trash-item-actions";
@@ -1302,18 +1323,19 @@ function renderTrash() {
     restore.className = "secondary-button is-sm";
     restore.append(svgIcon("rotate-ccw"), document.createTextNode("恢复"));
     restore.addEventListener("click", () => openDestructiveDialog({
-      title: "恢复这条资料？",
-      description: `将恢复《${item.title}》的文章、原始记录、视频或图片，并重新加入检索和相关专题。`,
+      title: isTopic ? "恢复这个专题？" : "恢复这条资料？",
+      description: isTopic ? `将恢复专题「${item.title}」的设置、来源选择和笔记。已删除的来源文章需要单独恢复。` : `将恢复《${item.title}》的文章、原始记录、视频或图片，并重新加入检索和相关专题。`,
       confirmLabel: "确认恢复",
       action: async () => {
         return api(`/api/trash/${encodeURIComponent(item.trash_id)}/restore`, {
           method: "POST", body: JSON.stringify({confirmed: true}),
         });
       },
-      successMessage: "资料已恢复",
+      successMessage: isTopic ? "专题已恢复" : "资料已恢复",
       onSuccess: async (result) => {
         await Promise.all([loadTrash(), loadLibrary({showLoading: false}), loadTopics()]);
-        await openArticle(result.entry_id);
+        if (result.topic_id) await openTopic(result.topic_id);
+        else await openArticle(result.entry_id);
       },
     }));
     const purge = document.createElement("button");
@@ -1321,7 +1343,7 @@ function renderTrash() {
     purge.className = "danger-text-button is-sm";
     purge.append(svgIcon("trash-2"), document.createTextNode("彻底删除"));
     purge.addEventListener("click", () => openDestructiveDialog({
-      title: "彻底删除这条资料？",
+      title: isTopic ? "彻底删除这个专题？" : "彻底删除这条资料？",
       description: `《${item.title}》及其 ${formatBytes(item.size_bytes)} 本地文件将被永久删除，无法通过抖库恢复；Markdown 可能仍存在于 Git 历史中。`,
       confirmLabel: "彻底删除",
       action: async () => {
@@ -1329,7 +1351,7 @@ function renderTrash() {
           method: "DELETE", body: JSON.stringify({confirmed: true}),
         });
       },
-      successMessage: "资料已彻底删除",
+      successMessage: isTopic ? "专题已彻底删除" : "资料已彻底删除",
       onSuccess: async () => {
         await loadTrash();
       },
@@ -1350,7 +1372,7 @@ function openTrashBatchDialog(kind) {
   if (kind === "restore") {
     openDestructiveDialog({
       title: count === 1 ? "恢复这条资料？" : `恢复这 ${count} 条资料？`,
-      description: "将恢复所选文章、原始记录、视频或图片，并重新加入检索和相关专题。",
+      description: "将恢复所选资料或专题；专题的来源选择和已保存笔记也会恢复。",
       confirmLabel: "确认恢复",
       action: async () => {
         return api("/api/trash/batch/restore", {
@@ -1399,9 +1421,83 @@ async function showTrash(push = true) {
   await loadTrash();
 }
 
+function topicResearchPrompt(topic) {
+  return [
+    `请研究抖库专题「${topic.title}」（专题 ID：${topic.id}）。`,
+    "只使用这个专题当前启用的来源。",
+    `研究问题：${topic.goal || "请在这里写明你想解决的问题。"}`,
+    ...(topic.instructions ? [`补充要求：${topic.instructions}`] : []),
+    "请整理核心方法、适用场景和注意事项，结论附来源及可用的时间位置。没有相关证据时明确说明。",
+    "先在对话中给我草稿，等我要求保存时再写入专题笔记。",
+  ].join("\n");
+}
+
+function makeTopicGuide(value) {
+  const topic = value.topic;
+  const activeCount = topic.sources.filter(source => source.enabled).length;
+  const guide = window.Douku.node("details", null, "topic-guide");
+  guide.open = !value.artifacts.length;
+  const summary = window.Douku.node("summary", value.artifacts.length ? "继续研究与保存" : "接下来怎么做");
+  summary.append(svgIcon("chevron-right"));
+  const content = window.Douku.node("div", null, "topic-guide-content");
+  content.append(window.Douku.node("p", "研究在 Agent 对话中进行，这里管理来源并保存研究笔记。", "topic-guide-copy"));
+  const sources = window.Douku.node("button", `查看来源 · ${activeCount} / ${topic.sources.length} 篇已启用`, "text-button topic-guide-sources");
+  sources.type = "button"; sources.prepend(svgIcon("layers"));
+  sources.addEventListener("click", () => { selectPanelTab("sources"); setChatPanelOpen(true); });
+  const steps = window.Douku.node("ol", null, "topic-guide-steps");
+  [
+    "核对来源：打开右侧来源面板，勾选本次研究要使用的资料。",
+    "开始研究：修改下面的研究问题，复制指令，发到已连接抖库的 Agent 对话。",
+    "保存笔记：草稿满意后，在同一对话要求保存，再回到这里查看。",
+  ].forEach(text => steps.append(window.Douku.node("li", text)));
+  const label = window.Douku.node("label", "研究指令（可修改）", "topic-prompt-label");
+  label.htmlFor = "topic-research-prompt";
+  const prompt = window.Douku.node("textarea", null, "topic-research-prompt");
+  prompt.id = "topic-research-prompt"; prompt.rows = 5;
+  prompt.value = state.topicPrompts.get(topic.id) ?? topicResearchPrompt(topic);
+  prompt.addEventListener("input", () => state.topicPrompts.set(topic.id, prompt.value));
+  const actions = window.Douku.node("div", null, "topic-guide-actions");
+  const copy = window.Douku.node("button", "复制研究指令", "primary-button");
+  copy.type = "button"; copy.disabled = !activeCount;
+  copy.addEventListener("click", () => copyText(prompt.value, "研究指令已复制，请发到 Agent 对话中"));
+  actions.append(copy);
+  if (!value.artifacts.length) {
+    const remove = window.Douku.node("button", null, "text-button topic-delete-button");
+    remove.id = "topic-delete-empty"; remove.type = "button";
+    remove.append(svgIcon("trash-2"), document.createTextNode("删除专题"));
+    remove.addEventListener("click", () => deleteTopic(topic));
+    actions.append(remove);
+  }
+  content.append(sources, steps, label, prompt, actions);
+  if (!activeCount) content.append(window.Douku.node("p", "当前没有启用的来源，请先在来源面板中勾选资料。", "topic-guide-copy"));
+  guide.append(summary, content);
+  return guide;
+}
+
+function deleteTopic(topic) {
+  const navigationId = state.navigationRequestId;
+  openDestructiveDialog({
+    title: `删除专题「${topic.title}」？`,
+    description: "专题设置、来源选择和已保存笔记会移入废纸篓，可在那里恢复。来源文章、视频和灵感保留。",
+    confirmLabel: "移入废纸篓",
+    action: () => api(`/api/topics/${encodeURIComponent(topic.id)}`, {
+      method: "DELETE", body: JSON.stringify({confirmed: true}),
+    }),
+    successMessage: "专题已移入废纸篓",
+    onSuccess: async () => {
+      state.topicPrompts.delete(topic.id);
+      if (navigationId === state.navigationRequestId && state.currentTopic === topic.id) {
+        await showTopics(); $("#main-content").focus({preventScroll: true});
+      } else await loadTopics();
+    },
+  });
+}
+
 function renderTopicData(value) {
   const topic = value.topic;
   $("#topic-header-title").textContent = topic.title;
+  $("#topic-delete").classList.toggle("hidden", !value.artifacts.length);
+  $("#topic-delete").onclick = () => deleteTopic(topic);
   const root = $("#topic-content");
   const header = document.createElement("header");
   header.className = "topic-header";
@@ -1509,11 +1605,11 @@ function renderTopicData(value) {
   });
   if (!value.artifacts.length) {
     const empty = document.createElement("p");
-    empty.textContent = "还没有专题笔记。可让 Agent 研究后，经确认保存笔记。";
+    empty.textContent = "还没有专题笔记。把上面的研究指令发到 Agent 对话，研究完成后要求保存，即可在这里查看。";
     artifactList.append(empty);
   }
   artifactSection.append(artifactList);
-  root.replaceChildren(header, artifactSection);
+  root.replaceChildren(header, makeTopicGuide(value), artifactSection);
 }
 
 async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
@@ -1551,7 +1647,9 @@ function makeArticleKeyframes(frames, videoUrl, {open = false, keep = false} = {
   const details = window.Douku.node("details", null, "article-keyframes");
   details.open = open;
   const summary = window.Douku.node("summary");
-  summary.textContent = `关键帧 · ${frames.length} 张${keep ? " · 长期保留" : ""}`;
+  const title = window.Douku.node("span", "Video Snapshots", "article-section-title"); title.lang = "en";
+  const meta = window.Douku.node("span", `${frames.length} ${frames.length === 1 ? "image" : "images"}${keep ? " · Kept" : ""}`, "article-section-meta"); meta.lang = "en";
+  summary.append(svgIcon("chevron-right", "article-disclosure-icon"), title, meta);
   details.append(summary);
   if (!frames.length) details.append(window.Douku.node("p", "暂无可用关键帧。素材可能已清理。", "hint-copy"));
   const grid = window.Douku.node("div", null, "keyframe-grid");
@@ -1585,9 +1683,10 @@ function makeArticleTranscript(transcript, {open = false} = {}) {
   const details = window.Douku.node("details", null, "article-transcript");
   details.open = open;
   const summary = window.Douku.node("summary");
-  const source = transcript.source === "corrected" ? "校正稿" : "原始识别稿";
-  summary.append(window.Douku.node("span", "完整逐字稿", "transcript-title"),
-    window.Douku.node("span", `${source} · ${rows.length} 段`, "transcript-meta"));
+  const source = transcript.source === "corrected" ? "Corrected" : "Original";
+  const title = window.Douku.node("span", "Transcript", "article-section-title"); title.lang = "en";
+  const meta = window.Douku.node("span", `${source} · ${rows.length} ${rows.length === 1 ? "segment" : "segments"}`, "article-section-meta"); meta.lang = "en";
+  summary.append(svgIcon("chevron-right", "article-disclosure-icon"), title, meta);
   details.append(summary);
   if (rows.length) {
     const list = window.Douku.node("ol", null, "transcript-segments");
@@ -1710,6 +1809,54 @@ function decorateCallouts() {
   });
 }
 
+function decorateArticleSectionHeadings(body) {
+  const sections = {
+    "一句话": "Summary", "核心收获": "Key Takeaways", "时间轴图解": "Chapters",
+    "下一步": "Next Steps", "原图": "Original Images", "来源": "Sources",
+  };
+  const types = {
+    "教程": "Tutorial", "知识解释": "Explanation", "观点": "Opinion", "推荐": "Recommendations",
+    "新闻/事件": "News & Events", "新闻事件": "News & Events", "故事/案例": "Case Study", "故事案例": "Case Study",
+    "清单": "List", "其他": "Other",
+  };
+  $$(':scope > h2', body).forEach((heading) => {
+    const original = heading.textContent.trim();
+    const card = original.match(/^内容卡片\s*·\s*(.+)$/);
+    const label = sections[original] || (card && types[card[1]] ? `Quick Reference · ${types[card[1]]}` : null);
+    if (!label) return;
+    heading.textContent = label;
+    heading.lang = "en";
+    heading.classList.add("article-section-title");
+  });
+}
+
+function decorateArticleImages(body, item) {
+  if (item.source_kind !== "image_note") return;
+  const images = [...body.querySelectorAll(":scope > p > img")]
+    .filter(image => /^抖音图文第\s*\d+\s*张$/.test(image.alt));
+  if (!images.length) return;
+  const headings = [...body.querySelectorAll(":scope > h2")];
+  let heading = headings.find(node => node.textContent.trim() === "原图");
+  if (!heading) {
+    heading = window.Douku.node("h2", "原图");
+    body.insertBefore(heading, headings.find(node => node.textContent.trim() === "来源") || null);
+  }
+  const figures = document.createDocumentFragment();
+  images.forEach((image, index) => {
+    const paragraph = image.parentElement;
+    const figure = window.Douku.node("figure", null, "article-original-image");
+    const link = window.Douku.node("a");
+    link.href = image.src; link.target = "_blank"; link.rel = "noopener noreferrer";
+    link.setAttribute("aria-label", `打开第 ${index + 1} 张原图`);
+    image.loading = "lazy"; image.decoding = "async";
+    link.append(image);
+    figure.append(link, window.Douku.node("figcaption", `${index + 1} / ${images.length}`));
+    figures.append(figure);
+    if (!paragraph.textContent.trim() && !paragraph.querySelector("img")) paragraph.remove();
+  });
+  heading.after(figures);
+}
+
 function buildReaderToc() {
   state.readerObserver?.disconnect();
   const root = $("#reader-toc");
@@ -1727,6 +1874,7 @@ function buildReaderToc() {
     if (time) {
       link.append(time.cloneNode(true), document.createTextNode(heading.textContent.slice(time.textContent.length).trim()));
     } else link.textContent = heading.textContent;
+    if (heading.lang) link.lang = heading.lang;
     link.title = heading.textContent.trim();
     link.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1761,7 +1909,7 @@ function initReadingFocus() {
   };
   [...body.children].forEach((node) => {
     if (node.matches("ul,ol")) listItems(node);
-    else if (node.matches("p,h2,h3,h4,blockquote,table,pre,img") && visible(node)) blocks.push(node);
+    else if (node.matches("p,h2,h3,h4,blockquote,table,pre,img,figure") && visible(node)) blocks.push(node);
   });
   state.readingBlocks = blocks; state.readingIndex = -1;
   body.addEventListener("click", (event) => {
@@ -1837,6 +1985,7 @@ function renderArticleData(data, entryId, push) {
   const body = document.createElement("div");
   body.className = "article-body";
   body.innerHTML = data.html;
+  decorateArticleImages(body, data.item);
   const transcript = makeArticleTranscript(data.transcript, {open: transcriptOpen});
   if (transcript) {
     const source = [...body.querySelectorAll(":scope > h2")].find(node => node.textContent.trim() === "来源");
@@ -1848,6 +1997,7 @@ function renderArticleData(data, entryId, push) {
     const source = [...body.querySelectorAll(":scope > h2")].find(node => node.textContent.trim() === "来源");
     body.insertBefore(keyframes, source || null);
   }
+  decorateArticleSectionHeadings(body);
   clearReader();
   const hero = makeArticleHeader(data.item);
   root.replaceChildren(hero, body);
@@ -2177,10 +2327,7 @@ function renderInfoPanel(item, {context = "library"} = {}) {
       const value = window.Douku.node("dd", null, "local-video-url");
       const link = window.Douku.node("a", url); link.href = url;
       link.target = "_blank"; link.rel = "noopener noreferrer";
-      const copy = window.Douku.node("button", "复制 URL", "text-button copy-video-url");
-      copy.type = "button"; copy.setAttribute("aria-label", "复制本地视频 URL");
-      copy.addEventListener("click", () => copyText(url, "已复制本地视频 URL"));
-      value.append(link, copy); addDetail("本地视频", value);
+      value.append(link); addDetail("本地视频", value);
     } else addDetail("本地视频", "文件不存在或已清理");
   }
   addDetail("状态", item.status || "—");

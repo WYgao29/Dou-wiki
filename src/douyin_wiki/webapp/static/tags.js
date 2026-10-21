@@ -3,8 +3,9 @@
   const D = window.Douku;
   const $ = D.$;
   const node = D.node;
-  const state = {rows: [], duplicates: [], aliases: {}, undoByAlias: {}, undoableByAlias: {}, selected: new Set(), excludedDuplicates: new Set(), duplicateTargets: new Map(), focus: "", sort: "count", direction: -1, busy: false, request: 0};
+  const state = {rows: [], duplicates: [], aliases: {}, undoByAlias: {}, undoableByAlias: {}, selected: new Set(), excludedDuplicates: new Set(), duplicateTargets: new Map(), view: "all", focus: "", sort: "count", direction: -1, busy: false, request: 0};
   const PIN_LIMIT = 8;
+  const views = {all: "tags-all-panel", duplicates: "tag-duplicates", aliases: "tag-aliases"};
   const active = () => $("app-shell").dataset.page === "tags";
   const date = (value) => value ? new Date(value).toLocaleString("zh-CN", {year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"}) : "—";
   const pinned = () => state.rows.filter(row => row.pinned_at).sort((a, b) => a.position - b.position || a.pinned_at.localeCompare(b.pinned_at));
@@ -14,9 +15,46 @@
     value.addEventListener("click", action);
     return value;
   };
+  const search = () => $("tags-search").value.trim().toLocaleLowerCase();
+  const matches = (value) => value.toLocaleLowerCase().includes(search());
+  const duplicateGroups = () => state.duplicates.map(groupNames).filter(names => names.length > 1);
+  function emptyList(title, copy) {
+    const empty = node("div", null, "tag-empty-state");
+    empty.setAttribute("role", "status");
+    empty.append(node("h2", title), node("p", copy));
+    return empty;
+  }
+  function columnHeading(labels, className) {
+    const heading = node("div", null, className);
+    heading.setAttribute("aria-hidden", "true");
+    labels.forEach(label => heading.append(node("span", label)));
+    return heading;
+  }
+  function renderViews() {
+    const counts = {all: state.rows.length, duplicates: duplicateGroups().length, aliases: Object.keys(state.aliases).length};
+    Object.entries(views).forEach(([name, panel]) => {
+      const selected = state.view === name;
+      $(panel).classList.toggle("hidden", !selected);
+      const tab = $("tags-tab-" + name);
+      tab.setAttribute("aria-selected", String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      tab.disabled = state.busy;
+      $("tags-" + name + "-count").textContent = String(counts[name]);
+    });
+  }
+  function selectView(name, focus = false) {
+    if (!views[name] || state.busy) return;
+    if (state.view !== name) {
+      state.view = name;
+      state.selected.clear();
+      state.focus = "";
+      render();
+      $("main-content").scrollTop = 0;
+    }
+    if (focus) $("tags-tab-" + name).focus({preventScroll: true});
+  }
   function visibleRows() {
-    const query = $("tags-search").value.trim().toLocaleLowerCase();
-    return state.rows.filter(row => row.name.toLocaleLowerCase().includes(query)).sort((a, b) => {
+    return state.rows.filter(row => matches(row.name)).sort((a, b) => {
       const compare = state.sort === "count" ? a.count - b.count
         : String(a[state.sort] || "").localeCompare(String(b[state.sort] || ""), "zh-CN");
       return state.direction * compare || a.name.localeCompare(b.name, "zh-CN");
@@ -150,6 +188,14 @@
   function renderPanel() {
     if (!active()) return;
     const info = $("info-pane"); info.removeAttribute("data-entry-id");
+    if (state.view !== "all") {
+      const title = state.view === "duplicates" ? "可能重复" : "标签别名";
+      const copy = state.view === "duplicates"
+        ? "选择同一含义的标签，并指定合并后保留的名称。确认前会显示影响的文章数。"
+        : "合并或重命名后，旧名称会归入当前标签。解除别名只影响今后的归类。";
+      info.replaceChildren(node("h2", title), node("p", copy, "hint-copy"));
+      return;
+    }
     const names = [...state.selected];
     if (names.length > 1) {
       info.replaceChildren(node("h2", `已选 ${names.length} 个`),
@@ -188,6 +234,7 @@
   }
   function tagLink(row) {
     const link = node("a", row.name);
+    link.title = row.name;
     const href = D.tagPath(row.name);
     link.href = href;
     link.dataset.tagAction = "name";
@@ -196,20 +243,33 @@
   }
   function renderAliases() {
     const root = $("tag-aliases");
-    const entries = Object.entries(state.aliases);
-    root.classList.toggle("hidden", !entries.length);
-    if (!entries.length) { root.replaceChildren(); return; }
+    const entries = Object.entries(state.aliases).filter(([alias, canonical]) => matches(alias) || matches(canonical));
+    if (!entries.length) {
+      root.replaceChildren(emptyList(search() ? "没有符合条件的别名" : "还没有别名",
+        search() ? "试试其他标签名称。" : "合并或重命名标签后，旧名称会显示在这里。"));
+      return;
+    }
+    const list = node("div", null, "tag-alias-list");
+    entries.forEach(([alias, canonical]) => {
+      const row = node("div", null, "tag-alias-row");
+      const source = node("span", alias, "tag-alias-source"); source.title = alias;
+      const target = tagLink({name: canonical}); target.className = "tag-alias-target";
+      const actions = node("div", null, "tag-alias-actions");
+      const operation = state.undoableByAlias[alias];
+      if (operation) {
+        const undo = button("撤销操作", () => change("undo", {operation_id: operation}));
+        undo.title = "恢复该次合并或重命名前的资料关联";
+        actions.append(undo);
+      }
+      const split = button("解除别名", () => change("split", {name: alias}));
+      split.title = "旧名称恢复独立使用，已归类的资料保持现状";
+      actions.append(split);
+      row.append(source, target, actions);
+      list.append(row);
+    });
     root.replaceChildren(
-      node("h2", "别名"),
-      node("p", "撤销操作会恢复该次合并或重命名前的资料关联。解除别名只影响今后的归类。历史操作没有撤销记录时，可解除别名。", "hint-copy"),
-      ...entries.map(([alias, canonical]) => {
-        const row = node("div", null, "tag-alias-row");
-        row.append(node("span", `${alias} → ${canonical}`));
-        const operation = state.undoableByAlias[alias];
-        if (operation) row.append(button("撤销操作", () => change("undo", {operation_id: operation}), "text-button"));
-        row.append(button("解除别名", () => change("split", {name: alias}), "text-button"));
-        return row;
-      }),
+      node("p", "旧名称会归入当前标签。撤销可恢复当次操作前的资料关联，解除别名只影响今后的归类。", "tags-section-intro"),
+      columnHeading(["原标签", "当前标签", "操作"], "tag-alias-heading"), list,
     );
   }
   function render() {
@@ -256,7 +316,9 @@
       [...$("tags-rows").querySelectorAll("[data-tag-name]")].find((row) => row.dataset.tagName === focusName)?.querySelector(`[data-tag-action='${focusAction}']`)?.focus({preventScroll: true});
     }
     const pinNote = pinned().length >= PIN_LIMIT ? ` · 最多固定 ${PIN_LIMIT} 个` : "";
-    $("tags-count").textContent = `${rows.length} / ${state.rows.length} 个标签${pinNote}`;
+    $("tags-count").textContent = (search() ? `${rows.length} / ${state.rows.length} 个标签` : `${state.rows.length} 个标签`) + pinNote;
+    $("tags-count").classList.toggle("hidden", state.selected.size > 0);
+    $("tags-batch-actions").classList.toggle("hidden", !state.selected.size);
     $("tags-selected").textContent = state.selected.size ? `已选 ${state.selected.size} 个` : "";
     $("tags-rename").disabled = state.busy || state.selected.size !== 1;
     $("tags-merge").disabled = state.busy || state.selected.size < 2;
@@ -264,6 +326,8 @@
     $("tags-select-all").disabled = state.busy || !rows.length;
     $("tags-select-all").checked = Boolean(rows.length) && rows.every(row => state.selected.has(row.name));
     $("tags-select-all").indeterminate = rows.some(row => state.selected.has(row.name)) && !$("tags-select-all").checked;
+    $("tags-clear-selection").disabled = state.busy;
+    $("tags-cleanup").disabled = state.busy;
     $("tags-empty").classList.toggle("hidden", rows.length > 0);
     document.querySelectorAll("[data-tag-sort]").forEach(control => {
       const selected = control.dataset.tagSort === state.sort;
@@ -271,12 +335,12 @@
       control.textContent = label + (selected ? state.direction < 0 ? " ↓" : " ↑" : "");
       control.closest("th").setAttribute("aria-sort", selected ? state.direction < 0 ? "descending" : "ascending" : "none");
     });
-    const duplicateGroups = state.duplicates.map((group) => ({group, names: groupNames(group)})).filter((item) => item.names.length > 1);
-    $("tag-duplicates").classList.toggle("hidden", !duplicateGroups.length);
+    const groups = duplicateGroups().filter(names => names.some(matches));
     const duplicateList = node("div", null, "tag-duplicate-list");
-    duplicateGroups.forEach(({names}) => {
+    groups.forEach(names => {
       const row = node("div", null, "tag-duplicate-group");
       const members = node("div", null, "tag-duplicate-members");
+      const affected = node("span", null, "tag-duplicate-count");
       const select = node("select");
       select.setAttribute("aria-label", `选择合并目标：${names.join("、")}`);
       const key = duplicateKey(names);
@@ -306,6 +370,7 @@
         const blocked = state.busy || picked.length < 2;
         select.disabled = blocked;
         merge.disabled = blocked;
+        affected.textContent = `${articleCount(picked)} 篇`;
       };
       names.forEach((name) => {
         const label = node("label", null, "tag-duplicate-member");
@@ -318,29 +383,47 @@
           if (box.checked) state.excludedDuplicates.delete(name); else state.excludedDuplicates.add(name);
           refreshSelect();
         });
-        label.append(box, node("span", name));
+        const text = node("span", name); text.title = name;
+        label.append(box, text);
         members.append(label);
       });
       select.addEventListener("change", () => state.duplicateTargets.set(key, select.value));
       refreshSelect();
-      row.append(members, select, merge);
+      row.append(members, affected, select, merge);
       duplicateList.append(row);
     });
-    $("tag-duplicates").replaceChildren(
-      node("h2", duplicateGroups.length ? `可能重复 · ${duplicateGroups.length} 组` : "可能重复"),
-      node("p", "每组最多 5 个。可取消勾选不想合并的标签。合并前会说明影响的文章数。", "hint-copy"),
-      duplicateList,
-    );
+    $("tag-duplicates").replaceChildren(...(groups.length ? [
+      node("p", "选择同一含义的标签，再指定保留名称。每组最多 5 个，确认前会显示影响的文章数。", "tags-section-intro"),
+      columnHeading(["待合并标签", "影响文章", "保留为", "操作"], "tag-duplicate-heading"), duplicateList,
+    ] : [emptyList(search() ? "没有符合条件的重复建议" : "没有可能重复的标签",
+      search() ? "试试其他标签名称。" : "发现相似名称时，会在这里提供手工合并建议。") ]));
     renderAliases();
+    renderViews();
     renderPanel();
   }
   async function open() {
     D.hideAllViews(); D.setPage("tags"); D.setNav("tags-nav"); $("tags-view").classList.remove("hidden");
+    state.view = "all"; state.selected.clear(); state.focus = "";
+    renderViews();
     document.title = "标签管理 · 抖库"; await load();
   }
   D.tags = {open, load, renderPanel};
   document.addEventListener("DOMContentLoaded", () => {
+    const tabs = [...document.querySelectorAll("[data-tags-view]")];
+    tabs.forEach(tab => tab.addEventListener("click", () => selectView(tab.dataset.tagsView)));
+    $("tags-view").querySelector(".tags-tabs").addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      const index = tabs.indexOf(event.target);
+      if (index < 0) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      selectView(tabs[next].dataset.tagsView, true);
+    });
     $("tags-search").addEventListener("input", render);
+    $("tags-clear-selection").addEventListener("click", () => {
+      state.selected.clear(); render(); $("tags-select-all").focus({preventScroll: true});
+    });
     $("tags-select-all").addEventListener("change", () => {
       visibleRows().forEach(row => { if ($("tags-select-all").checked) state.selected.add(row.name); else state.selected.delete(row.name); }); render();
     });
@@ -382,7 +465,7 @@
       }
     });
     document.addEventListener("keydown", (event) => {
-      if (!active() || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
+      if (!active() || state.view !== "all" || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
       if (D.chordPending || event.key === "g") return;
       if (document.querySelector("dialog[open]")) return;
       if (event.target.closest("input, textarea, select, [contenteditable='true']")) return;

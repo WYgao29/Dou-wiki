@@ -48,7 +48,7 @@ def _remove_private_lines(markdown: str) -> str:
     for line in markdown.splitlines():
         if "原始采集记录" in line or "machine_data_path" in line:
             continue
-        if not cover_removed and re.match(r"^\s*!\[[^]]*(?:封面|缩略图|第\s*1\s*张)[^]]*]", line):
+        if not cover_removed and re.match(r"^\s*!\[[^]]*(?:封面|缩略图)[^]]*]", line):
             cover_removed = True
             continue
         lines.append(line)

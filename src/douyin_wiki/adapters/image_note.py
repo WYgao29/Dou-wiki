@@ -18,6 +18,7 @@ from ..config import MediaSettings
 from ..errors import (
     BrowserAuthRequiredError,
     ExternalToolError,
+    InvalidShareTextError,
     LivePhotoUnsupportedError,
     RegionRestrictedError,
     VideoUnavailableError,
@@ -120,6 +121,35 @@ def _find_aweme_detail(value: Any, *, expected_work_id: str | None = None) -> di
             found = _find_aweme_detail(child, expected_work_id=expected_work_id)
             if found:
                 return found
+    return None
+
+
+def _source_kind_from_payload(value: Any, work_id: str) -> SourceKind | None:
+    """Classify only media belonging to the requested work, never recommendations."""
+    if isinstance(value, dict):
+        if str(value.get("aweme_id") or value.get("item_id") or "") == work_id:
+            image_post = value.get("image_post_info")
+            images = value.get("images") or (
+                image_post.get("images") if isinstance(image_post, dict) else None
+            )
+            if isinstance(images, list) and images:
+                return SourceKind.IMAGE_NOTE
+            video = value.get("video")
+            if isinstance(video, dict) and any(
+                video.get(key)
+                for key in (
+                    "play_addr", "play_addr_h264", "play_addr_265", "download_addr", "bit_rate"
+                )
+            ):
+                return SourceKind.VIDEO
+        children = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        if kind := _source_kind_from_payload(child, work_id):
+            return kind
     return None
 
 
@@ -495,6 +525,66 @@ class PlaywrightImageNoteDownloader:
                 "未在限定时间内完成抖音登录", details={"cause": str(exc)}
             ) from exc
         raise BrowserAuthRequiredError("未在限定时间内完成抖音登录")
+
+    async def resolve_source_kind(self, url: str, work_id: str) -> SourceKind:
+        """Read the work's structured data before choosing a media downloader."""
+        from .share import extract_douyin_url
+
+        url = extract_douyin_url(url)
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise ExternalToolError("未安装 Playwright，无法识别抖音作品类型") from exc
+        async with self._locked_profile():
+            self.profile_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                async with async_playwright() as playwright:
+                    context = await playwright.chromium.launch_persistent_context(
+                        **self._launch_options(headless=True)
+                    )
+                    try:
+                        page = context.pages[0] if context.pages else await context.new_page()
+                        detected: SourceKind | None = None
+
+                        async def capture_response(response: Any) -> None:
+                            nonlocal detected
+                            if detected or "json" not in response.headers.get(
+                                "content-type", ""
+                            ).lower():
+                                return
+                            try:
+                                payload = await response.json()
+                            except Exception:
+                                return
+                            detected = _source_kind_from_payload(payload, work_id) or detected
+
+                        page.on("response", capture_response)
+                        response = await page.goto(
+                            url, wait_until="domcontentloaded", timeout=60_000
+                        )
+                        for _ in range(20):
+                            if detected is not None:
+                                break
+                            await page.wait_for_timeout(500)
+                        body = (await page.locator("body").inner_text(timeout=10_000))[:20_000]
+                        status = response.status if response else None
+                        if _page_auth_blocked(body, status, page.url):
+                            raise BrowserAuthRequiredError("识别作品类型时需要抖音登录或验证")
+                        if status == 404:
+                            raise VideoUnavailableError("作品已删除、私密或不可访问")
+                        if detected is not None:
+                            return detected
+                        raise InvalidShareTextError(
+                            "无法确认作品是图文还是视频，请使用作品的分享链接或详情链接"
+                        )
+                    finally:
+                        await context.close()
+            except (BrowserAuthRequiredError, VideoUnavailableError, InvalidShareTextError):
+                raise
+            except Exception as exc:
+                raise ExternalToolError(
+                    "无法识别抖音作品类型", details={"cause": str(exc)}
+                ) from exc
 
     async def download(self, url: str, work_id: str, target_dir: Path) -> VideoMetadata:
         async with self._locked_profile():

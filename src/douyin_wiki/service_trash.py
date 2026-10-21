@@ -539,6 +539,8 @@ class TrashMixin:
             }
 
     def restore_trashed_entry(self, trash_id: str, *, confirmed: bool = False) -> dict[str, Any]:
+        if self._topic_trash_item_dir(trash_id).is_dir():
+            return self.restore_trashed_topic(trash_id, confirmed=confirmed)
         if not confirmed:
             raise ValueError("恢复资料前需要用户明确确认")
         with self.vault.entry_operations_locked():
@@ -618,6 +620,8 @@ class TrashMixin:
     def permanently_delete_trashed_entry(
         self, trash_id: str, *, confirmed: bool = False
     ) -> dict[str, Any]:
+        if self._topic_trash_item_dir(trash_id).is_dir():
+            return self.permanently_delete_trashed_topic(trash_id, confirmed=confirmed)
         if not confirmed:
             raise ValueError("彻底删除前需要用户明确确认")
         with self.vault.entry_operations_locked():
@@ -663,7 +667,13 @@ class TrashMixin:
         restored: list[dict[str, Any]] = []
         failed: list[dict[str, str]] = []
         warnings: list[str] = []
-        for trash_id in self._unique_trash_ids(trash_ids):
+        # Restore articles before topics so a mixed batch can retain source associations.
+        ordered = sorted(
+            self._unique_trash_ids(trash_ids),
+            key=lambda value: bool(re.fullmatch(r"[0-9a-f]{32}", value))
+            and (self._topic_trash_root / value).is_dir(),
+        )
+        for trash_id in ordered:
             try:
                 result = self.restore_trashed_entry(trash_id, confirmed=True)
                 restored.append(result)
@@ -720,7 +730,7 @@ class TrashMixin:
 
     def recover_entry_trash_operations_locked(self) -> dict[str, Any]:
         root = self._entry_trash_root
-        report: dict[str, Any] = {"recovered": [], "completed": [], "warnings": []}
+        report: dict[str, Any] = self.recover_topic_trash_operations_locked()
         if not root.is_dir():
             return report
         for staging in root.glob(".*.staging"):

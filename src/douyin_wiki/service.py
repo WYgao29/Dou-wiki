@@ -48,6 +48,7 @@ from .service_capture import CaptureMixin
 from .service_entries import EntriesMixin
 from .service_import import ImportMixin
 from .service_maintenance import MaintenanceMixin
+from .service_topic_trash import TopicTrashMixin
 from .service_trash import TrashMixin
 from .tags import TagManager
 from .vault import VaultWriter
@@ -58,6 +59,7 @@ class DouyinWikiService(
     AnalysisMixin,
     ImportMixin,
     EntriesMixin,
+    TopicTrashMixin,
     TrashMixin,
     MaintenanceMixin,
 ):

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .adapters.asr_checkpoints import digest, file_digest
+from .adapters.share import extract_work_identity
 from .analysis_rules import PROMPT_VERSION
 from .errors import (
     ExternalToolError,
@@ -111,7 +112,8 @@ class CaptureMixin:
                 "canonical_url": resolved.canonical_url,
                 "video_id": resolved.video_id,
                 "redirect_chain": list(resolved.redirect_chain),
-                "source_kind": resolved.source_kind.value,
+                "source_kind": resolved.source_kind.value if resolved.source_kind else None,
+                "source_kind_confirmed": resolved.source_kind is not None,
             }
             self.database.update_job(
                 job.id, artifacts={"resolved": artifacts["resolved"]}, progress=0.08
@@ -123,7 +125,46 @@ class CaptureMixin:
             return cancelled
 
         async with self._work_capture_locked(video_id):
+            resolved_data = await self._confirm_capture_source_kind(job, artifacts, resolved_data)
             return await self._process_resolved_capture(job, artifacts, resolved_data)
+
+    async def _confirm_capture_source_kind(
+        self, job: JobRecord, artifacts: dict[str, Any], resolved: dict[str, Any]
+    ) -> dict[str, Any]:
+        if resolved.get("source_kind_confirmed"):
+            return resolved
+        work_id = str(resolved["video_id"])
+        supported = {SourceKind.VIDEO.value, SourceKind.IMAGE_NOTE.value}
+        kind = (artifacts.get("metadata") or {}).get("source_kind")
+        if kind not in supported:
+            with self.vault.entry_operations_locked():
+                existing = self.database.find_entry_by_video_id(work_id)
+                if existing:
+                    kind = self.database.get_entry_data(existing.id).get("metadata", {}).get(
+                        "source_kind"
+                    )
+        urls = list(resolved.get("redirect_chain") or [resolved["original_url"]])
+        if kind not in supported:
+            for url in reversed(urls):
+                identity = extract_work_identity(url)
+                if identity and identity[0] == work_id and identity[1] is not None:
+                    kind = identity[1].value
+                    break
+        if kind not in supported:
+            self.database.update_job(job.id, status=JobStatus.RESOLVING, progress=0.08)
+            async with self.download_semaphore:
+                self.check_job_cancelled(job)
+                detected = await self.image_note_downloader.resolve_source_kind(urls[-1], work_id)
+                kind = detected.value
+                self.check_job_cancelled(job)
+        confirmed = {
+            **resolved, "source_kind": kind, "source_kind_confirmed": True,
+            "canonical_url": f"https://www.douyin.com/"
+            f"{'note' if kind == SourceKind.IMAGE_NOTE.value else 'video'}/{work_id}",
+        }
+        artifacts["resolved"] = confirmed
+        self.database.update_job(job.id, artifacts={"resolved": confirmed})
+        return confirmed
 
     @asynccontextmanager
     async def _work_capture_locked(self, work_id: str):
