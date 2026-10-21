@@ -1,7 +1,7 @@
 # Gateway Agent 接入指南
 
 抖库 0.2.0 只使用 `analysis_mode = "gateway"`，业务请求通过 MCP 创建。接入的 Agent 是用户入口和 AI 执行者；
-`douyin-wiki` Worker 是不持有会话的本地媒体处理与入库服务。
+Dou-wiki Worker 是不持有会话的本地媒体处理与入库服务。
 
 ## 运行边界
 

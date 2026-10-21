@@ -1,6 +1,12 @@
 <div align="center">
 
-<img src="docs/images/banner.png" alt="抖库 douyin-wiki" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/douyin_wiki/webapp/static/dou-wiki-mark-dark.svg">
+  <img src="src/douyin_wiki/webapp/static/dou-wiki-mark.svg" alt="Dou-wiki logo" width="48" height="48">
+</picture>
+<h1>抖库 Dou-wiki</h1>
+
+<img src="docs/images/banner.png" alt="抖库 Dou-wiki" width="100%">
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -11,7 +17,7 @@ Turn Douyin videos and image notes into searchable, source-linked Obsidian Markd
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-STDIO%20server-8A2BE2.svg)](docs/gateway-agents.md)
 [![Platform](https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-lightgrey.svg)](#requirements)
-[![Last commit](https://img.shields.io/github/last-commit/WYgao29/douyin-wiki.svg)](https://github.com/WYgao29/douyin-wiki/commits/main)
+[![Last commit](https://img.shields.io/github/last-commit/WYgao29/Dou-wiki.svg)](https://github.com/WYgao29/Dou-wiki/commits/main)
 
 <img src="docs/images/web-library.png" alt="Local Web UI: library view" width="100%">
 
@@ -25,7 +31,7 @@ Turn Douyin videos and image notes into searchable, source-linked Obsidian Markd
 
 Short videos carry a lot of useful knowledge — tutorials, explanations, recommendations — but it stays locked inside a feed: hard to search, hard to cite, and gone when you need it. Pasting a link into a chat model doesn't help: the model can't watch the video, and nothing is kept.
 
-抖库 (douyin-wiki) does the heavy media work **locally** (download, speech recognition, OCR), then hands only the text to the model your agent is *already* using, to correct and analyze it. The result is a durable knowledge base you own, where every point links back to the original work with a timestamp or image number.
+抖库 Dou-wiki does the heavy media work **locally** (download, speech recognition, OCR), then hands only the text to the model your agent is *already* using, to correct and analyze it. The result is a durable knowledge base you own, where every point links back to the original work with a timestamp or image number.
 
 ## Features
 
@@ -46,7 +52,7 @@ Short videos carry a lot of useful knowledge — tutorials, explanations, recomm
 ```mermaid
 flowchart LR
   U[User shares a Douyin link<br/>+ notes] --> A[AI agent<br/>OpenClaw · Hermes · …]
-  A -- capture_douyin --> M[douyin-wiki MCP server]
+  A -- capture_douyin --> M[Dou-wiki MCP server]
   M --> W[Local worker]
   W --> D[Playwright profile + yt-dlp<br/>download media]
   D --> T[ffmpeg · Qwen3-ASR · VAD · aligner<br/>RapidOCR / Vision]
@@ -69,8 +75,10 @@ The MCP server and worker run on your Mac. Only text (transcript, OCR, page text
 
 ### Install (development)
 
+The project is now **抖库 Dou-wiki**. The Python package, `douyin-wiki` / `douyin-wiki-mcp` commands, MCP server name, configuration paths and environment variables keep their existing identifiers. The explicit clone directory below preserves the existing setup commands.
+
 ```bash
-git clone https://github.com/WYgao29/douyin-wiki.git
+git clone https://github.com/WYgao29/Dou-wiki.git douyin-wiki
 cd douyin-wiki
 uv sync --locked --extra dev --extra embeddings --extra asr --extra ocr --extra mlx
 uv run --no-sync python -m playwright install chromium

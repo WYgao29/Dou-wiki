@@ -1,6 +1,12 @@
 <div align="center">
 
-<img src="docs/images/banner-zh.png" alt="抖库 douyin-wiki" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/douyin_wiki/webapp/static/dou-wiki-mark-dark.svg">
+  <img src="src/douyin_wiki/webapp/static/dou-wiki-mark.svg" alt="Dou-wiki logo" width="48" height="48">
+</picture>
+<h1>抖库 Dou-wiki</h1>
+
+<img src="docs/images/banner-zh.png" alt="抖库 Dou-wiki" width="100%">
 
 [English](README.md) · **简体中文**
 
@@ -11,7 +17,7 @@
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-STDIO%20server-8A2BE2.svg)](docs/gateway-agents.md)
 [![Platform](https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-lightgrey.svg)](#环境要求)
-[![Last commit](https://img.shields.io/github/last-commit/WYgao29/douyin-wiki.svg)](https://github.com/WYgao29/douyin-wiki/commits/main)
+[![Last commit](https://img.shields.io/github/last-commit/WYgao29/Dou-wiki.svg)](https://github.com/WYgao29/Dou-wiki/commits/main)
 
 <img src="docs/images/web-library.png" alt="本机 Web：资料库" width="100%">
 
@@ -25,7 +31,7 @@
 
 短视频里有大量有用的知识——教程、解释、推荐——但它们困在信息流里：难搜索、难引用，需要时找不到。把链接贴给聊天模型也没用：模型看不了视频，也不会留下任何东西。
 
-抖库（douyin-wiki）在**本地**完成繁重的媒体处理（下载、语音识别、OCR），只把文字交给 Agent *正在使用*的模型做校正与分析。结果是一个归你所有的长期知识库，每个要点都能通过时间戳或图片编号追溯到原作品。
+抖库 Dou-wiki 在**本地**完成繁重的媒体处理（下载、语音识别、OCR），只把文字交给 Agent *正在使用*的模型做校正与分析。结果是一个归你所有的长期知识库，每个要点都能通过时间戳或图片编号追溯到原作品。
 
 ## 功能
 
@@ -46,7 +52,7 @@
 ```mermaid
 flowchart LR
   U[用户分享抖音链接<br/>+ 灵感] --> A[AI Agent<br/>OpenClaw · Hermes · …]
-  A -- capture_douyin --> M[douyin-wiki MCP 服务]
+  A -- capture_douyin --> M[Dou-wiki MCP 服务]
   M --> W[本地 Worker]
   W --> D[Playwright 专用 Profile + yt-dlp<br/>下载媒体]
   D --> T[ffmpeg · Qwen3-ASR · VAD · 对齐<br/>RapidOCR / Vision]
@@ -69,8 +75,10 @@ MCP 服务和 Worker 运行在你的 Mac 上。只有文字（逐字稿、OCR、
 
 ### 安装（开发环境）
 
+项目对外名称现为 **抖库 Dou-wiki**。Python 包名、`douyin-wiki` / `douyin-wiki-mcp` 命令、MCP 服务器名、配置路径和环境变量名继续沿用原标识。下面显式指定 clone 目录，以保留原有安装命令。
+
 ```bash
-git clone https://github.com/WYgao29/douyin-wiki.git
+git clone https://github.com/WYgao29/Dou-wiki.git douyin-wiki
 cd douyin-wiki
 uv sync --locked --extra dev --extra embeddings --extra asr --extra ocr --extra mlx
 uv run --no-sync python -m playwright install chromium

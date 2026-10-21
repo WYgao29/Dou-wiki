@@ -104,7 +104,7 @@ SHA256：`a037b03dc6bed82fcd63115281baeac1cf6f94ff07c7931c3b189ca51217555a`。
 
 用户授权提交、合并到 `main` 并推送 GitHub。三批开发提交为 `2ae03a2`、`bb153ef`、`55b0c33`，后续 review 修复提交为 `8992abe`。确认本地与远端主线均为 `36697c3` 后，将本地主线直接推进到 `8992abe`，没有合并冲突或运行代码变化；沿用上文 1686 项完整离线测试、210 项独立安装包测试和复审结果。
 
-主线集成后仅补充本节、方案状态及文档索引；远端为 `https://github.com/WYgao29/douyin-wiki.git`，目标分支为 `main`。当前候选包及哈希继续有效，现用 runtime、用户 Vault、登录 Profile 和常驻服务未改动。其他开发分支和 worktree 保留。
+主线集成后仅补充本节、方案状态及文档索引；仓库地址现为 `https://github.com/WYgao29/Dou-wiki.git`（2026-10-21 更名），目标分支为 `main`。当前候选包及哈希继续有效，现用 runtime、用户 Vault、登录 Profile 和常驻服务未改动。其他开发分支和 worktree 保留。
 
 ## 本机部署（2026-10-18）
 
