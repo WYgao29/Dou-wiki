@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/images/banner.png" alt="抖库 douyin-wiki" width="100%">
+<img src="docs/images/banner-zh.png" alt="抖库 douyin-wiki" width="100%">
 
 [English](README.md) · **简体中文**
 
