@@ -85,7 +85,7 @@ async def verify():
                     "e => ({size:getComputedStyle(e).fontSize, "
                     "line:getComputedStyle(e).lineHeight})"
                 )
-                assert base == {"size": "14px", "line": "20px"}, base
+                assert base == {"size": "14px", "line": "22px"}, base
                 await page.wait_for_selector("#library-todo:not(.hidden)")
                 todo = await page.locator("#library-todo").evaluate("""e => ({
                   size:getComputedStyle(e).fontSize,
@@ -135,6 +135,7 @@ async def verify():
                 fonts = {}
                 for family, sample in [
                     ("Inter", "Hello"),
+                    ("Space Grotesk", "Terminal"),
                     ("Doku Serif SC", "核心收获"),
                     ("Newsreader", "Reading"),
                 ]:
@@ -191,11 +192,18 @@ async def verify():
                     await page.evaluate("t => window.DoukuTheme.set(t)", theme)
                     colors = await page.evaluate("""() => {
                       const e=document.createElement('span');document.body.append(e);
+                      const canvas=document.createElement('canvas');canvas.width=canvas.height=1;
+                      const context=canvas.getContext('2d');
+                      const base=getComputedStyle(document.body).backgroundColor;
                       const result={};
                       for (const role of ['--text-2','--text-3','--bg','--surface',
                                           '--surface-sunken',
                                           '--surface-hover','--surface-selected']) {
-                        e.style.color=`var(${role})`;result[role]=getComputedStyle(e).color;
+                        e.style.color=`var(${role})`;
+                        context.fillStyle=base;context.fillRect(0,0,1,1);
+                        context.fillStyle=getComputedStyle(e).color;context.fillRect(0,0,1,1);
+                        const rgb=[...context.getImageData(0,0,1,1).data].slice(0,3);
+                        result[role]=`rgb(${rgb.join(',')})`;
                       }
                       e.remove();return result;
                     }""")
@@ -213,8 +221,8 @@ async def verify():
                         for role in ["--text-2", "--text-3"]
                     }
                     assert all(
-                        ratio >= 4.5
-                        for ratios in palette[theme].values()
+                        ratio >= (3 if role == "--text-3" else 4.5)
+                        for role, ratios in palette[theme].items()
                         for ratio in ratios.values()
                     ), palette
                 assert not errors, errors

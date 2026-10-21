@@ -70,6 +70,67 @@ async def ui(tmp_path):
                 await browser.close()
 
 
+async def test_agent_command_copy_failure_does_not_show_success(ui):
+    page, _service, _client, _calls = ui
+    await page.goto("http://testserver/imports")
+    await page.evaluate("""Object.defineProperty(navigator, 'clipboard', {
+        configurable: true, value: {writeText: async () => {
+            throw new DOMException('Clipboard denied', 'NotAllowedError');
+        }}
+    })""")
+    buttons = page.locator("#imports-view [data-copy-command]")
+    await buttons.nth(0).click()
+    await expect(page.locator("#toast.show")).to_have_text("复制失败")
+    assert not await buttons.nth(0).locator(".copy-check").is_visible()
+    assert await buttons.nth(0).locator(".copy-icon").is_visible()
+    await page.evaluate("window.Douku.toast('其他通知')")
+    await buttons.nth(1).focus()
+    assert not await buttons.nth(1).locator(".copy-check").is_visible()
+
+
+async def test_agent_command_copy_feedback_expires_for_each_button(ui):
+    page, _service, _client, _calls = ui
+    await page.goto("http://testserver/imports")
+    await page.evaluate("""Object.defineProperty(navigator, 'clipboard', {
+        configurable: true, value: {writeText: async value => {window.lastCopied=value;}}
+    })""")
+    await page.clock.install()
+    buttons = page.locator("#imports-view [data-copy-command]")
+    first, second = buttons.nth(0), buttons.nth(1)
+    await first.click()
+    assert await page.evaluate("window.lastCopied") == await first.get_attribute(
+        "data-copy-command"
+    )
+    await expect(first.locator(".copy-check")).to_be_visible()
+    await page.clock.fast_forward(1000)
+    await second.click()
+    await expect(first.locator(".copy-check")).to_be_visible()
+    await expect(second.locator(".copy-check")).to_be_visible()
+    await page.clock.fast_forward(500)
+    await expect(first.locator(".copy-check")).not_to_be_visible()
+    await expect(second.locator(".copy-check")).to_be_visible()
+    await page.clock.fast_forward(1000)
+    await expect(second.locator(".copy-check")).not_to_be_visible()
+    await expect(page.locator("#toast.show")).to_have_text("已复制")
+
+
+async def test_agent_command_repeated_copy_restarts_feedback(ui):
+    page, _service, _client, _calls = ui
+    await page.goto("http://testserver/imports")
+    await page.evaluate("""Object.defineProperty(navigator, 'clipboard', {
+        configurable: true, value: {writeText: async () => {}}
+    })""")
+    await page.clock.install()
+    button = page.locator("#imports-view [data-copy-command]").first
+    await button.click()
+    await page.clock.fast_forward(1000)
+    await button.click()
+    await page.clock.fast_forward(500)
+    await expect(button.locator(".copy-check")).to_be_visible()
+    await page.clock.fast_forward(1000)
+    await expect(button.locator(".copy-check")).not_to_be_visible()
+
+
 async def test_command_search_closes_with_one_escape_and_keeps_query(ui):
     page, _service, _client, _calls = ui
     await page.keyboard.press("Meta+k")

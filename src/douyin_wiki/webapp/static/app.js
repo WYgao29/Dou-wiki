@@ -2898,15 +2898,29 @@ function bindEvents() {
   $("#trash-clear-selection").addEventListener("click", () => setTrashSelection([]));
   $("#trash-restore-selected").addEventListener("click", () => openTrashBatchDialog("restore"));
   $("#trash-purge-selected").addEventListener("click", () => openTrashBatchDialog("purge"));
+  const commandCopyFeedback = new WeakMap();
   document.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-copy-command]");
     if (!button) return;
     const command = button.dataset.copyCommand || "";
     if (!command) return;
+    window.clearTimeout(commandCopyFeedback.get(button)?.timer);
+    const feedback = {timer: 0};
+    commandCopyFeedback.set(button, feedback);
+    button.classList.remove("is-copied");
     try {
       await navigator.clipboard.writeText(command);
+      if (commandCopyFeedback.get(button) === feedback) {
+        button.classList.add("is-copied");
+        feedback.timer = window.setTimeout(() => {
+          if (commandCopyFeedback.get(button) !== feedback) return;
+          button.classList.remove("is-copied");
+          commandCopyFeedback.delete(button);
+        }, 1500);
+      }
       toast("已复制");
     } catch (_error) {
+      if (commandCopyFeedback.get(button) === feedback) commandCopyFeedback.delete(button);
       toast("复制失败");
     }
   });

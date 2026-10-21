@@ -35,7 +35,8 @@ def audit_tokens():
     allowed = {f"var(--fs-{n})" for n in [12, 13, 14, 16, 20, 28, 40, "reading"]}
     assert set(sizes) <= allowed | {".875em"}, sizes
     radii = sorted(set(re.findall(r"(?<![-\w])border-radius:\s*([^;]+)", css)))
-    assert set(radii) <= {"0", "50%", "inherit", "var(--radius)", "var(--radius-sm)"}, radii
+    allowed_radii = {"0", "50%", "inherit", "var(--radius)", "var(--radius-sm)", "var(--radius-lg)"}
+    assert set(radii) <= allowed_radii, radii
     components = re.sub(r":root(?:\[data-theme=\"dark\"\])?\s*\{[^}]+\}", "", css)
     assert not re.search(r"#[\da-fA-F]{3,8}\b|rgba?\(|\b(?:white|black)\s*[;)]", components)
     assert not re.search(r"linear-gradient|backdrop-filter", css)

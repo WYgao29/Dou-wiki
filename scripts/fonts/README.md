@@ -1,6 +1,6 @@
 # 本地字体
 
-运行时仅加载 `src/douyin_wiki/webapp/static/fonts/`，不连接字体服务。Inter 在所有页面加载；Newsreader 与 Doku Serif SC 的 `@font-face` 独立放在 `reading.css`，只在文章页附加，离开文章页移除。专题、设置、任务与资料库均使用 UI 字体。
+运行时仅加载 `src/douyin_wiki/webapp/static/fonts/`，不连接字体服务。Inter 在所有页面加载，Space Grotesk 用于 UI 标题；Newsreader 与 Doku Serif SC 的 `@font-face` 独立放在 `reading.css`，只在文章页附加，离开文章页移除。专题、设置、任务与资料库均使用 UI 字体。
 
 - [Inter](https://github.com/rsms/inter)：`src/douyin_wiki/webapp/static/fonts/InterVariable.woff2`，保留上游文件与 OFL 许可。
 - [Newsreader](https://github.com/google/fonts/tree/main/ofl/newsreader)：可变 TTF 用 `fontTools.ttLib.TTFont` 设置 `flavor = "woff2"` 后保存。
@@ -22,3 +22,12 @@ uv run --with fonttools --with brotli pyftsubset NotoSerifSC-Regular.otf \
 600 字重使用 `NotoSerifSC-SemiBold.otf`。生成后用 `TTFont` 将 `name` 表中 1/2/3/4/6/16/17 记录的 `Noto Serif SC` 和 `NotoSerifSC` 分别替换为 `Doku Serif SC` 和 `DokuSerifSC` 后保存。发布文件哈希见 `output-sha256.json`。
 
 2026-09-30 实测：400 字重 1,853,600 bytes；600 字重 1,895,980 bytes。两个中文子集与 Inter、Newsreader 合计约 4.31 MB。常用字表外字符由系统宋体回落。
+
+## Space Grotesk（2026-10-21）
+
+- 官方来源：[floriankarsten/space-grotesk](https://github.com/floriankarsten/space-grotesk/tree/03507d024a01282884232081fc6011c09ff4e849)，固定提交 `03507d024a01282884232081fc6011c09ff4e849`。
+- 原文件 `fonts/woff2/SpaceGrotesk[wght].woff2` 原样保存为 `SpaceGrotesk-Variable.woff2`，可变字重 300–700，`font-display: swap`。中文回落 PingFang SC；文章阅读字体和加载策略不变。
+- SIL Open Font License 1.1，许可随运行资源保存为 `SpaceGrotesk-OFL.txt`；不请求外部字体服务。
+- 文件 49,256 bytes；SHA-256：`8e085aa438094f11487a836652edd5c054fa6a96f63fc7c282105ee3a4b08c07`。
+
+许可文本统一为 LF 换行并移除行尾空白，许可正文保持原文；woff2 字节与上游原文件一致。
