@@ -57,6 +57,8 @@
 
 ## 维护记录
 
+[2026-10-21 Dou-wiki 品牌与仓库改名](maintenance/2026-10-21-dou-wiki-brand-rename.md)记录 Web 新 logo / 字标、本地字体和 favicon、中英文 README 改名、GitHub 仓库改名与跳转检查。Python、CLI/MCP、配置路径和环境变量保持兼容；两个含旧名称的 README 横幅按要求保留，现用 runtime 未更新。
+
 [2026-10-21 a13n Web 样式](maintenance/2026-10-21-a13n-styles.md)记录 15 步实施、亮暗截图对照、功能保留检查和验收结果。源码 Web 0.2.87 位于 `codex/抖库-web`，包含标签页滚动修复、复制反馈修复和深海军蓝配色；独立预览使用 8766，现用 runtime 保持 Web 0.2.84。
 
 [2026-10-20 网页修复与本机更新](maintenance/2026-10-20-web-ui-review-fixes.md)记录四处网页问题的修复、复审、13 项新增回归、1863 项源码离线回归及 48 项实际 wheel 回归。Web / Worker 已更新为 Web 0.2.58，配置、依赖、业务数据和 Markdown 内容保持一致。
