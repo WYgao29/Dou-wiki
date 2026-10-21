@@ -1901,6 +1901,8 @@ display: grid; gap: var(--space-3); margin-inline: 0;
 #auth-view .operation-section h2 { font: var(--fw-semibold) var(--fs-16)/24px var(--font-ui); }
 
 /* Tags: separate records, duplicate suggestions and aliases. */
+.tags-view { max-width: calc(100vw - var(--sidebar-width)); }
+.app-shell.is-sidebar-collapsed .tags-view { max-width: 100vw; }
 .tags-view > .view-header { margin-bottom: 0; background: var(--bg); }
 .tags-tabs-bar {
   position: sticky; top: var(--header-height); z-index: var(--z-sticky);

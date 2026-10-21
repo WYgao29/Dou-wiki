@@ -722,6 +722,68 @@ async def test_tag_views_keep_records_first_and_scope_selection(ui):
     assert not any(method == "POST" and path.startswith("/api/tags/") for method, path in calls)
 
 
+@pytest.mark.parametrize("width", [838, 960, 1440])
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_tag_actions_stay_inside_visible_main_column(ui, width, theme):
+    page, service, _client, calls = ui
+    old_name = "原标签名称较长时也应完整保留操作入口" * 3
+    new_name = "当前标签名称较长时不应挤出右侧按钮" * 3
+    source(service, "1002", [old_name], managed=True)
+    service.tags.rename(old_name, new_name)
+    await page.set_viewport_size({"width": width, "height": 868})
+    await page.goto("http://testserver/tags")
+    await page.get_by_label("选择页面主题").select_option(theme)
+    await expect(page.locator("#tags-rows tr")).to_have_count(4)
+
+    async def assert_controls_inside(selector):
+        bounds = await page.evaluate(
+            """selector => {
+            const main = document.querySelector('#main-content');
+            const left = main.getBoundingClientRect().left;
+            const right = Math.min(document.documentElement.clientWidth, left + main.clientWidth);
+            return [...document.querySelectorAll(selector)]
+                .filter(node => node.getClientRects().length)
+                .map(node => {
+                    const rect = node.getBoundingClientRect();
+                    return {label: node.textContent || node.getAttribute('aria-label'),
+                        left: rect.left, right: rect.right, visibleLeft: left, visibleRight: right,
+                        client: node.clientWidth, scroll: node.scrollWidth};
+                });
+        }""",
+            selector,
+        )
+        assert bounds, selector
+        for control in bounds:
+            assert control["left"] >= control["visibleLeft"] + 4, control
+            assert control["right"] <= control["visibleRight"] - 4, control
+            assert control["scroll"] <= control["client"] + 1, control
+
+    await page.get_by_role("checkbox", name="选择 AI Agent", exact=True).check()
+    await assert_controls_inside(
+        ".tags-toolbar button:not(.hidden), .tag-table input, .tag-table button"
+    )
+    await page.locator("#tags-tab-duplicates").click()
+    await expect(page.locator(".tag-duplicate-group")).to_have_count(1)
+    await assert_controls_inside(".tag-duplicate-group select, .tag-duplicate-group button")
+    await page.locator("#tags-tab-aliases").click()
+    await expect(page.locator(".tag-alias-actions button")).to_have_count(2)
+    await assert_controls_inside(".tag-alias-actions button, .view-header .chat-toggle-button")
+    await page.get_by_role("button", name="撤销操作", exact=True).focus()
+    await page.keyboard.press("Tab")
+    await expect(page.get_by_role("button", name="解除别名", exact=True)).to_be_focused()
+    assert await page.locator(".tag-alias-heading").evaluate(
+        "node => node.lastElementChild.getBoundingClientRect().right"
+        " <= document.documentElement.clientWidth"
+    )
+    assert await page.locator(".app-shell").evaluate(
+        "node => node.getBoundingClientRect().width >= 960"
+    )
+    if width == 838:
+        await page.locator("#sidebar-collapse").click()
+        await assert_controls_inside(".tag-alias-actions button, .view-header .chat-toggle-button")
+    assert not any(method == "POST" and path.startswith("/api/tags/") for method, path in calls)
+
+
 async def test_duplicate_merge_excludes_unchecked_member(ui):
     page, service, _client, _calls = ui
     source(service, "1002", ["智能体"], managed=True)
