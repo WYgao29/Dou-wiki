@@ -871,7 +871,7 @@ async function reanalyzeItem(item, button) {
 }
 
 function deleteLibraryItem(item) {
-  openDestructiveDialog({title: "删除整条资料？", description: `《${item.title}》的文章、原始记录、机器数据、视频、图片和封面将移入抖库废纸篓，并从检索与专题中移除。`, confirmLabel: "移到废纸篓",
+  openDestructiveDialog({title: "删除整条资料？", description: `《${item.title}》的文章、原始记录、机器数据、视频、图片和封面将移入 Dou-wiki 废纸篓，并从检索与专题中移除。`, confirmLabel: "移到废纸篓",
     action: () => {
       return api(`/api/articles/${encodeURIComponent(item.entry_id)}`, {method: "DELETE", body: JSON.stringify({confirmed: true})});
     },
@@ -1137,7 +1137,7 @@ function showLibrary(push = true) {
   $("#trash-nav").classList.remove("active");
   $$(".nav-item[data-section]").forEach((node) => node.classList.toggle("active", !state.tags.length && node.dataset.section === state.section));
   if (push) history.pushState({}, "", currentLibraryURL());
-  document.title = "资料库 · 抖库";
+  document.title = "资料库 · Dou-wiki";
   renderLibrary();
   if (!fromLibrary && (!state.libraryLoaded || state.libraryLoadedQuery !== state.query)) {
     loadLibrary({showLoading: false});
@@ -1226,7 +1226,7 @@ async function showTopics(push = true) {
   $("#topics-nav").classList.add("active");
   $("#trash-nav").classList.remove("active");
   if (push) history.pushState({}, "", "/topics");
-  document.title = "专题 · 抖库";
+  document.title = "专题 · Dou-wiki";
   updateTopicSelectionButton();
   await loadTopics();
 }
@@ -1357,7 +1357,7 @@ function renderTrash() {
     purge.append(svgIcon("trash-2"), document.createTextNode("彻底删除"));
     purge.addEventListener("click", () => openDestructiveDialog({
       title: isTopic ? "彻底删除这个专题？" : "彻底删除这条资料？",
-      description: `《${item.title}》及其 ${formatBytes(item.size_bytes)} 本地文件将被永久删除，无法通过抖库恢复；Markdown 可能仍存在于 Git 历史中。`,
+      description: `《${item.title}》及其 ${formatBytes(item.size_bytes)} 本地文件将被永久删除，无法通过 Dou-wiki 恢复；Markdown 可能仍存在于 Git 历史中。`,
       confirmLabel: "彻底删除",
       action: async () => {
         return api(`/api/trash/${encodeURIComponent(item.trash_id)}`, {
@@ -1402,7 +1402,7 @@ function openTrashBatchDialog(kind) {
   }
   openDestructiveDialog({
     title: count === 1 ? "彻底删除这条资料？" : `彻底删除这 ${count} 条资料？`,
-    description: `所选资料及其共 ${size} 本地文件将被永久删除，无法通过抖库恢复；Markdown 可能仍存在于 Git 历史中。`,
+    description: `所选资料及其共 ${size} 本地文件将被永久删除，无法通过 Dou-wiki 恢复；Markdown 可能仍存在于 Git 历史中。`,
     confirmLabel: "彻底删除",
     action: async () => {
       return api("/api/trash/batch/purge", {
@@ -1429,14 +1429,14 @@ async function showTrash(push = true) {
   $$(".nav-item").forEach((node) => node.classList.remove("active"));
   $("#trash-nav").classList.add("active");
   if (push) history.pushState({}, "", "/trash");
-  document.title = "废纸篓 · 抖库";
+  document.title = "废纸篓 · Dou-wiki";
   updateTopicSelectionButton();
   await loadTrash();
 }
 
 function topicResearchPrompt(topic) {
   return [
-    `请研究抖库专题「${topic.title}」（专题 ID：${topic.id}）。`,
+    `请研究 Dou-wiki 专题「${topic.title}」（专题 ID：${topic.id}）。`,
     "只使用这个专题当前启用的来源。",
     `研究问题：${topic.goal || "请在这里写明你想解决的问题。"}`,
     ...(topic.instructions ? [`补充要求：${topic.instructions}`] : []),
@@ -1460,7 +1460,7 @@ function makeTopicGuide(value) {
   const steps = window.Douku.node("ol", null, "topic-guide-steps");
   [
     "核对来源：打开右侧来源面板，勾选本次研究要使用的资料。",
-    "开始研究：修改下面的研究问题，复制指令，发到已连接抖库的 Agent 对话。",
+    "开始研究：修改下面的研究问题，复制指令，发到已连接 Dou-wiki 的 Agent 对话。",
     "保存笔记：草稿满意后，在同一对话要求保存，再回到这里查看。",
   ].forEach(text => steps.append(window.Douku.node("li", text)));
   const label = window.Douku.node("label", "研究指令（可修改）", "topic-prompt-label");
@@ -1643,7 +1643,7 @@ async function openTopic(topicId, push = true, {sourceFocus = ""} = {}) {
     $("#topics-nav").classList.add("active");
     $("#trash-nav").classList.remove("active");
     if (push) history.pushState({topicId}, "", `/topics/${encodeURIComponent(topicId)}`);
-    document.title = `${value.topic.title} · 抖库`;
+    document.title = `${value.topic.title} · Dou-wiki`;
     await loadTopics();
     if (navigationId !== state.navigationRequestId) return;
     $(".library-main").scrollTo({top: savedScroll, behavior: "instant"});
@@ -2014,7 +2014,7 @@ function renderArticleData(data, entryId, push) {
   $("#article-view").classList.remove("hidden");
   window.Douku?.setPage("article");
   if (push) history.pushState({entryId}, "", `/articles/${encodeURIComponent(entryId)}`);
-  document.title = `${data.item.title} · 抖库`;
+  document.title = `${data.item.title} · Dou-wiki`;
   renderLibrary();
   state.lastOpenedEntryId = entryId;
   renderArticleToolbar(data.item);
@@ -3062,7 +3062,7 @@ function bindEvents() {
       window.Douku?.setPage("imports");
       window.Douku?.setNav("imports-nav");
       $("#imports-view").classList.remove("hidden");
-      document.title = "导入内容 · 抖库";
+      document.title = "导入内容 · Dou-wiki";
       loadRecentImports();
       refreshAuthChannelBanners();
       window.Douku?.warnIfWorkerDown("imports-view");
@@ -3073,7 +3073,7 @@ function bindEvents() {
       window.Douku?.setPage("settings");
       window.Douku?.setNav("settings-nav");
       $("#settings-view")?.classList.remove("hidden");
-      document.title = "设置 · 抖库";
+      document.title = "设置 · Dou-wiki";
       loadSettingsSummary();
       return;
     }
@@ -3086,7 +3086,7 @@ function bindEvents() {
       window.Douku?.hideAllViews?.();
       window.Douku?.setPage("not-found");
       $("#not-found-view")?.classList.remove("hidden");
-      document.title = "页面不存在 · 抖库";
+      document.title = "页面不存在 · Dou-wiki";
     }
   });
   $$('[data-theme-select]').forEach((select) => select.addEventListener("change", (event) => window.DoukuTheme?.set(event.target.value)));
@@ -3111,7 +3111,7 @@ function bindEvents() {
       window.Douku.hideAllViews();
       window.Douku.setPage("not-found");
       $("#not-found-view")?.classList.remove("hidden");
-      document.title = "页面不存在 · 抖库";
+      document.title = "页面不存在 · Dou-wiki";
     }
     else {
       readStateFromURL();
@@ -3152,7 +3152,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       window.Douku.hideAllViews();
       window.Douku.setPage("not-found");
       $("#not-found-view")?.classList.remove("hidden");
-      document.title = "页面不存在 · 抖库";
+      document.title = "页面不存在 · Dou-wiki";
     }
   }
   }

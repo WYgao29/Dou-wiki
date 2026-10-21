@@ -405,7 +405,7 @@
     D.hideAllViews(); D.setPage("tags"); D.setNav("tags-nav"); $("tags-view").classList.remove("hidden");
     state.view = "all"; state.selected.clear(); state.focus = "";
     renderViews();
-    document.title = "标签管理 · 抖库"; await load();
+    document.title = "标签管理 · Dou-wiki"; await load();
   }
   D.tags = {open, load, renderPanel};
   document.addEventListener("DOMContentLoaded", () => {

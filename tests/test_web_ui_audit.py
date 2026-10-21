@@ -28,7 +28,7 @@ def test_shell_hides_retired_model_page_and_offers_agent_commands(tmp_path):
         assert "去资料库选择" not in page.text
         model = client.get("/settings/model")
         assert model.status_code == 404
-        assert "<title>页面不存在 · 抖库</title>" in model.text
+        assert "<title>页面不存在 · Dou-wiki</title>" in model.text
         assert 'data-missing="1"' in model.text
         assert 'id="not-found-view"' in model.text
         assert "model-settings.js" not in model.text

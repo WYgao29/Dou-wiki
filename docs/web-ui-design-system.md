@@ -1,6 +1,6 @@
 # Web UI 设计系统（当前实现）
 
-2026-10-21，Web 0.2.88，包 0.2.1。当前界面只支持桌面浏览器，最窄按约 960px 设计，不做手机或窄屏适配。窗口更窄时主容器保持 960px 最小宽度，页面可以横向滚动。界面支持阅读、完整逐字稿、本地视频链接、已有批次与任务管理、信息 / 灵感 / 专题来源和系统维护；新建业务请求由 MCP Agent 执行。收藏目录记录提示请 Agent 选择收藏夹并发起作品读取。聊天、模型配置、自动成果和新导入表单已删除。目标规格与实施记录见 [重设计方案](web-ui-redesign-readwise.md)。前半部分记录当前行为，带版本的验证段落保留历史基准；当前安装与验证见[项目审查修复记录](maintenance/2026-10-13-project-review-fixes.md)，独立 runtime 的安装约定见[精简审查修复记录](superpowers/reviews/2026-10-11-mcp-gateway-review-fixes.md)。
+2026-10-21，Web 0.2.89，包 0.2.1。当前界面只支持桌面浏览器，最窄按约 960px 设计，不做手机或窄屏适配。窗口更窄时主容器保持 960px 最小宽度，页面可以横向滚动。界面支持阅读、完整逐字稿、本地视频链接、已有批次与任务管理、信息 / 灵感 / 专题来源和系统维护；新建业务请求由 MCP Agent 执行。收藏目录记录提示请 Agent 选择收藏夹并发起作品读取。聊天、模型配置、自动成果和新导入表单已删除。目标规格与实施记录见 [重设计方案](web-ui-redesign-readwise.md)。前半部分记录当前行为，带版本的验证段落保留历史基准；当前安装与验证见[项目审查修复记录](maintenance/2026-10-13-project-review-fixes.md)，独立 runtime 的安装约定见[精简审查修复记录](superpowers/reviews/2026-10-11-mcp-gateway-review-fixes.md)。
 
 ## 令牌与字体
 
@@ -15,6 +15,7 @@
 | `--surface-selected` | accent 8% 透明底 | accent 12% 透明底 |
 | `--accent-subtle` | `rgba(30,64,175,0.08)` | `rgba(147,197,253,0.14)` |
 | `--text` | `#16171A` | `#EDEDEF` |
+| `--brand-text` | `#16171A` | `#ECECEE` |
 | `--text-2` | `#5C5F66` | `#A1A4AB` |
 | `--text-3` | `#7F8396` | `#6E717B` |
 | `--accent` / `--accent-text` | `#1E40AF` | `#93C5FD` |
@@ -30,7 +31,7 @@
 
 间距令牌只使用 `--space-1/2/3/4/6/8/12/16`，分别为 4/8/12/16/24/32/48/64px。小圆角 `--radius-sm` 为 6px，控件圆角 `--radius` 为 8px，分组、弹窗与代码卡使用 `--radius-lg` 12px；平面容器为 0，圆点为 50%。字号仍使用 `--fs-12/13/14/16/20/28/40/reading`；行内 code 为 `.875em`，代码与指令为 13px / 20px。
 
-body 使用 UI 14px / 22px、常规字重，保留抗锯齿和 100% text-size-adjust。UI 使用本地 Inter 与系统中文无衬线字体；字标、页面标题、分区与弹窗标题使用本地 Space Grotesk 300–700，中文回落 PingFang SC。代码字体优先 JetBrains Mono，再回落 SF Mono / 系统等宽字体。Space Grotesk 随应用打包，使用 `font-display: swap`，不连接外部字体服务；字体来源、许可和哈希见[字体说明](../scripts/fonts/README.md)。
+body 使用 UI 14px / 22px、常规字重，保留抗锯齿和 100% text-size-adjust。UI 使用本地 Inter 与系统中文无衬线字体；页面标题、分区与弹窗标题使用本地 Space Grotesk 300–700，中文回落 PingFang SC。代码字体优先 JetBrains Mono，再回落 SF Mono / 系统等宽字体。Space Grotesk 随应用打包，使用 `font-display: swap`，不连接外部字体服务；字体来源、许可和哈希见[字体说明](../scripts/fonts/README.md)。
 
 文章阅读仍使用 Newsreader 与 Doku Serif SC，仅在文章页加载 `reading.css`。正文 17px、行高 1.75、最大行宽 36em（612px）；正文 h2 / h3 使用阅读字体，固定英文章节标题仍为 Inter 600、20px / 28px、字距 -.01em。文章标题、正文内容及阅读逻辑保持原样。
 
@@ -60,7 +61,7 @@ body 使用 UI 14px / 22px、常规字重，保留抗锯齿和 100% text-size-ad
 - Web 0.2.57 起，小于 1280px 的右栏都是无背幕覆盖层。小于 960px 与 960px 相同，主容器保持最小宽度，页面横向滚动。Web 0.2.55 只支持桌面浏览器，最窄按约 960px 设计，不做手机或窄屏适配。操作页栏头边距统一；专题列表、专题详情和废纸篓不重复缩进。任务列表状态列 148px，状态徽章保持单行，标题起点保持一致；带标签的清单下拉框与旁边按钮按底边对齐。逐页审查与安装状态见[项目审查记录](maintenance/2026-10-13-project-review.md)。
 - Web 0.2.51 的任务请求按导航、当前地址与请求顺序检查有效性；旧响应和旧错误不更新页面或重新建立事件订阅。专题来源保存仅刷新仍然显示的同一专题。图片允许 HTTPS 封面，脚本、样式与 API 连接继续限定本机来源；合集封面使用 `no-referrer`，不向图片服务发送页面地址。修复与实际安装状态见[修复记录](maintenance/2026-10-13-project-review-fixes.md)。
 - 主按钮使用纯色 accent；导航取消彩色瓷贴背景；模板使用 `icons.svg` 描边图标。左右侧栏开合按钮复用 `panel-left` / `panel-right` 符号，统一使用窗口轮廓、单条分隔线和 16% 同色填充的侧栏分区，左右镜像，不再在窄分区内绘制箭头。这组共享 SVG 引用携带 Web 版本号，避免更新后继续显示旧图案。
-- 标题字体的文字字标“抖库”替代品牌图片。`brand-mark.png` 保留为未使用资产。
+- 左上角品牌链接显示 22×22px 图标和 Dou-wiki 字标，间距 8px、垂直居中，点击回首页，`aria-label="Dou-wiki 首页"`。图标按现有主题切换 `dou-wiki-mark.svg` / `dou-wiki-mark-dark.svg`；字标使用本地 Space Grotesk 700、18px / 1、字距 -0.065em、不换行，回落系统字体。文字颜色使用 `--brand-text`；浅色图标还提供 SVG favicon 和 32×32px PNG 备用。原 `brand-mark.png` 与已有静态资源 URL 保留兼容。页面标题和界面产品名统一为 Dou-wiki。
 - 不使用渐变、毛玻璃、卡片阴影或卡片阶梯入场。鼠标操作的主次按钮与图标按钮提供 `.97` 按压反馈，导航与正文不缩放；焦点环、浮层阴影与封面视图过渡保留。
 - 设置首页和 404 视图已移入 `<main>`，与其他页面使用同一主内容容器。
 - ≥1280px 使用常驻三栏：240px 左栏、自适应中栏、360px 右栏。小于 1280px 的右栏默认收起，打开为无背幕覆盖层；小于 960px 与 960px 相同，并因最小宽度横向滚动。不再使用抽屉或全屏 sheet。

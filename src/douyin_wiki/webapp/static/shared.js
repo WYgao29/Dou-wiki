@@ -164,7 +164,7 @@
     Douku.hideAllViews();
     Douku.setPage("not-found");
     Douku.$("not-found-view")?.classList.remove("hidden");
-    document.title = "页面不存在 · 抖库";
+    document.title = "页面不存在 · Dou-wiki";
   };
   Douku.tagPath = (name) => {
     const params = new URLSearchParams();

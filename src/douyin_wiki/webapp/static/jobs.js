@@ -376,7 +376,7 @@
       return false;
     }
     if (!isCurrent()) return false;
-    document.title = `${jobTitle(job)} · 抖库`;
+    document.title = `${jobTitle(job)} · Dou-wiki`;
     const header = D.node("header", null, "job-detail-summary");
     D.$("job-detail-title").textContent = jobTitle(job);
     const titleBox = document.createElement("div");
@@ -604,7 +604,7 @@
     } else {
       D.setPage("jobs");
       D.$("jobs-view").classList.remove("hidden");
-      document.title = "任务中心 · 抖库";
+      document.title = "任务中心 · Dou-wiki";
       if (!await loadList()) return false;
       D.warnIfWorkerDown("jobs-view");
     }

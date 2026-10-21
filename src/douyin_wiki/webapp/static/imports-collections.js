@@ -166,7 +166,7 @@
     epoch++; clearTimeout(timer);
     if (event.detail.path !== "/imports/collections") return;
     D.hideAllViews(); D.setPage("imports-collections"); D.setNav("imports-nav"); view.classList.remove("hidden");
-    document.title = "导入抖音合集 · 抖库"; D.warnIfWorkerDown("imports-collections-view");
+    document.title = "导入抖音合集 · Dou-wiki"; D.warnIfWorkerDown("imports-collections-view");
     await operation;
     if (!active()) return;
     const requested = new URLSearchParams(location.search).get("job");

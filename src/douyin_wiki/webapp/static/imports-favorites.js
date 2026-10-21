@@ -374,7 +374,7 @@
       stopPolling(); clearTimeout(elapsedTimer); clearTimeout(searchTimer); generation++; return;
     }
     D.hideAllViews(); D.setPage("imports-favorites"); D.setNav("imports-nav"); view.classList.remove("hidden");
-    document.title = "导入抖音收藏 · 抖库"; D.warnIfWorkerDown("imports-favorites-view");
+    document.title = "导入抖音收藏 · Dou-wiki"; D.warnIfWorkerDown("imports-favorites-view");
     const requested = new URLSearchParams(location.search).get("job");
     await run(async () => {
       if (requested !== jobId) { jobId = requested; resetView(); }

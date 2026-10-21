@@ -205,7 +205,7 @@
     D.setPage("system");
     D.setNav("settings-nav");
     D.$("system-view").classList.remove("hidden");
-    document.title = "系统设置 · 抖库";
+    document.title = "系统设置 · Dou-wiki";
     try {
       await load();
     } catch (error) {

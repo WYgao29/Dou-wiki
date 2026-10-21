@@ -30,4 +30,6 @@ uv run --with fonttools --with brotli pyftsubset NotoSerifSC-Regular.otf \
 - SIL Open Font License 1.1，许可随运行资源保存为 `SpaceGrotesk-OFL.txt`；不请求外部字体服务。
 - 文件 49,256 bytes；SHA-256：`8e085aa438094f11487a836652edd5c054fa6a96f63fc7c282105ee3a4b08c07`。
 
-许可文本统一为 LF 换行并移除行尾空白，许可正文保持原文；woff2 字节与上游原文件一致。
+Dou-wiki 字标另用 `SpaceGrotesk-700.woff2`，从上述固定版本的可变字体提取 700 字重，不引入其他字重或字体服务。生成时使用 fontTools 4.67.0 的 `instantiateVariableFont(font, {"wght": 700}, inplace=True, updateFontNames=True)`，读取源文件时设置 `recalcTimestamp=False`，保持 woff2 格式。输出不含可变轴，`OS/2.usWeightClass` 为 700，内部字体名为 Space Grotesk Bold；文件 31,580 bytes，SHA-256：`39fd46fc12aeba9509107bcb32c65084b9b2c3e61df37d1d7e97198ca03f20e3`，沿用同一份 `SpaceGrotesk-OFL.txt`。该静态字重使用 `font-display: swap`；现有可变字体仍供 UI 标题使用，正文和阅读字体保持原样。
+
+许可文本统一为 LF 换行并移除行尾空白，许可正文保持原文；除上述 700 字重派生文件外，woff2 字节与上游原文件一致。

@@ -326,7 +326,7 @@ def create_app(
                     task.cancel()
 
     app = FastAPI(
-        title="抖库 Web",
+        title="Dou-wiki Web",
         version="0.1",
         docs_url=None,
         redoc_url=None,

@@ -11,12 +11,17 @@
   src: url("/static/fonts/SpaceGrotesk-Variable.woff2") format("woff2");
 }
 
+@font-face {
+  font-family: "Space Grotesk"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/static/fonts/SpaceGrotesk-700.woff2") format("woff2");
+}
+
 /* 2. Design tokens */
 
 :root {
   color-scheme: light; --bg: #FFFFFF; --surface: #FFFFFF; --surface-sunken: #F7F7F8;
   --surface-hover: #16182008; --surface-selected: color-mix(in srgb, var(--accent) 8%, transparent);
-  --text: #16171A; --text-2: #5C5F66; --text-3: #7F8396;
+  --text: #16171A; --text-2: #5C5F66; --text-3: #7F8396; --brand-text: #16171A;
   --border: #16182014; --border-strong: #16182024;
   --overlay-backdrop: rgba(22, 24, 32, .24); --accent: #1E40AF; --accent-hover: #1E3A8A;
   --accent-pressed: var(--accent-hover); --accent-subtle: rgba(30, 64, 175, .08); --accent-text: var(--accent);
@@ -58,7 +63,7 @@
 :root[data-theme="dark"] {
   color-scheme: dark; --bg: #111214; --surface: #17181B; --surface-sunken: #0C0D0F;
   --surface-hover: #FFFFFF0A; --surface-selected: color-mix(in srgb, var(--accent) 12%, transparent);
-  --text: #EDEDEF; --text-2: #A1A4AB; --text-3: #6E717B;
+  --text: #EDEDEF; --text-2: #A1A4AB; --text-3: #6E717B; --brand-text: #ECECEE;
   --border: #FFFFFF14; --border-strong: #FFFFFF24;
   --overlay-backdrop: rgba(0, 0, 0, .55); --accent: #93C5FD; --accent-hover: #BFDBFE;
   --accent-pressed: var(--accent-hover); --accent-subtle: rgba(147, 197, 253, .14); --accent-text: var(--accent);
@@ -190,12 +195,16 @@ dialog h2, .empty-state h2 {
   padding: 0 var(--space-2);
 }
 .brand {
-  display: flex; min-width: 0; align-items: center; gap: var(--space-3); color: var(--text);
-  text-decoration: none;
+  display: flex; min-width: 0; align-items: center; gap: var(--space-2); color: var(--brand-text);
+  text-decoration: none; white-space: nowrap;
 }
-.brand-copy { min-width: 0; }
-.brand-copy strong {
-  display: block; font: var(--fw-semibold) var(--fs-16)/24px var(--font-heading);
+.brand-mark { display: block; width: 22px; height: 22px; flex: 0 0 22px; }
+.brand-mark-dark, :root[data-theme="dark"] .brand-mark-light { display: none; }
+:root[data-theme="dark"] .brand-mark-dark { display: block; }
+.brand-wordmark {
+  font-family: "Space Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  font-weight: 700; font-size: 18px; letter-spacing: -.065em; line-height: 1;
 }
 .primary-nav { display: grid; gap: 0; }
 .nav-item {

@@ -8,7 +8,7 @@
     if (event.detail.path !== "/settings/analysis") return;
     D.hideAllViews(); D.setPage("analysis"); D.setNav("settings-nav");
     D.$("analysis-view").classList.remove("hidden");
-    document.title = "导入分析 · 抖库";
+    document.title = "导入分析 · Dou-wiki";
     try {
       const status = await D.api("/api/system/analysis");
       if (token !== generation) return;

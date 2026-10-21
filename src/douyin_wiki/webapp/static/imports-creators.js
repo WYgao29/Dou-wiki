@@ -232,7 +232,7 @@
     D.setPage("imports-creators");
     D.setNav("imports-nav");
     D.$("imports-creators-view").classList.remove("hidden");
-    document.title = "博主导入 · 抖库";
+    document.title = "博主导入 · Dou-wiki";
     D.warnIfWorkerDown("imports-creators-view");
     const params = new URLSearchParams(location.search);
     jobId = params.get("job");

@@ -168,7 +168,7 @@
       body: JSON.stringify({channel}),
     });
     sessionId = session.id;
-    D.toast("正在打开本机浏览器，请完成登录。抖库不会读取密码或显示登录凭证。");
+    D.toast("正在打开本机浏览器，请完成登录。Dou-wiki 不会读取密码或显示登录凭证。");
     await load(true);
     stop();
     const tick = async () => {
@@ -187,7 +187,7 @@
     D.setPage("auth");
     D.setNav("settings-nav");
     D.$("auth-view").classList.remove("hidden");
-    document.title = "授权状态 · 抖库";
+    document.title = "授权状态 · Dou-wiki";
     focusedChannel = false;
     renderSkeleton();
     load(false).then((data) => {
