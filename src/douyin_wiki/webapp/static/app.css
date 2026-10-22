@@ -1783,6 +1783,7 @@ font-size: var(--fs-13); line-height: 20px;
 }
 .job-child-title { font-size: var(--fs-14); font-weight: var(--fw-medium); }
 .job-child-message { color: var(--text-2); font-size: var(--fs-13); }
+#topics-create-button { margin-inline-start: var(--space-4); }
 .topics-list {
 display: grid; gap: var(--space-3); margin-inline: 0;
 }
