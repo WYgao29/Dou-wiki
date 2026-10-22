@@ -2710,6 +2710,9 @@ function handleGlobalKeydown(event) {
     else if (panelBreakpoint() === "overlay" && isPanelOpen()) setChatPanelOpen(false);
     else if (state.pendingArticleRequest) showLibrary(false);
     else if (state.panelPage === "article") showLibrary();
+    else if (state.panelPage === "library" && event.target.closest(".nav-item[data-section]")) {
+      $("#main-content").focus({preventScroll: true});
+    }
     return;
   }
   if (editing || event.metaKey || event.ctrlKey || event.altKey) {

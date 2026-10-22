@@ -12,6 +12,41 @@ from playwright.async_api import expect
 from scripts.verify_review_web_races import block, browser_fixture, entered
 
 
+@pytest.mark.parametrize("view", ["list", "gallery"])
+async def test_escape_leaves_sidebar_navigation_and_keeps_tab_focus_visible(view):
+    async with browser_fixture() as (page, _topics, _gates):
+        if view == "gallery":
+            await page.locator("#view-gallery").click()
+        all_items = page.locator(".nav-item[data-section='all']")
+        await all_items.click()
+        before_url = page.url
+        await page.keyboard.press("Escape")
+        await expect(page.locator("#main-content")).to_be_focused()
+        assert not await all_items.evaluate("e => e.matches(':focus-visible')")
+        assert page.url == before_url
+        assert await page.locator("#library-results").evaluate(
+            "e => e.classList.contains('gallery')"
+        ) == (view == "gallery")
+
+        await all_items.focus()
+        await page.keyboard.press("Tab")
+        recent = page.locator(".nav-item[data-section='recent']")
+        await expect(recent).to_be_focused()
+        assert await recent.evaluate("e => e.matches(':focus-visible')")
+        assert await recent.evaluate("e => getComputedStyle(e).outlineWidth") == "2px"
+        await page.keyboard.press("Escape")
+        await expect(page.locator("#main-content")).to_be_focused()
+
+        await page.locator("#filter-toggle").click()
+        await page.keyboard.press("Escape")
+        await expect(page.locator("#filter-toggle")).to_be_focused()
+        await expect(page.locator("#filter-popover")).to_be_hidden()
+
+        await page.locator("#search-input").focus()
+        await page.keyboard.press("Escape")
+        await expect(page.locator("#search-input")).to_be_focused()
+
+
 @pytest.mark.parametrize("old_status", [200, 404, 500])
 @pytest.mark.parametrize("destination", ["/jobs/new", "/imports"])
 async def test_job_detail_discards_response_after_navigation(old_status, destination):
