@@ -448,11 +448,11 @@ a { color: var(--accent-text); }
   min-width: 0; flex: 1; border: 0; background: transparent; box-shadow: none;
   font-size: var(--fs-14);
 }
-.search-box kbd {
+.search-box kbd, .sidebar-quick-actions kbd {
   display: inline-flex; align-items: center; flex: 0 0 auto; gap: var(--space-1);
   white-space: nowrap;
 }
-.search-box kbd svg { width: 12px; height: 12px; }
+.search-box kbd svg, .sidebar-quick-actions kbd svg { width: 12px; height: 12px; }
 .popover-anchor { position: relative; }
 .filter-popover {
   position: fixed; z-index: 50;
