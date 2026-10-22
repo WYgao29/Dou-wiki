@@ -2189,7 +2189,7 @@ min-width: 0; white-space: normal; overflow-wrap: anywhere; border: 0;
 @media (hover: hover) and (pointer: fine) {
   .icon-button:hover { background: var(--surface-hover); color: var(--text); }
   .toolbar-button:hover:not(.active):not([aria-expanded="true"]), .select-control:hover {
-    background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
+    background: var(--surface-hover); color: var(--text);
   }
   #imports-toggle:hover:not([aria-expanded="true"]) {
     background: var(--accent); color: var(--on-accent);
