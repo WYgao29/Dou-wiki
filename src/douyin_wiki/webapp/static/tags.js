@@ -468,7 +468,7 @@
       if (!active() || state.view !== "all" || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
       if (D.chordPending || event.key === "g") return;
       if (document.querySelector("dialog[open]")) return;
-      if (event.target.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.target.closest("input, textarea, select, [role='combobox'], [contenteditable='true']")) return;
       if (event.key !== "j" && event.key !== "k") return;
       const rows = [...$("tags-rows").querySelectorAll("[data-tag-name]")];
       if (!rows.length) return;

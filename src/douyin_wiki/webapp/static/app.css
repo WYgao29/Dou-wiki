@@ -953,6 +953,65 @@ border: 1px solid var(--border-strong); border-radius: var(--radius); background
   flex: 0 0 auto; max-width: none; border: 0; background: transparent;
   font-size: var(--fs-13); height: 32px;
 }
+.select-widget {
+  position: relative; display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: 100%;
+  width: min(24rem, calc(var(--select-label-width, 120px) + 44px)); vertical-align: middle;
+}
+.select-widget > .select-native {
+  position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important;
+  min-width: 0 !important; max-width: none !important; margin: 0 !important; padding: 0 !important;
+  opacity: 0 !important; pointer-events: none;
+}
+.select-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; min-width: 0; height: 32px; padding: 0 10px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font: 400 var(--fs-13)/1 var(--font-ui);
+  text-align: left; cursor: pointer; user-select: none;
+  transition: background-color var(--dur-fast), border-color var(--dur-fast);
+}
+.select-value { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-trigger .select-chevron { flex: 0 0 14px; width: 14px; height: 14px; color: var(--text-3); transform: rotate(90deg); }
+.select-trigger[aria-expanded="true"] .select-chevron { transform: rotate(-90deg); }
+.select-trigger[aria-expanded="true"] { background: var(--surface-sunken); border-color: var(--border-strong); }
+.select-trigger:focus { outline: 0; box-shadow: none; }
+:root[data-input-method="keyboard"] .select-trigger:focus-visible { box-shadow: inset 0 -2px 0 var(--accent); }
+.select-trigger[aria-invalid="true"] { border-color: var(--danger); box-shadow: inset 0 -2px 0 var(--danger); }
+.select-trigger:disabled { opacity: .5; cursor: not-allowed; }
+.select-control .select-widget { flex: 0 1 auto; width: calc(var(--select-label-width, 120px) + 26px); }
+.select-control .select-trigger { border: 0; padding: 0 4px 0 0; background: transparent; color: inherit; }
+.select-control:hover, .select-control:has(.select-trigger[aria-expanded="true"]) { background: var(--surface-hover); color: var(--text); }
+.library-toolbar .search-mode-control .select-widget { flex: 1 1 auto; width: 100%; }
+.library-toolbar .search-mode-control .select-trigger { padding-left: 8px; }
+.theme-control .select-widget { flex: 0 0 auto; width: calc(var(--select-label-width, 60px) + 32px); max-width: 102px; }
+.theme-control .select-trigger { padding-inline: 4px; border: 0; background: transparent; color: var(--text-2); font-size: var(--fs-12); }
+.favorites-controls .select-widget { min-width: 12rem; max-width: 28rem; }
+.fav-field .select-widget, .fav-toolbar > .select-widget { min-width: 11rem; }
+.inspiration-dialog label .select-widget, .settings-field .select-widget,
+.tag-duplicate-group .select-widget { width: 100%; min-width: 0; }
+.select-menu {
+  position: fixed; inset: auto; z-index: 1000; box-sizing: border-box; margin: 0; padding: 4px;
+  min-width: 0; max-width: calc(100vw - 16px); max-height: 320px; overflow: auto; overscroll-behavior: contain;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface);
+  color: var(--text); box-shadow: var(--shadow-overlay); font: 400 var(--fs-13)/1.4 var(--font-ui);
+  user-select: none; scrollbar-width: thin;
+}
+.select-menu::backdrop { background: transparent; pointer-events: none; }
+.select-option {
+  display: flex; align-items: center; gap: 12px; min-height: 32px; padding: 6px 8px;
+  border-radius: 4px; cursor: pointer;
+}
+.select-option-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.select-option > svg { flex: 0 0 14px; width: 14px; height: 14px; color: var(--accent); visibility: hidden; }
+.select-option[aria-selected="true"] { font-weight: 500; }
+.select-option[aria-selected="true"] > svg { visibility: visible; }
+.select-option.is-highlighted { background: var(--surface-hover); }
+.select-option[aria-disabled="true"] { color: var(--text-3); cursor: not-allowed; opacity: .65; }
+.select-menu-group, .select-menu-empty { padding: 6px 8px; color: var(--text-3); font-size: var(--fs-12); }
+@media (hover: hover) and (pointer: fine) {
+  .select-trigger:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--border-strong); }
+  .select-control .select-trigger:hover:not(:disabled) { background: transparent; }
+}
 .segmented-control {
   display: inline-flex; flex: 0 0 auto; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface-sunken);
@@ -2189,7 +2248,7 @@ min-width: 0; white-space: normal; overflow-wrap: anywhere; border: 0;
 
 @media (hover: hover) and (pointer: fine) {
   .icon-button:hover { background: var(--surface-hover); color: var(--text); }
-  .toolbar-button:hover:not(.active):not([aria-expanded="true"]), .select-control:hover {
+  .toolbar-button:hover:not(.active):not([aria-expanded="true"]) {
     background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
   }
   #imports-toggle:hover:not([aria-expanded="true"]) {

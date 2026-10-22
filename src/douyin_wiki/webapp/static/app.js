@@ -2697,7 +2697,7 @@ function resetNavigationPrefix() {
 function handleGlobalKeydown(event) {
   if (event.defaultPrevented || event.isComposing) return;
   const key = event.key.toLowerCase();
-  const editing = Boolean(event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])"));
+  const editing = Boolean(event.target.closest("input, textarea, select, [role='combobox'], [contenteditable]:not([contenteditable='false'])"));
   const modal = $("dialog[open]");
   if (modal) { resetNavigationPrefix(); return; }
   if ((event.metaKey || event.ctrlKey) && key === "k") {
@@ -3094,6 +3094,9 @@ function bindEvents() {
   });
   $$('[data-theme-select]').forEach((select) => select.addEventListener("change", (event) => window.DoukuTheme?.set(event.target.value)));
   document.addEventListener("keydown", handleGlobalKeydown);
+  document.addEventListener("douku:select-open", () => {
+    resetNavigationPrefix(); closeEntryMenu(); closeFilterPopover();
+  });
   document.addEventListener("click", (event) => {
     if (panelBreakpoint() === "overlay" && isPanelOpen() && event.target.closest("#main-content") && !event.target.closest("#chat-toggle")) setChatPanelOpen(false);
     if (!event.target.closest("#entry-menu, .entry-more")) closeEntryMenu();
