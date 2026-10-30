@@ -453,6 +453,9 @@
     const children = D.node("section", null, "job-children");
     children.id = "job-children";
     const childList = job.children || [];
+    const childWarnings = (child) => (Array.isArray(child.result?.warnings) ? child.result.warnings : []).map((item) => String(item).trim()).filter(Boolean);
+    const hasWarning = (child) => child.status === "completed_with_warnings" || childWarnings(child).length > 0;
+    const warningCount = childList.filter(hasWarning).length;
     const stats = job.child_stats || {};
     const hasChildWork = childList.length > 0 || Number(stats.total || 0) > 0
       || Number(stats.completed || 0) > 0 || Number(stats.running || 0) > 0
@@ -463,25 +466,24 @@
       const childHeading = D.node("div");
       childHeading.append(D.node("h2", "子任务"));
       if (job.child_stats) {
-        childHeading.append(D.node("p", `成功 ${stats.completed || 0} · 处理中 ${stats.running || 0} · 等待本人 ${stats.waiting_user || 0} · 失败 ${stats.failed || 0}`));
+        childHeading.append(D.node("p", `成功 ${stats.completed || 0} · 处理中 ${stats.running || 0} · 等待本人 ${stats.waiting_user || 0} · 失败 ${stats.failed || 0} · 有提示 ${warningCount}`));
       }
       childHeader.append(childHeading);
       const state = childPages.get(job.id) || {page: 1, filter: "all"};
       childPages.set(job.id, state);
       const toolbar = D.node("div", null, "fav-toolbar"), filter = D.node("select");
       filter.setAttribute("aria-label", "筛选子任务");
-      for (const [value, text] of [["all", "全部子任务"], ["unfinished", "未完成子任务"], ["failed", "失败子任务"]]) {
+      for (const [value, text] of [["all", "全部子任务"], ["unfinished", "未完成子任务"], ["failed", "失败子任务"], ["warnings", `有提示子任务（${warningCount}）`]]) {
         const option = D.node("option", text); option.value = value; filter.append(option);
       }
       filter.value = state.filter; toolbar.append(filter); childHeader.append(toolbar);
       const rows = D.node("div", null, "job-child-list"), pager = D.node("nav", null, "fav-toolbar fav-pager");
       const previous = D.node("button", "上一页子任务", "secondary-button"), next = D.node("button", "下一页子任务", "secondary-button"), label = D.node("span");
       previous.type = next.type = "button"; pager.append(previous, label, next);
-      const childWarnings = (child) => (Array.isArray(child.result?.warnings) ? child.result.warnings : []).map((item) => String(item).trim()).filter(Boolean);
       const renderChildren = () => {
         const filtered = childList.filter((child) => state.filter === "all" ||
-          (state.filter === "failed" ? child.status === "failed" : !terminal.has(child.status)));
-        filtered.sort((left, right) => Number(childWarnings(right).length > 0) - Number(childWarnings(left).length > 0));
+          (state.filter === "warnings" ? hasWarning(child) : state.filter === "failed" ? child.status === "failed" : !terminal.has(child.status)));
+        filtered.sort((left, right) => Number(hasWarning(right)) - Number(hasWarning(left)));
         const pages = Math.max(1, Math.ceil(filtered.length / 50));
         state.page = Math.min(pages, Math.max(1, state.page)); rows.replaceChildren();
         for (const child of filtered.slice((state.page - 1) * 50, state.page * 50)) {
@@ -496,6 +498,8 @@
           row.type = "button"; row.addEventListener("click", () => D.navigate("/jobs/" + encodeURIComponent(child.id))); rows.append(row);
         }
         label.textContent = state.page + " / " + pages + " 页 · " + filtered.length + " 个任务";
+        if (!filtered.length) rows.append(D.node("p", state.filter === "warnings"
+          ? "没有带提示的子任务。" : "没有符合筛选条件的子任务。", "hint-copy"));
         previous.disabled = state.page <= 1; next.disabled = state.page >= pages;
       };
       filter.addEventListener("change", () => { state.filter = filter.value; state.page = 1; renderChildren(); });
@@ -519,6 +523,14 @@
         list.append(D.node("li", String(warning)));
       }
       warningsPanel.append(list);
+      if (warnings.some((warning) => /粗略|未经精确对齐|窗口时间/.test(String(warning)))) {
+        warningsPanel.append(D.node("p", "粗略时间表示定位精度有限，不等于导入失败；请结合子任务状态查看。", "hint-copy"));
+      }
+      if (warnings.length > 3) {
+        const disclosure = D.node("details", null, "job-warning-details");
+        disclosure.append(D.node("summary", `查看全部 ${warnings.length} 条提示`), list);
+        warningsPanel.append(disclosure);
+      }
     }
     const review = D.node("section", null, "review-panel");
     if (job.review_issues?.length) {
@@ -574,8 +586,8 @@
     if ((analysis.textContent || "").trim()) parts.push(analysis);
     if (media.childNodes.length) parts.push(media);
     if (timeline.childNodes.length) parts.push(timeline);
-    if (children.childNodes.length) parts.push(children);
     if (warningsPanel.childNodes.length) parts.push(warningsPanel);
+    if (children.childNodes.length) parts.push(children);
     if (review.childNodes.length) parts.push(review);
     if (evidenceAudit.childNodes.length) parts.push(evidenceAudit);
     if (!isCurrent()) return false;

@@ -16,7 +16,7 @@ from tests.support.web import _web_fixture, local_client
 
 
 @asynccontextmanager
-async def browser_fixture(*, startup_gate=None, initial_route=None):
+async def browser_fixture(*, startup_gate=None, initial_route=None, prepare=None):
     with (
         TemporaryDirectory(prefix="douku-web-races-") as tmp,
         patch.dict("os.environ", {"DOUYIN_WIKI_BROWSER_PROFILE": str(Path(tmp) / "profile")}),
@@ -30,6 +30,8 @@ async def browser_fixture(*, startup_gate=None, initial_route=None):
             service.create_topic(title, ["dy-123"])["topic"]["id"]
             for title in ["第一个专题", "第二个专题"]
         ]
+        if prepare is not None:
+            prepare(config, service)
         app = create_app(
             config, service=service,  start_watcher=False
         )

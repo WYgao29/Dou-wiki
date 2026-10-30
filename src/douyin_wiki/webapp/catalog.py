@@ -182,6 +182,72 @@ class LibraryCatalog:
         with self._lock:
             return self._items.get(entry_id)
 
+    @staticmethod
+    def search_match(item: LibraryItem, query: str, *, fuzzy: bool = False) -> dict | None:
+        """Explain a keyword hit without exposing the full note or inventing evidence times."""
+        needle = query.casefold().strip()
+        if not needle:
+            return None
+        body = next(
+            (
+                part
+                for part in re.split(r"\n\s*\n", item.body_markdown)
+                if needle in part.casefold()
+            ),
+            item.body_markdown,
+        )
+        unheaded = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", body)
+        if needle in unheaded.casefold():
+            body = unheaded
+        fields = [
+            ("title", item.title),
+            ("author", item.author),
+            ("tags", " ".join(item.tags)),
+            ("summary", item.summary),
+            ("inspiration", " ".join(value.text for value in item.inspirations)),
+            ("body", body),
+        ]
+        for field, value in fields:
+            text = re.sub(r"\s+", " ", value).strip()
+            folded = text.casefold()
+            start = folded.find(needle)
+            if start < 0:
+                continue
+            end = start + len(needle)
+            if len(folded) != len(text):
+                # Case folding can expand a character (ß -> ss); retain its actual spelling.
+                offset = 0
+                original_start = 0
+                for index, char in enumerate(text):
+                    next_offset = offset + len(char.casefold())
+                    if offset <= start < next_offset:
+                        original_start = index
+                    if offset < end <= next_offset:
+                        start, end = original_start, index + 1
+                        break
+                    offset = next_offset
+            left = max(0, start - min(16, max(0, (160 - (end - start)) // 2)))
+            right = min(len(text), left + 160)
+            return {
+                "field": field,
+                "before": ("…" if left else "") + text[left:start],
+                "match": text[start : min(end, right)],
+                "after": text[min(end, right) : right] + ("…" if right < len(text) else ""),
+                "approximate": False,
+            }
+        if fuzzy:
+            for field, value in fields[:3]:
+                letters = iter(value.casefold())
+                if all(char in letters for char in needle):
+                    return {
+                        "field": field,
+                        "before": "",
+                        "match": "",
+                        "after": value[:160] + ("…" if len(value) > 160 else ""),
+                        "approximate": True,
+                    }
+        return None
+
     def filter(
         self,
         *,

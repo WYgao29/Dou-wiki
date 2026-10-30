@@ -29,6 +29,7 @@ const state = {
   libraryLoadedQuery: null,
   pendingArticleRequest: 0,
   readerObserver: null,
+  readerTocTarget: "",
   readingBlocks: [],
   readingIndex: -1,
   readingProgressFrame: null,
@@ -50,6 +51,7 @@ const state = {
   commandArticles: [],
   commandSearch: 0,
   commandTimer: 0,
+  commandStatus: "idle",
   currentEntry: document.body.dataset.entryId || "",
   currentArticleItem: null,
   currentTopic: document.body.dataset.topicId || "",
@@ -726,7 +728,22 @@ function searchWindowLocation(evidence) {
   return `约 ${formattedStart}–${formattedEnd}（时间未经精确对齐）`;
 }
 
+function makeKeywordMatch(item) {
+  const match = item.search_match;
+  if (!match) return null;
+  const labels = {title: "标题", author: "博主", tags: "标签", summary: "摘要", inspiration: "灵感", body: "正文"};
+  const label = `${labels[match.field] || "内容"}${match.approximate ? "（近似匹配）" : ""}`;
+  const row = window.Douku.node("p", null, "search-match");
+  row.append(document.createTextNode(`${label}：${match.before || ""}`));
+  if (match.match) row.append(window.Douku.node("mark", match.match));
+  row.append(document.createTextNode(match.after || ""));
+  row.title = row.textContent;
+  return row;
+}
+
 function makeSearchEvidence(item) {
+  const keyword = makeKeywordMatch(item);
+  if (keyword) return keyword;
   const evidence = item.search_evidence?.find((match) => match && (
     match.timestamp_ms != null || match.image_index != null || match.timestamp_precision === "window"
   )) || item.search_evidence?.[0];
@@ -812,7 +829,12 @@ function makeGalleryCard(item) {
   copy.append(window.Douku.node("h2", item.title || "未命名文章"));
   const inspirations = makeInspirationPreview(item); if (inspirations) copy.append(inspirations);
   copy.append(makeMetadata(item));
-  const evidence = makeSearchEvidence(item); if (evidence) copy.append(evidence);
+  const evidence = makeSearchEvidence(item);
+  if (evidence) {
+    evidence.id = `gallery-match-${item.entry_id}`;
+    link.setAttribute("aria-describedby", evidence.id);
+    copy.append(evidence);
+  }
   link.append(cover, copy); article.append(link);
   if (item.favorite) { const badge = window.Douku.node("span", null, "gallery-favorite"); badge.append(svgIcon("bookmark")); badge.setAttribute("aria-label", "库内收藏"); cover.append(badge); }
   if (state.topicSelectionMode) article.append(makeSelectionIndicator(item.entry_id));
@@ -1660,6 +1682,8 @@ function makeArticleKeyframes(frames, videoUrl, {open = false, keep = false} = {
   const details = window.Douku.node("details", null, "article-keyframes");
   details.open = open;
   const summary = window.Douku.node("summary");
+  summary.id = "article-keyframes-summary";
+  summary.dataset.tocLabel = `关键帧 · ${frames.length}张`;
   const title = window.Douku.node("span", "Video Snapshots", "article-section-title"); title.lang = "en";
   const meta = window.Douku.node("span", `${frames.length} ${frames.length === 1 ? "image" : "images"}${keep ? " · Kept" : ""}`, "article-section-meta"); meta.lang = "en";
   summary.append(svgIcon("chevron-right", "article-disclosure-icon"), title, meta);
@@ -1696,6 +1720,8 @@ function makeArticleTranscript(transcript, {open = false} = {}) {
   const details = window.Douku.node("details", null, "article-transcript");
   details.open = open;
   const summary = window.Douku.node("summary");
+  summary.id = "article-transcript-summary";
+  summary.dataset.tocLabel = `逐字稿 · ${rows.length}段`;
   const source = transcript.source === "corrected" ? "Corrected" : "Original";
   const title = window.Douku.node("span", "Transcript", "article-section-title"); title.lang = "en";
   const meta = window.Douku.node("span", `${source} · ${rows.length} ${rows.length === 1 ? "segment" : "segments"}`, "article-section-meta"); meta.lang = "en";
@@ -1786,6 +1812,7 @@ function openAdjacentArticle(delta) {
 }
 
 function clearReader() {
+  state.readerTocTarget = "";
   state.readerObserver?.disconnect(); state.readerObserver = null;
   state.readingBlocks = []; state.readingIndex = -1;
   if (state.readingProgressFrame !== null) cancelAnimationFrame(state.readingProgressFrame);
@@ -1870,6 +1897,10 @@ function decorateArticleImages(body, item) {
   heading.after(figures);
 }
 
+function readerTocTargets() {
+  return $$("#article-content .article-body h2, #article-content .article-body h3, #article-content .article-body summary[data-toc-label]");
+}
+
 function buildReaderToc() {
   state.readerObserver?.disconnect();
   const root = $("#reader-toc");
@@ -1878,21 +1909,25 @@ function buildReaderToc() {
   back.append(svgIcon("arrow-left"), window.Douku.node("span", "资料库"));
   back.addEventListener("click", () => showLibrary());
   const links = window.Douku.node("div", null, "reader-toc-items");
-  const headings = $$("#article-content .article-body h2, #article-content .article-body h3");
-  headings.forEach((heading, index) => {
-    heading.id = `h-${index}`;
-    const link = window.Douku.node("a", null, `toc-item toc-${heading.tagName.toLowerCase()}`);
+  const headings = readerTocTargets();
+  let headingIndex = 0;
+  headings.forEach((heading) => {
+    const material = Boolean(heading.dataset.tocLabel);
+    if (!material) heading.id = `h-${headingIndex++}`;
+    const link = window.Douku.node("a", null, `toc-item toc-${material ? "h2" : heading.tagName.toLowerCase()}`);
     link.href = `#${heading.id}`; link.dataset.headingId = heading.id;
     const time = heading.querySelector(".chapter-time");
     if (time) {
       link.append(time.cloneNode(true), document.createTextNode(heading.textContent.slice(time.textContent.length).trim()));
-    } else link.textContent = heading.textContent;
+    } else link.textContent = heading.dataset.tocLabel || heading.textContent;
     if (heading.lang) link.lang = heading.lang;
-    link.title = heading.textContent.trim();
+    link.title = heading.dataset.tocLabel || heading.textContent.trim();
     link.addEventListener("click", (event) => {
       event.preventDefault();
+      if (material) heading.parentElement.open = true;
       heading.scrollIntoView({block: "start", behavior: "instant"});
       focusReadingBlock(state.readingBlocks.indexOf(heading), {scroll: false});
+      state.readerTocTarget = material ? heading.id : "";
       $("#main-content").focus({preventScroll: true}); updateReadingMetrics();
     });
     links.append(link);
@@ -1922,6 +1957,7 @@ function initReadingFocus() {
   };
   [...body.children].forEach((node) => {
     if (node.matches("ul,ol")) listItems(node);
+    else if (node.matches("details.article-transcript, details.article-keyframes")) blocks.push(node.querySelector("summary"));
     else if (node.matches("p,h2,h3,h4,blockquote,table,pre,img,figure") && visible(node)) blocks.push(node);
   });
   state.readingBlocks = blocks; state.readingIndex = -1;
@@ -1957,11 +1993,17 @@ function updateReadingMetrics() {
   const progress = extent > 0 ? Math.max(0, Math.min(1, main.scrollTop / extent)) : 1;
   $("#reading-progress-fill").style.width = `${progress * 100}%`;
   $(".reading-progress").setAttribute("aria-valuenow", String(Math.round(progress * 100)));
-  const headings = $$("#article-content .article-body h2, #article-content .article-body h3");
+  const headings = readerTocTargets();
   const top = main.getBoundingClientRect().top + 64;
   let active = headings[0];
   headings.forEach((heading) => { if (heading.getBoundingClientRect().top <= top + 1) active = heading; });
   if (extent > 0 && progress >= .999) active = headings.at(-1);
+  const requested = headings.find((heading) => heading.id === state.readerTocTarget);
+  if (requested) {
+    const rect = requested.getBoundingClientRect(), bounds = main.getBoundingClientRect();
+    if (rect.bottom > bounds.top + 48 && rect.top < bounds.bottom) active = requested;
+    else state.readerTocTarget = "";
+  }
   $$("#reader-toc .toc-item").forEach((link) => {
     const current = link.dataset.headingId === active?.id;
     link.classList.toggle("active", current);
@@ -2519,6 +2561,7 @@ function scheduleCommandSearch() {
   window.clearTimeout(state.commandTimer);
   const token = ++state.commandSearch;
   state.commandArticles = [];
+  state.commandStatus = query ? "loading" : "idle";
   if (!query) {
     state.commandArticles = [];
     renderCommandResults();
@@ -2530,9 +2573,11 @@ function scheduleCommandSearch() {
       const data = await api(`/api/library?q=${encodeURIComponent(query)}&limit=8&fuzzy=true`);
       if (token !== state.commandSearch || commandQuery() !== query) return;
       state.commandArticles = data.items || [];
+      state.commandStatus = "ready";
     } catch (_error) {
       if (token !== state.commandSearch) return;
       state.commandArticles = [];
+      state.commandStatus = "error";
     }
     renderCommandResults();
   }, 180);
@@ -2546,9 +2591,30 @@ function syncCommandActiveState(root) {
   });
 }
 
+function renderCommandStatus(items) {
+  const root = $("#command-status");
+  const status = state.commandStatus;
+  const message = status === "loading" ? "正在搜索文章…"
+    : status === "error" ? "暂时无法搜索文章，请重试。"
+    : status === "ready" && !items.length ? "没有找到匹配的文章或命令。" : "";
+  $("#command-results").setAttribute("aria-busy", String(status === "loading"));
+  if (root.dataset.state === status && root.dataset.message === message) return;
+  root.dataset.state = status; root.dataset.message = message;
+  root.replaceChildren(); root.hidden = !message;
+  if (!message) return;
+  root.append(window.Douku.node("p", message));
+  if (status === "error") {
+    const retry = window.Douku.node("button", "重试搜索", "secondary-button is-sm");
+    retry.type = "button";
+    retry.addEventListener("click", () => { scheduleCommandSearch(); $("#command-input").focus(); });
+    root.append(retry);
+  }
+}
+
 function renderCommandResults() {
   const root = $("#command-results");
   const items = commandMatches();
+  renderCommandStatus(items);
   state.commandIndex = Math.max(0, Math.min(state.commandIndex, items.length - 1));
   const existing = $$(".command-result", root);
   const sameList = existing.length === items.length
@@ -2571,6 +2637,7 @@ function renderCommandResults() {
     const meta = document.createElement("span");
     meta.textContent = item.commandId ? "" : `${item.author} · ${item.content_type_label}`;
     copy.append(title, meta);
+    const match = makeKeywordMatch(item); if (match) copy.append(match);
     if (item.commandId) {
       const icon = window.Douku.node("span", null, "command-icon"); icon.append(svgIcon(item.icon));
       button.append(icon, copy);
@@ -2598,12 +2665,6 @@ function renderCommandResults() {
     return button;
   }));
   if (items.some((item) => item.commandId)) root.prepend(window.Douku.node("p", "命令", "command-group-title"));
-  if (!items.length) {
-    const empty = document.createElement("p");
-    empty.className = "command-help";
-    empty.textContent = "无匹配";
-    root.append(empty);
-  }
 }
 
 async function openCommandMenu() {
@@ -3042,6 +3103,11 @@ function bindEvents() {
   });
   $("#inspiration-dialog").addEventListener("close", () => state.lastDialogTrigger?.focus());
   $("#command-input").addEventListener("input", () => { state.commandIndex = 0; scheduleCommandSearch(); });
+  $("#command-dialog").addEventListener("close", () => {
+    window.clearTimeout(state.commandTimer);
+    state.commandSearch++;
+    state.commandStatus = "idle";
+  });
   $("#command-input").addEventListener("keydown", (event) => {
     if (event.key === "Escape") { event.preventDefault(); $("#command-dialog").close(); return; }
     const length = commandMatches().length;

@@ -682,7 +682,7 @@ async def test_scope_changes_and_command_query_clears_old_results(ui):
     await page.locator("#command-results [data-entry-id='dy-123']").wait_for()
     await page.fill("#command-input", "zzzzzzzz")
     assert await page.locator("#command-results [data-entry-id]").count() == 0
-    await page.locator("#command-results").get_by_text("无匹配", exact=True).wait_for()
+    await expect(page.locator("#command-status")).to_have_text("没有找到匹配的文章或命令。")
     await page.keyboard.press("Enter")
     assert await page.locator("#command-dialog").evaluate("node => node.open")
     await page.fill("#command-input", "测文章")
@@ -732,7 +732,7 @@ async def test_tag_actions_stay_inside_visible_main_column(ui, width, theme):
     service.tags.rename(old_name, new_name)
     await page.set_viewport_size({"width": width, "height": 868})
     await page.goto("http://testserver/tags")
-    await page.get_by_label("选择页面主题").select_option(theme)
+    await page.locator("select[data-theme-select]").select_option(theme)
     await expect(page.locator("#tags-rows tr")).to_have_count(4)
 
     async def assert_controls_inside(selector):
@@ -879,6 +879,7 @@ async def test_empty_library_hides_source_tabs_and_restores_them_after_updates(u
     assert "source=" not in page.url
 
     async def notify():
+        await page.wait_for_function("Boolean(window.libraryEvents)")
         await page.evaluate(
             "window.libraryEvents.dispatchEvent(new MessageEvent('library',"
             " {data:JSON.stringify({origins:[window.Douku.clientId]})}));"
@@ -1222,7 +1223,7 @@ async def test_reader_focus_fonts_and_selection_guidance(ui, tmp_path):
     await expect(page.locator("#reader-toc .toc-h2")).to_have_text(
         [
             "灵感", "Summary", "Key Takeaways", "Chapters", "Quick Reference · List",
-            "Next Steps", "Sources",
+            "Next Steps", "逐字稿 · 0段", "关键帧 · 0张", "Sources",
         ]
     )
     await expect(page.locator(".article-transcript .article-section-title")).to_have_text(

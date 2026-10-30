@@ -174,7 +174,7 @@ def _library_facets(all_items, tags):
     }
 
 
-def _item_payload(item: Any) -> dict[str, Any]:
+def _item_payload(item: Any, *, query: str = "", fuzzy: bool = False) -> dict[str, Any]:
     payload = item.model_dump(mode="json", exclude={"body_markdown"})
     payload["content_type_label"] = CONTENT_TYPE_LABELS.get(item.content_type, "其他")
     payload["status"] = label_entry_status(item.status)
@@ -183,6 +183,10 @@ def _item_payload(item: Any) -> dict[str, Any]:
     payload["captured_at"] = beijing_iso(item.captured_at)
     payload["captured_display"] = format_beijing(item.captured_at)
     payload["inspirations"] = [value.model_dump(mode="json") for value in item.inspirations]
+    if query.strip():
+        match = LibraryCatalog.search_match(item, query, fuzzy=fuzzy)
+        if match is not None:
+            payload["search_match"] = match
     return payload
 
 
@@ -583,7 +587,7 @@ def create_app(
             items = items[:limit]
         all_items = catalog.list_items()
         return {
-            "items": [_item_payload(item) for item in items],
+            "items": [_item_payload(item, query=q, fuzzy=fuzzy) for item in items],
             "facets": _library_facets(all_items, tags),
             "total": len(items),
             "limit": limit,
