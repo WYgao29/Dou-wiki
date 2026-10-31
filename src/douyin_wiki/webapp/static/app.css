@@ -926,10 +926,12 @@ content: "!" / ""; position: absolute; left: var(--space-4); top: 14px;
   -webkit-box-orient: vertical; -webkit-line-clamp: 2;
   margin: var(--space-1) 0 0; color: var(--text-2); font: var(--fw-regular) var(--fs-13)/20px var(--font-ui);
 }
-.search-match mark { color: var(--accent-text); background: var(--accent-subtle); }
+.search-match mark, .result-title mark { color: var(--accent-text); background: var(--accent-subtle); }
+.item-copy .search-match { margin: 0; }
+.gallery-copy :is(.search-match, .search-evidence) { margin: 0 0 var(--space-1); }
 .command-result > div { min-width: 0; }
 .command-result .search-match { font-size: var(--fs-12); line-height: 20px; }
-.library-item:has(.search-match) { height: auto; min-height: 88px; padding-block: var(--space-3); }
+.library-item:has(.search-match, .result-title mark) { height: auto; min-height: 88px; padding-block: var(--space-3); }
 .command-result {
   grid-template-columns: 24px minmax(0,1fr) auto; gap: var(--space-3); min-height: 36px;
   padding: var(--space-1) var(--space-2); border-radius: var(--radius); scroll-margin-block: var(--space-1);
@@ -2364,6 +2366,7 @@ min-width: 0; white-space: normal; overflow-wrap: anywhere; border: 0;
 /* Saved materials and scoped text search. */
 .keyframe-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin-top: 16px; }
 .keyframe-grid figure { min-width: 0; margin: 0; }
+.keyframe-grid figure > a { display: block; border-radius: var(--radius); }
 .keyframe-grid img { display: block; width: 100%; height: 150px; margin: 0; object-fit: contain; border-radius: var(--radius); background: var(--surface-sunken); }
 .keyframe-grid figcaption { margin-top: 6px; text-align: center; font-size: var(--fs-12); font-family: var(--font-ui); color: var(--text-2); }
 .search-evidence { margin: 8px 0 0; font-size: var(--fs-13); color: var(--text-2); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }

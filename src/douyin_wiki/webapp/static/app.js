@@ -728,9 +728,28 @@ function searchWindowLocation(evidence) {
   return `约 ${formattedStart}–${formattedEnd}（时间未经精确对齐）`;
 }
 
+function titleMatchIndex(item) {
+  const match = item.search_match;
+  return match?.field === "title" && !match.approximate && match.match
+    ? (item.title || "").indexOf(match.match) : -1;
+}
+
+function makeResultTitle(item, tag = "h2") {
+  const title = window.Douku.node(tag, null, "result-title");
+  const text = item.title || "未命名文章";
+  const index = titleMatchIndex(item);
+  if (index < 0) title.textContent = text;
+  else {
+    const match = item.search_match.match;
+    title.append(document.createTextNode(text.slice(0, index)), window.Douku.node("mark", match),
+      document.createTextNode(text.slice(index + match.length)));
+  }
+  return title;
+}
+
 function makeKeywordMatch(item) {
   const match = item.search_match;
-  if (!match) return null;
+  if (!match || titleMatchIndex(item) >= 0) return null;
   const labels = {title: "标题", author: "博主", tags: "标签", summary: "摘要", inspiration: "灵感", body: "正文"};
   const label = `${labels[match.field] || "内容"}${match.approximate ? "（近似匹配）" : ""}`;
   const row = window.Douku.node("p", null, "search-match");
@@ -776,10 +795,12 @@ function makeListItem(item) {
   const link = window.Douku.node("a", null, "library-item-link");
   bindEntryLink(link, item);
   const copy = window.Douku.node("div", null, "item-copy");
-  copy.append(window.Douku.node("h2", item.title),
-    makeInspirationPreview(item) || window.Douku.node("p", item.summary || "暂无一句话摘要", `item-summary${item.summary ? "" : " is-empty"}`),
-    makeMetadata(item, {tags: true}));
+  copy.append(makeResultTitle(item));
   const evidence = makeSearchEvidence(item); if (evidence) copy.append(evidence);
+  const inspirations = makeInspirationPreview(item);
+  if (inspirations) copy.append(inspirations);
+  else if (!evidence) copy.append(window.Douku.node("p", item.summary || "暂无一句话摘要", `item-summary${item.summary ? "" : " is-empty"}`));
+  copy.append(makeMetadata(item, {tags: true}));
   link.append(makeCover(item, "item-thumbnail"), copy);
   const side = window.Douku.node("div", null, "item-side");
   side.append(window.Douku.node("time", shortDate(state.sort === "captured_desc" ? item.captured_at : item.published_at), "item-date"));
@@ -826,15 +847,15 @@ function makeGalleryCard(item) {
   const accessibleName = galleryAccessibleName(item); link.setAttribute("aria-label", `打开文章：${accessibleName}`); link.title = accessibleName;
   const cover = makeCover(item, "gallery-cover"); bindEntryLink(link, item, cover);
   const copy = window.Douku.node("div", null, "gallery-copy");
-  copy.append(window.Douku.node("h2", item.title || "未命名文章"));
+  copy.append(makeResultTitle(item));
   const inspirations = makeInspirationPreview(item); if (inspirations) copy.append(inspirations);
-  copy.append(makeMetadata(item));
   const evidence = makeSearchEvidence(item);
   if (evidence) {
     evidence.id = `gallery-match-${item.entry_id}`;
     link.setAttribute("aria-describedby", evidence.id);
     copy.append(evidence);
   }
+  copy.append(makeMetadata(item));
   link.append(cover, copy); article.append(link);
   if (item.favorite) { const badge = window.Douku.node("span", null, "gallery-favorite"); badge.append(svgIcon("bookmark")); badge.setAttribute("aria-label", "库内收藏"); cover.append(badge); }
   if (state.topicSelectionMode) article.append(makeSelectionIndicator(item.entry_id));
@@ -1928,7 +1949,8 @@ function buildReaderToc() {
       heading.scrollIntoView({block: "start", behavior: "instant"});
       focusReadingBlock(state.readingBlocks.indexOf(heading), {scroll: false});
       state.readerTocTarget = material ? heading.id : "";
-      $("#main-content").focus({preventScroll: true}); updateReadingMetrics();
+      if (!material) heading.tabIndex = -1;
+      heading.focus({preventScroll: true}); updateReadingMetrics();
     });
     links.append(link);
   });
@@ -1966,24 +1988,32 @@ function initReadingFocus() {
     let target = event.target;
     while (target && target !== body) {
       const index = state.readingBlocks.indexOf(target);
-      if (index >= 0) { focusReadingBlock(index, {scroll: false}); $("#main-content").focus({preventScroll: true}); return; }
+      if (index >= 0) {
+        focusReadingBlock(index, {scroll: false});
+        if (target.tagName !== "SUMMARY") $("#main-content").focus({preventScroll: true});
+        return;
+      }
       target = target.parentElement;
     }
   });
 }
 
-function focusReadingBlock(index, {scroll = true} = {}) {
+function focusReadingBlock(index, {scroll = true, focus = false} = {}) {
   if (index < 0 || index >= state.readingBlocks.length) return;
   state.readingBlocks[state.readingIndex]?.classList.remove("is-reading-focus");
   state.readingIndex = index;
   const block = state.readingBlocks[index]; block.classList.add("is-reading-focus");
   if (scroll) block.scrollIntoView({block: "nearest", behavior: "instant"});
+  if (focus) {
+    if (block.tagName !== "SUMMARY") block.tabIndex = -1;
+    block.focus({preventScroll: true});
+  }
 }
 
 function moveReadingFocus(delta) {
   if (!state.readingBlocks.length) return;
   const next = state.readingIndex < 0 ? 0 : Math.max(0, Math.min(state.readingBlocks.length - 1, state.readingIndex + delta));
-  focusReadingBlock(next);
+  focusReadingBlock(next, {focus: true});
 }
 
 function updateReadingMetrics() {
@@ -2124,7 +2154,7 @@ function renderArticleError(error) {
   back.addEventListener("click", () => showLibrary());
   empty.append(title, copy, back);
   root.replaceChildren(empty);
-  showArticleFallbackEntry();
+  $("#main-content").focus({preventScroll: true});
 }
 
 function hideCardOverlays(source) {
@@ -2150,6 +2180,7 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
   const readingIndex = preserveReading ? state.readingIndex : -1;
   const readingBlock = state.readingBlocks[readingIndex];
   const readingBookmark = readingBlock ? {text: readingBlock.textContent, tag: readingBlock.tagName} : null;
+  const readingHadFocus = readingBlock === document.activeElement;
   const requestId = ++state.readerRequestId;
   state.pendingArticleRequest = requestId;
   closeEntryMenu();
@@ -2201,7 +2232,7 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
     if (preserveReading) {
       $("#main-content").scrollTop = readingTop;
       const index = readingBookmark ? state.readingBlocks.findIndex((block) => block.tagName === readingBookmark.tag && block.textContent === readingBookmark.text) : -1;
-      focusReadingBlock(index >= 0 ? index : Math.min(readingIndex, state.readingBlocks.length - 1), {scroll: false}); updateReadingMetrics();
+      focusReadingBlock(index >= 0 ? index : Math.min(readingIndex, state.readingBlocks.length - 1), {scroll: false, focus: readingHadFocus}); updateReadingMetrics();
     }
     if (citation) window.setTimeout(() => { if (state.currentEntry === entryId) focusCitation(citation); }, 50);
   } catch (error) {
@@ -2643,12 +2674,12 @@ function renderCommandResults({scroll = true} = {}) {
     else button.dataset.entryId = item.entry_id;
     button.setAttribute("role", "option");
     const copy = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = item.title;
+    const title = makeResultTitle(item, "strong");
     const meta = document.createElement("span");
     meta.textContent = item.commandId ? "" : `${item.author} · ${item.content_type_label}`;
-    copy.append(title, meta);
+    copy.append(title);
     const match = makeKeywordMatch(item); if (match) copy.append(match);
+    copy.append(meta);
     if (item.commandId) {
       const icon = window.Douku.node("span", null, "command-icon"); icon.append(svgIcon(item.icon));
       button.append(icon, copy);

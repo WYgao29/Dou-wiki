@@ -58,7 +58,7 @@ async def test_command_search_distinguishes_wait_error_retry_and_empty():
         await page.get_by_role("button", name="重试搜索", exact=True).click()
         await expect(page.locator("#command-results .command-result")).to_have_count(1)
         await expect(status).to_be_hidden()
-        await expect(page.locator("#command-results .search-match mark")).to_have_text("测试")
+        await expect(page.locator("#command-results .result-title mark")).to_have_text("测试")
         await query.fill("绝不存在的资料")
         await expect(status).to_have_text("没有找到匹配的文章或命令。")
         await query.press("Escape")
@@ -129,7 +129,7 @@ async def test_evidence_directory_opens_and_locates_collapsed_materials():
             "aria-current", "location"
         )
         await expect(transcript.get_by_text("第一段原文", exact=True)).to_be_in_viewport()
-        await expect(page.locator("#main-content")).to_be_focused()
+        await expect(transcript.locator("summary")).to_be_focused()
         await page.get_by_role("link", name="关键帧 · 1张", exact=True).click()
         await expect(frames).to_have_attribute("open", "")
         await expect(page.get_by_role("link", name="关键帧 · 1张", exact=True)).to_have_attribute(

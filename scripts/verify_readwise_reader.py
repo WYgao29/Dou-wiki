@@ -240,7 +240,9 @@ async def verify():
                 await page.wait_for_selector("#article-content .article-body h3")
                 assert await page.locator(".sidebar-body").is_hidden()
                 assert await page.locator("#reader-toc").is_visible()
-                assert await page.locator("#reader-toc .toc-item").count() == 9
+                assert await page.locator("#reader-toc .toc-item").count() == 11
+                assert await page.get_by_role("link", name="逐字稿 · 0段", exact=True).count() == 1
+                assert await page.get_by_role("link", name="关键帧 · 0张", exact=True).count() == 1
                 assert await page.locator(".article-body img").count() == 1
                 assert await page.locator(".article-hero .article-cover img").count() == 1
                 assert await page.locator(".article-body blockquote.callout").count() == 1
