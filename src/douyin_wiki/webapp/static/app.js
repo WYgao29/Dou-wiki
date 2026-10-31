@@ -2583,12 +2583,21 @@ function scheduleCommandSearch() {
   }, 180);
 }
 
-function syncCommandActiveState(root) {
+function syncCommandActiveState(root, {scroll = false} = {}) {
+  let selected = null;
   $$(".command-result", root).forEach((button, index) => {
     const active = index === state.commandIndex;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
+    if (active) selected = button;
   });
+  const input = $("#command-input");
+  const expanded = $("#command-dialog").open && Boolean(selected);
+  input.setAttribute("aria-expanded", String(expanded));
+  if (expanded) {
+    input.setAttribute("aria-activedescendant", selected.id);
+    if (scroll) selected.scrollIntoView({block: "nearest", inline: "nearest"});
+  } else input.removeAttribute("aria-activedescendant");
 }
 
 function renderCommandStatus(items) {
@@ -2611,26 +2620,28 @@ function renderCommandStatus(items) {
   }
 }
 
-function renderCommandResults() {
+function renderCommandResults({scroll = true} = {}) {
   const root = $("#command-results");
   const items = commandMatches();
   renderCommandStatus(items);
+  root.hidden = !items.length;
   state.commandIndex = Math.max(0, Math.min(state.commandIndex, items.length - 1));
   const existing = $$(".command-result", root);
   const sameList = existing.length === items.length
     && items.every((item, index) => (item.commandId ? existing[index]?.dataset.commandId === item.commandId : existing[index]?.dataset.entryId === item.entry_id));
   if (sameList) {
-    syncCommandActiveState(root);
+    syncCommandActiveState(root, {scroll});
     return;
   }
   root.replaceChildren(...items.map((item, index) => {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `command-result${index === state.commandIndex ? " active" : ""}`;
+    button.className = "command-result";
+    button.id = `command-option-${item.commandId ? "command" : "entry"}-${encodeURIComponent(item.commandId || item.entry_id)}`;
+    button.tabIndex = -1;
     if (item.commandId) button.dataset.commandId = item.commandId;
     else button.dataset.entryId = item.entry_id;
     button.setAttribute("role", "option");
-    button.setAttribute("aria-selected", String(index === state.commandIndex));
     const copy = document.createElement("div");
     const title = document.createElement("strong");
     title.textContent = item.title;
@@ -2655,7 +2666,7 @@ function renderCommandResults() {
     button.addEventListener("mouseenter", () => {
       if (state.commandIndex === index) return;
       state.commandIndex = index;
-      renderCommandResults();
+      syncCommandActiveState(root);
     });
     button.addEventListener("click", () => {
       $("#command-dialog").close();
@@ -2665,6 +2676,7 @@ function renderCommandResults() {
     return button;
   }));
   if (items.some((item) => item.commandId)) root.prepend(window.Douku.node("p", "命令", "command-group-title"));
+  syncCommandActiveState(root, {scroll});
 }
 
 async function openCommandMenu() {
@@ -2674,6 +2686,7 @@ async function openCommandMenu() {
   $("#command-input").value = state.query;
   scheduleCommandSearch();
   $("#command-dialog").showModal();
+  syncCommandActiveState($("#command-results"), {scroll: true});
   $("#command-input").focus();
 }
 
@@ -3107,6 +3120,7 @@ function bindEvents() {
     window.clearTimeout(state.commandTimer);
     state.commandSearch++;
     state.commandStatus = "idle";
+    syncCommandActiveState($("#command-results"));
   });
   $("#command-input").addEventListener("keydown", (event) => {
     if (event.key === "Escape") { event.preventDefault(); $("#command-dialog").close(); return; }
@@ -3196,6 +3210,7 @@ function bindEvents() {
     renderPanelState();
     if (state.libraryLoaded) renderLibrary();
     if (!$("#filter-popover")?.classList.contains("hidden")) positionFilterPopover();
+    if ($("#command-dialog").open) syncCommandActiveState($("#command-results"), {scroll: true});
   });
 }
 

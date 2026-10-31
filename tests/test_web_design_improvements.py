@@ -45,7 +45,7 @@ async def test_command_search_distinguishes_wait_error_retry_and_empty():
     async with browser_fixture() as (page, _topics, gates):
         gate = block(gates, "/api/library?q=%E6%B5%8B%E8%AF%95&limit=8&fuzzy=true", status=500)
         await page.get_by_role("button", name="搜索 K", exact=True).click()
-        query = page.get_by_role("searchbox", name="搜索文章、博主、标签或灵感", exact=True)
+        query = page.get_by_role("combobox", name="搜索文章、博主、标签或灵感", exact=True)
         await query.fill("测试")
         await entered(gate)
         status = page.locator("#command-status")

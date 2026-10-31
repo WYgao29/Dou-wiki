@@ -584,7 +584,8 @@ dialog::backdrop { background: var(--overlay-backdrop); }
   }
 }
 .command-dialog, .command-dialog::backdrop { animation: none; transition: none; }
-.command-shell { margin: 0; }
+.command-shell { display: flex; flex-direction: column; min-height: 0; width: 100%; margin: 0; }
+.command-shell > :not(.command-results) { flex-shrink: 0; }
 .dialog-kicker {
   display: inline-flex; align-items: center; gap: var(--space-1); color: var(--accent-text);
   font-size: var(--fs-12); font-weight: var(--fw-semibold);
@@ -901,15 +902,19 @@ content: "!" / ""; position: absolute; left: var(--space-4); top: 14px;
   font-size: var(--fs-12); padding-inline: var(--space-2);
 }
 .command-dialog {
-  width: min(560px,calc(100vw - 32px)); margin-top: 20vh; border-radius: var(--radius-lg);
+  width: min(560px,calc(100vw - 32px)); margin: 20dvh auto var(--space-4);
+  max-height: calc(80dvh - var(--space-4)); overflow: hidden; border-radius: var(--radius-lg);
   box-shadow: var(--shadow-overlay);
 }
+.command-dialog[open] { display: flex; flex-direction: column; }
 .command-search { display: flex; min-height: 48px; padding: 0 var(--space-4); }
 .command-search input {
   min-width: 0; flex: 1; border: 0; background: transparent; box-shadow: none;
   font-size: var(--fs-16);
 }
-.command-results { max-height: min(460px,60vh); overflow: auto; padding: var(--space-2); }
+.command-results {
+  flex: 0 1 auto; min-height: 0; max-height: min(460px,60dvh); overflow: auto; padding: var(--space-2);
+}
 .command-status {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
   padding: var(--space-2) var(--space-4); color: var(--text-2); font-size: var(--fs-13);
@@ -927,7 +932,7 @@ content: "!" / ""; position: absolute; left: var(--space-4); top: 14px;
 .library-item:has(.search-match) { height: auto; min-height: 88px; padding-block: var(--space-3); }
 .command-result {
   grid-template-columns: 24px minmax(0,1fr) auto; gap: var(--space-3); min-height: 36px;
-  padding: var(--space-1) var(--space-2); border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2); border-radius: var(--radius); scroll-margin-block: var(--space-1);
 }
 .command-result.active {
 background: var(--accent-subtle); color: var(--accent-text);

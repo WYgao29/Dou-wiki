@@ -57,6 +57,10 @@
 
 ## 维护记录
 
+[2026-10-31 全局搜索焦点与缩放修复](maintenance/2026-10-31-command-accessibility-fixes.md)记录三项审查问题的修复：当前选项辅助焦点、键盘与缩放后的自动滚动，以及短视口弹窗的完整说明。1949 项完整离线回归、独立安装包及原生 Chrome 复验通过；本机 Web / Worker 已升级为 Web 0.2.99，交付验证与备份见同一记录。
+
+[2026-10-30 桌面 Web 技术审查](maintenance/2026-10-30-desktop-accessibility-audit.md)覆盖键盘、辅助功能语义、亮暗桌面与实际 200% 缩放，评分 15/20，确认一项 P1、两项 P2，集中在全局搜索。VoiceOver 已实际启动，但真实朗读输出未能通过当前工具取得，完整读屏仍待补验。本轮仅新增报告，修复建议与证据见同一记录。
+
 [2026-10-30 五项设计问题修复](maintenance/2026-10-30-impeccable-five-fixes.md)记录搜索字段名称、关键词命中片段与搜索恢复、视频证据目录、亮暗辅助文字对比度、批次提示数量与筛选的修改。完整离线回归 1944 项通过；独立 wheel 安装及原生浏览器桌面验证通过。本机 runtime、Web 与 Worker 已升级为 Web 0.2.98，新 MCP 连接的 51 项工具和诊断通过，部署备份与实际页面验收见同一记录。
 
 [2026-10-21 Dou-wiki 品牌与仓库改名](maintenance/2026-10-21-dou-wiki-brand-rename.md)记录 Web 新 logo / 字标、本地字体和 favicon、中英文 README 改名、GitHub 仓库改名与跳转检查。Python、CLI/MCP、配置路径和环境变量保持兼容；两个含旧名称的 README 横幅按要求保留，现用 runtime 未更新。
