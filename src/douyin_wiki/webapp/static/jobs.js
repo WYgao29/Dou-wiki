@@ -92,6 +92,7 @@
   }
 
   function listMessage(job) {
+    if (job.status === "awaiting_agent_analysis") return agentHandoffMessage;
     if (job.status === "completed" || job.status === "completed_with_warnings") {
       const line = completionLine(job);
       if (line) return line;
@@ -100,17 +101,32 @@
   }
 
   function attentionRank(job) {
-    if (!job.requires_user_action) return 3;
+    if (job.status === "awaiting_agent_analysis") return 3;
+    if (!job.requires_user_action) return 4;
     if (job.status === "needs_selection") return 0;
     if (job.status === "failed") return 2;
     return 1;
   }
 
   function attentionGroup(job) {
+    if (job.status === "awaiting_agent_analysis") return "agent";
     if (job.requires_user_action && job.status === "needs_selection") return "select";
     if (job.requires_user_action && job.status === "failed") return "failed";
     if (job.requires_user_action) return "attention";
     return "rest";
+  }
+
+  const agentHandoffMessage = "由原 Agent 接续。对话中断时可复制指令。";
+
+  function agentHandoffButton(job) {
+    if (job.status !== "awaiting_agent_analysis") return null;
+    const button = D.node("button", "复制接续指令", "secondary-button");
+    button.type = "button";
+    button.addEventListener("click", () => D.copyText(
+      `请接续抖库任务 ${job.id}。先查询最新状态并确认实际执行任务，再按当前阶段继续校正或分析。`,
+      "已复制接续指令，请发到原 Agent 对话中。",
+    ));
+    return button;
   }
 
   function actionButton(action) {
@@ -259,6 +275,8 @@
       const action = actionButton(job.next_action);
       if (action) actions.append(action);
     }
+    const handoff = agentHandoffButton(job);
+    if (handoff) actions.append(handoff);
     const quiet = quietAction(job);
     if (quiet) actions.append(quiet);
     const repaste = creatorRepaste(job);
@@ -281,14 +299,16 @@
       D.navigate(`/jobs/${job.id}`);
     });
     row.addEventListener("keydown", (event) => {
-      if (event.target.closest("button,a")) return;
+      if (!D.canUsePageKeys(event) || event.shiftKey || event.target.closest("button,a")) return;
       if (["j", "k", "ArrowDown", "ArrowUp"].includes(event.key)) {
         event.preventDefault();
         const rows = [...D.$("jobs-list").querySelectorAll(".job-row")];
         const delta = ["j", "ArrowDown"].includes(event.key) ? 1 : -1;
         rows[Math.max(0, Math.min(rows.length - 1, rows.indexOf(row) + delta))]?.focus();
-      } else if (event.key === "r") { event.preventDefault(); row.querySelector("[data-action=retry]")?.click(); }
-      else if (event.key === "Enter") { event.preventDefault(); D.navigate(`/jobs/${job.id}`); }
+      } else if (!event.repeat && event.key === "r") {
+        const retry = row.querySelector("[data-action=retry]:enabled");
+        if (retry) { event.preventDefault(); retry.click(); }
+      } else if (!event.repeat && event.key === "Enter") { event.preventDefault(); D.navigate(`/jobs/${job.id}`); }
     });
     return row;
   }
@@ -312,6 +332,7 @@
       select: "待选择作品",
       attention: "需要本人操作",
       failed: "失败可重试",
+      agent: "等待 Agent",
       rest: "其他任务",
     };
     const showHeads = groups.some((group) => group.key !== "rest");
@@ -419,6 +440,8 @@
     const viewingChildren = job.next_action?.code === "view_children";
     const action = viewingChildren || selfProgressLink(job.next_action) ? null : actionButton(job.next_action);
     if (action) actions.append(action);
+    const handoff = agentHandoffButton(job);
+    if (handoff) actions.append(handoff);
     const repaste = creatorRepaste(job);
     if (repaste) actions.append(repaste);
     const dismiss = dismissButton(job, {reloadDetail: true});
@@ -558,9 +581,7 @@
         : "清点已经完成。点下面的按钮去勾选作品，确认后才会导入。";
     }
     const gatewayNote = D.node("p", "", "hint-copy");
-    if (job.status === "awaiting_agent_analysis" || (job.analysis_mode === "gateway" && job.status === "analyzing")) {
-      gatewayNote.textContent = "网页不会自动分析。这一步要等外部 Agent 接续，停在「待 AI 处理」不代表已经整理完成。";
-    }
+    if (job.status === "awaiting_agent_analysis") gatewayNote.textContent = agentHandoffMessage;
     const parts = [header, progress, track];
     if (job.kind === "favorites_import" && job.batch?.summary) {
       const summary = job.batch.summary;

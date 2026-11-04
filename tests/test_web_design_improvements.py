@@ -44,7 +44,7 @@ def test_keyword_results_explain_literal_and_fuzzy_matches(
 async def test_command_search_distinguishes_wait_error_retry_and_empty():
     async with browser_fixture() as (page, _topics, gates):
         gate = block(gates, "/api/library?q=%E6%B5%8B%E8%AF%95&limit=8&fuzzy=true", status=500)
-        await page.get_by_role("button", name="搜索 K", exact=True).click()
+        await page.get_by_role("button", name="全局搜索", exact=True).click()
         query = page.get_by_role("combobox", name="搜索文章、博主、标签或灵感", exact=True)
         await query.fill("测试")
         await entered(gate)
@@ -92,7 +92,7 @@ async def test_keyword_match_is_visible_in_gallery_and_command_without_html_exec
         )
 
     async with browser_fixture(prepare=prepare) as (page, _topics, _gates):
-        await page.get_by_role("searchbox", name="搜索知识库", exact=True).fill("缓存")
+        await page.get_by_role("searchbox", name="筛选当前资料", exact=True).fill("缓存")
         await expect(page.locator("#library-results .search-match mark")).to_have_text("缓存")
         await page.locator("#view-gallery").click()
         await expect(page.locator(".gallery-copy .search-match")).to_contain_text("<script>")
@@ -100,6 +100,29 @@ async def test_keyword_match_is_visible_in_gallery_and_command_without_html_exec
         await page.locator("#sidebar-search").click()
         await expect(page.locator("#command-results .search-match mark")).to_have_text("缓存")
         assert await page.locator("#command-results script").count() == 0
+
+
+async def test_waiting_for_agent_group_can_copy_the_correct_job_without_opening_it():
+    def prepare(_config, service):
+        job = service.database.create_job(
+            CaptureRequest(share_text="https://www.douyin.com/video/7000000000000000200"),
+            status=JobStatus.AWAITING_AGENT_ANALYSIS,
+        )
+        job_ids.append(job.id)
+
+    job_ids = []
+    async with browser_fixture(prepare=prepare) as (page, _topics, _gates):
+        await page.goto("http://testserver/jobs")
+        await page.evaluate("""() => Object.defineProperty(navigator, "clipboard", {
+            value: {writeText: async (text) => { window.copiedHandoff = text; }}
+        })""")
+        group = page.get_by_role("heading", name="等待 Agent")
+        await expect(group).to_be_visible()
+        row = group.locator("xpath=following-sibling::*[1]")
+        await expect(row).to_have_attribute("data-job-id", job_ids[0])
+        await row.get_by_role("button", name="复制接续指令").click()
+        assert job_ids[0] in await page.evaluate("window.copiedHandoff")
+        await expect(page).to_have_url("http://testserver/jobs")
 
 
 async def test_evidence_directory_opens_and_locates_collapsed_materials():

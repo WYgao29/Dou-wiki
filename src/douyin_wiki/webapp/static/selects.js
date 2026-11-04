@@ -187,7 +187,7 @@
 
   function keyboard(event) {
     const record = active || buttons.get(event.target.closest(".select-trigger"));
-    if (!record || event.isComposing) return;
+    if (!record || event.defaultPrevented || D.isComposingKey(event)) return;
     if (active && !record.host.contains(event.target) && !menu.contains(event.target)) return;
     if (event.metaKey || event.ctrlKey) { if (active) close(false); return; }
     if (event.key === "Tab") { if (active) commit(highlighted, false); return; }

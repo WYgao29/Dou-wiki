@@ -44,7 +44,8 @@ async def browser_fixture(*, startup_gate=None, initial_route=None, prepare=None
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 await page.add_init_script(
                     "window.EventSource=class extends EventTarget{"
-                    "constructor(url){super();this.url=url;window.__reviewEventsReady=true}"
+                    "constructor(url){super();this.url=url;window.__reviewEventsReady=true;"
+                    "if(url==='/api/library/events')window.__reviewLibraryEvents=this}"
                     " close(){}}"
                 )
                 gates = {"/api/library": startup_gate} if startup_gate is not None else {}

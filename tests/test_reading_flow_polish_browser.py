@@ -149,3 +149,99 @@ async def test_failed_article_keeps_error_keyboard_accessible_and_returns_to_que
         await expect(row).to_be_focused()
         await expect(page.locator("#search-input")).to_have_value("测试")
         await expect(page.locator("#view-gallery")).to_have_attribute("aria-pressed", "true")
+
+
+@pytest.mark.parametrize("view", ["list", "gallery"])
+async def test_semantic_evidence_opens_and_highlights_the_full_transcript_window(view):
+    async with browser_fixture(prepare=_reading_evidence) as (page, _topics, _gates):
+        item = await page.evaluate("state.items.find(item => item.entry_id === 'dy-123')")
+        item["search_evidence"] = [
+            {
+                "snippet": "约 00:00–01:00（时间未经精确对齐）\n缓存需要核对原话。保留适用条件。",
+                "timestamp_ms": 12_000,
+                "timestamp_start_ms": 0,
+                "timestamp_end_ms": 60_000,
+                "timestamp_precision": "window",
+            }
+        ]
+
+        async def respond(route):
+            await route.fulfill(json={"items": [item], "facets": {}})
+
+        await page.route("**/api/library/search**", respond)
+        await page.locator("#search-mode").select_option("semantic")
+        await page.locator("#search-input").fill("缓存")
+        await page.locator(f"#view-{view}").click()
+        await expect(page.locator(".search-evidence")).to_have_text(
+            "约 00:00–01:00（时间未经精确对齐） · 缓存需要核对原话。保留适用条件。"
+        )
+        jump = page.get_by_role("button", name="查看证据：测试文章")
+        await jump.press("Enter")
+        await expect(page.locator(".article-transcript")).to_have_attribute("open", "")
+        evidence = page.locator(".transcript-segment.is-search-evidence")
+        await expect(evidence).to_have_count(2)
+        await expect(evidence.first.locator(".evidence-range-note")).to_contain_text(
+            "约 00:00–01:00"
+        )
+        await expect(evidence.first).to_be_focused()
+        await page.keyboard.press("Escape")
+        await expect(page.locator("#search-input")).to_have_value("缓存")
+        await expect(page.locator(f"#view-{view}")).to_have_attribute("aria-pressed", "true")
+
+
+def _index_semantic_fixture(service):
+    # The fixture stays offline while the route uses its real semantic result assembly.
+    service.embeddings.provider_name = "sentence-transformers:test"
+    entry = service.database.get_entry("dy-123")
+    service.indexer.index_entry(entry, service.database.get_entry_data(entry.id))
+    service.indexer.record_embedding_signature()
+
+
+async def test_indexed_transcript_chunk_highlights_both_segments_and_survives_refresh():
+    def prepare(config, service):
+        _reading_evidence(config, service)
+        entry = service.database.get_entry("dy-123")
+        data = service.database.get_entry_data(entry.id)
+        for row in data["transcript_corrected"]:
+            row["timestamp_precision"] = "aligned"
+        service.database.upsert_entry(entry, data)
+        _index_semantic_fixture(service)
+
+    async with browser_fixture(prepare=prepare) as (page, _topics, _gates):
+        await page.locator("#search-mode").select_option("semantic")
+        await page.locator("#search-input").fill("保留适用条件")
+        await expect(page.locator(".search-evidence")).to_contain_text("00:00–01:00")
+        await page.get_by_role("button", name="查看证据：测试文章").press("Enter")
+        evidence = page.locator(".transcript-segment.is-search-evidence")
+        await expect(evidence).to_have_count(2)
+        await expect(evidence.nth(1)).to_contain_text("保留适用条件")
+        await expect(evidence.first).to_be_focused()
+
+        async def refresh():
+            await evidence.first.evaluate("e => window.previousEvidence = e")
+            await page.evaluate("""window.__reviewLibraryEvents.dispatchEvent(
+                new MessageEvent('library', {data:'{"origins":["another-client"]}'})
+            )""")
+            await page.wait_for_function("() => !window.previousEvidence.isConnected")
+            await expect(evidence).to_have_count(2)
+
+        await refresh()
+        await expect(evidence.first).to_be_focused()
+        await page.keyboard.press("j")
+        next_block = page.locator("#article-keyframes-summary")
+        await expect(next_block).to_be_focused()
+        await refresh()
+        await expect(next_block).to_be_focused()
+
+
+async def test_indexed_summary_jumps_to_the_rendered_summary():
+    async with browser_fixture(prepare=lambda _, service: _index_semantic_fixture(service)) as (
+        page, _topics, _gates,
+    ):
+        await page.locator("#search-mode").select_option("semantic")
+        await page.locator("#search-input").fill("这是一条本地资料")
+        await expect(page.locator(".search-evidence")).to_contain_text("摘要")
+        await page.get_by_role("button", name="查看证据：测试文章").press("Enter")
+        summary = page.locator(".article-body p.is-search-evidence")
+        await expect(summary).to_have_text("这是一条本地资料。")
+        await expect(summary).to_be_focused()

@@ -252,7 +252,7 @@
   ["creator-select-all", "creator-exclude-all"].forEach((id) => { D.$(id).title = D.$("creator-select-hint").textContent; });
   D.$("creator-query")?.addEventListener("input", () => { page = 1; });
   D.$("creator-query")?.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
+    if (event.key !== "Enter" || !D.canUsePageKeys(event) || event.repeat) return;
     event.preventDefault();
     page = 1;
     loadInventory().then(schedule).catch((error) => D.toast(error.message));

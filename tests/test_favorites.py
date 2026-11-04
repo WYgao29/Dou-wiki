@@ -76,6 +76,18 @@ async def test_inventory_never_queues_media_and_filters_unsupported_types(servic
     assert data["items"][2]["disposition"] == "unsupported"
 
 
+async def test_selection_counts_cover_unopened_pages_and_exclude_unsupported_works(service):
+    parent = await scan(service, include_images=True, select=False)
+    service.favorites.select_filtered(parent.id, selected=True, only_unimported=True)
+    page = service.favorites.get(parent.id, limit=1)
+    assert len(page["items"]) == 1 and page["has_more"]
+    assert page["selection_counts"] == {"all": 2, "filtered": 2, "outside_filter": 0}
+    filtered = service.favorites.get(parent.id, query=B)
+    assert filtered["selection_counts"] == {"all": 2, "filtered": 1, "outside_filter": 1}
+    unsupported = service.favorites.get(parent.id, query=C)
+    assert unsupported["selection_counts"] == {"all": 2, "filtered": 0, "outside_filter": 2}
+
+
 async def test_confirm_is_explicit_idempotent_and_respects_include_images(service):
     parent = await scan(service, include_images=True)
     first = service.favorites.confirm(parent.id)

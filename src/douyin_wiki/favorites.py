@@ -283,6 +283,12 @@ class FavoritesService:
             "folders": snapshot.get("folders", []),
             "items": filtered[start : start + limit],
             "total": len(filtered),
+            "selection_counts": {
+                "all": len(selectable_ids),
+                "filtered": sum(i["work_id"] in selectable_ids for i in filtered),
+                "outside_filter": summary["selected"]
+                - sum(i["selected"] and i["disposition"] != "imported" for i in filtered),
+            },
             "page": page,
             "limit": limit,
             "has_more": start + limit < len(filtered),

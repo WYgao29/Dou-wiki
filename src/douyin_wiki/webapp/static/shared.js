@@ -24,6 +24,11 @@
   Douku.$ = (id) => document.getElementById(id);
   Douku.qs = (selector, root = document) => root.querySelector(selector);
   Douku.qsa = (selector, root = document) => [...root.querySelectorAll(selector)];
+  Douku.isComposingKey = (event) => event.isComposing || event.keyCode === 229;
+  Douku.isEditingTarget = (target) => Boolean(target.isContentEditable
+    || target.closest?.("textarea, select, [role='combobox'], input:not([type='checkbox'], [type='radio'])"));
+  Douku.canUsePageKeys = (event) => !event.defaultPrevented && !Douku.isComposingKey(event)
+    && !event.metaKey && !event.ctrlKey && !event.altKey;
   Douku.clientId = [...crypto.getRandomValues(new Uint8Array(16))].map(value => value.toString(16).padStart(2, "0")).join("");
   Douku.api = async (url, options = {}) => {
     const response = await fetch(url, {
@@ -292,6 +297,20 @@
     dialog.showModal();
     confirm.focus();
   });
+  Douku.copyText = async (value, successMessage) => {
+    const focused = document.activeElement;
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
+      else {
+        const field = document.createElement("textarea");
+        field.value = value; field.style.position = "fixed"; field.style.opacity = "0";
+        document.body.append(field); field.select();
+        try { if (!document.execCommand("copy")) throw new Error("复制失败"); }
+        finally { field.remove(); focused?.focus({preventScroll: true}); }
+      }
+      Douku.toast(successMessage);
+    } catch (_error) { Douku.toast("复制失败，请重试"); }
+  };
   Douku.icon = (name) => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("aria-hidden", "true");
@@ -315,13 +334,16 @@
       root.dataset.focusWork = input.dataset.work;
     });
     root.addEventListener("keydown", (event) => {
-      if (event.target.closest("a,button,textarea") || !["j", "k", "x"].includes(event.key.toLowerCase())) return;
+      if (!Douku.canUsePageKeys(event) || event.shiftKey || Douku.isEditingTarget(event.target)
+          || event.target.closest("a,button")) return;
+      const key = event.key.toLowerCase();
+      if (!["j", "k", "x"].includes(key) || (key === "x" && event.repeat)) return;
       const inputs = [...root.querySelectorAll("input[data-work]:not(:disabled)")];
       const at = inputs.indexOf(document.activeElement);
       if (!inputs.length) return;
       event.preventDefault();
-      if (event.key.toLowerCase() === "x") inputs[Math.max(at, 0)].click();
-      else inputs[Math.max(0, Math.min(inputs.length - 1, at + (event.key.toLowerCase() === "j" ? 1 : -1)))].focus();
+      if (key === "x") inputs[Math.max(at, 0)].click();
+      else inputs[Math.max(0, Math.min(inputs.length - 1, at + (key === "j" ? 1 : -1)))].focus();
     });
   };
   window.Douku = Douku;

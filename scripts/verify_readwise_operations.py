@@ -346,7 +346,8 @@ async def verify(*, output_dir: Path | None = None):
 
                 await fresh("/jobs", "#jobs-list .job-row")
                 track = page.locator(f".job-row[data-job-id='{running.id}'] .job-row-progress")
-                assert await track.evaluate("e=>e.getBoundingClientRect().height") == 2
+                assert await track.evaluate("e=>e.getBoundingClientRect().height") > 0
+                assert await track.locator("span").evaluate("e => e.style.width") == "62%"
                 await page.locator(f".job-row[data-job-id='{running.id}']").focus()
                 await page.keyboard.press("k")
                 assert await page.evaluate("document.activeElement.dataset.jobId") != running.id
@@ -474,7 +475,7 @@ async def verify(*, output_dir: Path | None = None):
                 await page.wait_for_selector("#imports-view:not(.hidden)")
                 await page.keyboard.press("Meta+k")
                 await page.fill("#command-input", "没有匹配文章")
-                await page.wait_for_selector("#command-results .command-help")
+                await page.wait_for_selector("#command-status[data-state='ready']:not([hidden])")
                 assert await page.locator(".command-result").count() == 0
                 await page.fill("#command-input", "")
                 assert set(
@@ -500,7 +501,7 @@ async def verify(*, output_dir: Path | None = None):
                 await page.keyboard.press("Escape")
                 await page.keyboard.press("Meta+k")
                 await page.fill("#command-input", ">对话")
-                await page.wait_for_selector("#command-results .command-help")
+                await page.wait_for_selector("#command-status[data-state='ready']:not([hidden])")
                 assert await page.locator(".command-result").count() == 0
                 assert await page.locator("#chat-form").count() == 0
                 assert not any(m["path"] == "/api/chat/sessions" for m in mutations)

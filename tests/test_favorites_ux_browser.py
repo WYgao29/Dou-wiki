@@ -139,6 +139,12 @@ async def ux_ui():
                 and (query.get("only_unimported") != ["true"] or not i["entry_id"])
             ]
             result["total"] = len(result["items"])
+            result["selection_counts"] = {
+                "all": sum(not i["entry_id"] for i in data["items"]),
+                "filtered": sum(not i["entry_id"] for i in result["items"]),
+                "outside_filter": data["summary"]["selected"]
+                - sum(i["selected"] and not i["entry_id"] for i in result["items"]),
+            }
             limit = int(query.get("limit", ["50"])[0])
             offset = (int(query.get("page", ["1"])[0]) - 1) * limit
             result["items"] = result["items"][offset : offset + limit]
@@ -283,7 +289,7 @@ async def test_exclude_page_keeps_selections_on_other_pages(ux_ui):
     page = ux_ui.page
     await page.locator("#favorites-select-all").click()
     await expect(page.locator("#favorites-selected-count")).to_contain_text("125 件")
-    await page.locator("#favorites-exclude-page").click()
+    await page.locator("#favorites-select-page").uncheck()
     await page.wait_for_function("""() =>
         document.querySelector('#favorites-selected-count').textContent.includes('75 件') &&
         document.querySelector('#favorites-save-hint').textContent === '选择已保存'""")
@@ -300,6 +306,11 @@ async def test_exclude_filtered_keeps_selections_outside_the_search(ux_ui):
     await expect(page.locator("#favorites-selected-count")).to_contain_text("125 件")
     await page.locator("#favorites-query").fill("目标标题1")
     await expect(page.locator("#favorites-page")).to_contain_text("匹配 36 件")
+    await expect(page.locator("#favorites-select-filtered")).to_have_text("选择筛选结果（36 件）")
+    await expect(page.locator("#favorites-outside-filter")).to_have_text(
+        "其中 89 件不在当前筛选结果中"
+    )
+    await page.locator("#favorites-selection-options summary").click()
     await page.locator("#favorites-exclude-filtered").click()
     await expect(page.locator("#favorites-selected-count")).to_contain_text("89 件")
     selected = {i["work_id"] for i in ux_ui.states["many"]["items"] if i["selected"]}

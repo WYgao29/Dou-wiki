@@ -10,7 +10,7 @@
   D.bindCheckList($("items"));
   let jobId = null, current = null, page = 1, busy = false, generation = 0;
   let pollTimer = null, elapsedTimer = null, searchTimer = null, saveTimer = null;
-  let saving = null, saveError = false;
+  let saving = null, saveError = false, loadedFilters = null;
   const pending = new Map();
 
   async function request(path, body) {
@@ -42,6 +42,9 @@
     const imported = current?.summary?.in_library ?? current?.summary?.imported ?? 0;
     $("selected-count").textContent = (current?.status === "cancelled" ? "保留选择 " : current?.confirmed ? "本批所选 " : "将导入 ") + selectedCount() + " 件" +
       (imported ? " · " + imported + " 件已在资料库" + (canSelect() ? "，会跳过" : "") : "");
+    const outside = current?.selection_counts?.outside_filter || 0;
+    $("outside-filter").textContent = `其中 ${outside} 件不在当前筛选结果中`;
+    $("outside-filter").hidden = !canSelect() || !outside || !filtersAreCurrent();
     $("save-hint").textContent = saveError ? "选择尚未保存，请重试后再导入。"
       : saving || pending.size ? "正在保存选择…" : current && canSelect() ? "选择已保存" : "";
     $("save-retry").hidden = !saveError;
@@ -53,20 +56,31 @@
     ["search", "query", "filter", "only-new", "only-unimported"].forEach((id) => {
       $(id).disabled = busy || !searchable;
     });
-    $("search-hint").textContent = searchable ? "输入标题或作者会自动筛选本次已读取的作品。"
-      : !current || current.directory_only ? "请选择已有导入记录，再搜索标题或作者。"
+    $("search-hint").hidden = searchable;
+    $("search-hint").textContent = !current || current.directory_only ? "请选择已有导入记录，再搜索标题或作者。"
       : ongoing.has(current.status) ? "正在读取作品，读取后即可搜索。"
       : "当前清单暂无作品可搜索；需要新批次时，请让 Agent 发起导入。";
-    $("confirm").disabled = busy || !canSelect() || !selectedCount() || pending.size > 0 ||
+    const currentScope = filtersAreCurrent();
+    $("confirm").disabled = busy || !canSelect() || !currentScope || !selectedCount() || pending.size > 0 ||
       Boolean(saving) || saveError || (!current.complete && !$("partial").checked);
     $("confirm").hidden = Boolean(current?.confirmed || current?.directory_only || current?.status === "cancelled");
     if (jobId) $("history").value = jobId;
-    ["select-all", "exclude-all", "select-page", "exclude-page", "select-filtered", "exclude-filtered", "select-folder", "exclude-folder"].forEach((id) => {
-      $(id).disabled = busy || !canSelect();
+    $("bulk").hidden = !canSelect();
+    ["select-all", "exclude-all", "select-page", "select-filtered", "exclude-filtered", "select-folder", "exclude-folder"].forEach((id) => {
+      $(id).disabled = busy || !canSelect() || !currentScope;
     });
-    $("select-page").disabled ||= !$("items").querySelector('input[data-eligible="true"]');
-    $("exclude-page").disabled ||= !$("items").querySelector('input[data-eligible="true"]:checked');
-    ["select-filtered", "exclude-filtered"].forEach((id) => { $(id).disabled ||= !current?.total; });
+    const pageChoices = [...$("items").querySelectorAll('input[data-eligible="true"]')];
+    const pageSelected = pageChoices.filter((input) => input.checked).length;
+    $("select-page").checked = pageChoices.length > 0 && pageSelected === pageChoices.length;
+    $("select-page").indeterminate = pageSelected > 0 && pageSelected < pageChoices.length;
+    $("select-page").disabled ||= !pageChoices.length;
+    const counts = currentScope ? current?.selection_counts : null;
+    $("select-filtered").textContent = counts ? `选择筛选结果（${counts.filtered} 件）` : "选择筛选结果";
+    $("select-all").textContent = counts ? `选择整份清单（${counts.all} 件）` : "选择整份清单";
+    $("select-filtered").disabled ||= !counts?.filtered;
+    $("select-all").disabled ||= !counts?.all;
+    $("exclude-filtered").disabled ||= !current?.total;
+    $("exclude-all").disabled ||= !selectedCount();
     ["select-folder", "exclude-folder"].forEach((id) => { $(id).hidden = !$("filter").value || !searchable; });
     $("previous").disabled = busy || !current || page <= 1;
     $("next").disabled = busy || !current?.has_more;
@@ -79,7 +93,7 @@
       : current?.confirmed ? "取消剩余任务" : canSelect() ? "取消本批" : "停止读取";
     $("delete-history").disabled = busy || !jobId;
     view.querySelectorAll("input[data-work]").forEach((input) => {
-      input.disabled = busy || !canSelect() || input.dataset.eligible !== "true";
+      input.disabled = busy || !canSelect() || !currentScope || input.dataset.eligible !== "true";
     });
     selectionStatus();
     syncRecordMode();
@@ -159,6 +173,8 @@
     if (pending.size) return flushSelections();
   }
   function clearFilters() {
+    loadedFilters = null;
+    $("selection-options").open = false;
     page = 1; $("query").value = ""; $("filter").value = "";
     $("only-new").checked = false; $("only-unimported").checked = true;
     $("partial").checked = false;
@@ -304,6 +320,7 @@
     return {query: $("query").value, folder_id: $("filter").value || null,
       only_new: $("only-new").checked, only_unimported: $("only-unimported").checked};
   }
+  function filtersAreCurrent() { return loadedFilters === JSON.stringify(filters()); }
   async function load() {
     if (!jobId) return;
     const token = generation, target = jobId;
@@ -312,15 +329,20 @@
     if (values.only_new) params.set("only_new", "true");
     if (values.only_unimported) params.set("only_unimported", "true");
     const data = await request(base + "/" + encodeURIComponent(target) + "?" + params);
-    if (token === generation && target === jobId && active()) render(data);
+    if (token === generation && target === jobId && active()) {
+      loadedFilters = JSON.stringify(values);
+      render(data);
+    }
   }
   async function confirmImport() {
     if (!canSelect()) throw new Error("本批已不能导入，请选择其他记录，需要新批次时请交给 Agent");
     const count = selectedCount(), preview = current.confirmation_preview || {};
     if (!count) throw new Error("请先选择尚未入库的作品");
     const mode = "外部 Agent，后续由外部 Agent 接续";
+    const outside = current.selection_counts?.outside_filter || 0;
     $("confirm-description").textContent = "将处理 " + count + " 件所选作品" +
       (preview.new_tasks != null ? "：新建 " + preview.new_tasks + " 个任务，复用 " + (preview.reused_tasks || 0) + " 个进行中任务" : "") +
+      (outside ? `。其中 ${outside} 件不在当前筛选结果中` : "") +
       "。清单中 " + (preview.already_imported ?? current.summary?.in_library ?? current.summary?.imported ?? 0) +
       " 件已在资料库，会跳过。后续会下载、识别并分析作品。分析方式：" + mode + "。预计下载量和总用时暂无法估算。";
     const dialog = $("confirm-dialog"), form = $("confirm-form"), input = $("confirm-count"), button = $("confirm-submit");
@@ -347,7 +369,7 @@
       const cancel = (event) => { event.preventDefault(); finish(false); };
       const close = () => finish(false);
       const enter = (event) => {
-        if (event.key !== "Enter" || event.isComposing) return;
+        if (event.key !== "Enter" || !D.canUsePageKeys(event) || event.repeat) return;
         event.preventDefault(); update();
         if (button.disabled) {
           input.setCustomValidity("请输入本次选择的 " + count + " 件。");
@@ -365,12 +387,14 @@
   }
   function search() { return run(async () => { page = 1; await load(); }); }
   function scheduleSearch() {
+    controls();
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { if (busy) scheduleSearch(); else search(); }, 300);
   }
   window.addEventListener("douku:route", async (event) => {
     const path = String(event.detail.path || "").split("?")[0];
     if (path !== "/imports/favorites") {
+      $("selection-options").open = false;
       stopPolling(); clearTimeout(elapsedTimer); clearTimeout(searchTimer); generation++; return;
     }
     D.hideAllViews(); D.setPage("imports-favorites"); D.setNav("imports-nav"); view.classList.remove("hidden");
@@ -398,12 +422,33 @@
   $("search").addEventListener("click", search);
   ["filter", "only-new", "only-unimported", "limit"].forEach((id) => $(id).addEventListener("change", search));
   $("query").addEventListener("input", scheduleSearch);
-  $("query").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); search(); } });
+  $("query").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || !D.canUsePageKeys(event) || event.repeat) return;
+    event.preventDefault(); search();
+  });
   $("previous").addEventListener("click", () => run(async () => { page--; await load(); }));
   $("next").addEventListener("click", () => run(async () => { page++; await load(); }));
+  $("select-page").addEventListener("change", (event) => queueChoices(
+    [...$("items").querySelectorAll('input[data-eligible="true"]')].map((box) => box.dataset.work), event.target.checked));
+  const selectionOptions = $("selection-options");
+  const closeSelectionOptions = () => {
+    selectionOptions.open = false;
+    selectionOptions.querySelector("summary").focus();
+  };
+  selectionOptions.addEventListener("click", (event) => {
+    if (event.target.closest("button")) closeSelectionOptions();
+  });
+  selectionOptions.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && selectionOptions.open && D.canUsePageKeys(event) && !event.repeat) {
+      event.preventDefault(); event.stopPropagation(); closeSelectionOptions();
+    }
+  });
+  const closeOutsideSelectionOptions = (event) => {
+    if (selectionOptions.open && !selectionOptions.contains(event.target)) selectionOptions.open = false;
+  };
+  document.addEventListener("pointerdown", closeOutsideSelectionOptions);
+  document.addEventListener("focusin", closeOutsideSelectionOptions);
   [true, false].forEach((selected) => {
-    $(selected ? "select-page" : "exclude-page").addEventListener("click", () => queueChoices(
-      [...$("items").querySelectorAll('input[data-eligible="true"]')].map((box) => box.dataset.work), selected));
     $(selected ? "select-filtered" : "exclude-filtered").addEventListener("click", () => run(async () => {
       await request(base + "/" + encodeURIComponent(jobId) + "/selection", {selected, filters: filters()}); await load();
     }));
@@ -414,7 +459,8 @@
     }));
   });
   [true, false].forEach((selected) => $(selected ? "select-all" : "exclude-all").addEventListener("click", () => run(async () => {
-    await request(base + "/" + encodeURIComponent(jobId) + "/selection", {selected}); await load();
+    const scope = selected ? {filters: {only_unimported: true}} : {};
+    await request(base + "/" + encodeURIComponent(jobId) + "/selection", {selected, ...scope}); await load();
   })));
   $("save-retry").addEventListener("click", () => run(async () => { await flushSelections(); }, {flush: false}));
   $("partial").addEventListener("change", controls);

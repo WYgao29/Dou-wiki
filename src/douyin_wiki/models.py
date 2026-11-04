@@ -732,6 +732,9 @@ class Evidence(TimestampQuality):
     confidence: float = Field(ge=0, le=1)
     score: float = 0
     title: str = ""
+    # The Web search route exposes reader anchors separately from the MCP payload.
+    match_kind: str | None = Field(default=None, exclude=True)
+    transcript_range_ms: tuple[int, int] | None = Field(default=None, exclude=True)
 
 
 class LibraryItem(BaseModel):

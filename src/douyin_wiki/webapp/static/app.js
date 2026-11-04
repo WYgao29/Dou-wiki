@@ -30,6 +30,7 @@ const state = {
   pendingArticleRequest: 0,
   readerObserver: null,
   readerTocTarget: "",
+  readerEvidence: null,
   readingBlocks: [],
   readingIndex: -1,
   readingProgressFrame: null,
@@ -728,6 +729,18 @@ function searchWindowLocation(evidence) {
   return `约 ${formattedStart}–${formattedEnd}（时间未经精确对齐）`;
 }
 
+function searchEvidenceLocation(evidence) {
+  if (evidence.timestamp_precision === "window") return searchWindowLocation(evidence);
+  if (evidence.image_index != null) return `第 ${evidence.image_index} 张图片`;
+  if (evidence.match_kind === "summary") return "摘要";
+  if (evidence.transcript_range_ms) {
+    const [start, end] = evidence.transcript_range_ms;
+    return `${formatLocation({timestamp_ms: start})}–${formatLocation({timestamp_ms: end})}`;
+  }
+  if (evidence.match_kind === "transcript") return "逐字稿片段";
+  return evidence.timestamp_ms != null ? formatLocation(evidence) : "相关证据";
+}
+
 function titleMatchIndex(item) {
   const match = item.search_match;
   return match?.field === "title" && !match.approximate && match.match
@@ -760,17 +773,38 @@ function makeKeywordMatch(item) {
   return row;
 }
 
+function searchEvidence(item) {
+  return item.search_evidence?.find((match) => match && (
+    match.timestamp_ms != null || match.image_index != null || match.timestamp_precision === "window"
+  )) || item.search_evidence?.find(Boolean);
+}
+
 function makeSearchEvidence(item) {
   const keyword = makeKeywordMatch(item);
   if (keyword) return keyword;
-  const evidence = item.search_evidence?.find((match) => match && (
-    match.timestamp_ms != null || match.image_index != null || match.timestamp_precision === "window"
-  )) || item.search_evidence?.[0];
+  const evidence = searchEvidence(item);
   if (!evidence) return null;
-  const location = evidence.timestamp_precision === "window" ? searchWindowLocation(evidence)
-    : evidence.image_index != null ? `第 ${evidence.image_index} 张图片`
-    : evidence.timestamp_ms != null ? formatLocation(evidence) : "相关证据";
-  return window.Douku.node("p", `${location} · ${evidence.snippet}`, "search-evidence");
+  const location = searchEvidenceLocation(evidence);
+  const prefix = `${location}\n`;
+  const snippet = evidence.snippet.startsWith(prefix) ? evidence.snippet.slice(prefix.length) : evidence.snippet;
+  return window.Douku.node("p", `${location} · ${snippet}`, "search-evidence");
+}
+
+function makeEvidenceButton(item) {
+  const evidence = searchEvidence(item);
+  if (!evidence || state.topicSelectionMode) return null;
+  const button = window.Douku.node("button", "查看证据", "text-button is-sm result-evidence-button");
+  button.type = "button";
+  button.setAttribute("aria-label", `查看证据：${item.title}`);
+  button.dataset.entryAction = "evidence";
+  button.tabIndex = state.focusedEntryId === item.entry_id ? 0 : -1;
+  button.addEventListener("focus", () => focusEntry(item.entry_id, {focus: false, scroll: false}));
+  button.addEventListener("click", () => {
+    focusEntry(item.entry_id, {focus: false, scroll: false});
+    state.lastOpenedEntryId = item.entry_id;
+    openArticle(item.entry_id, true, null, evidence);
+  });
+  return button;
 }
 
 function makeInspirationPreview(item) {
@@ -803,7 +837,10 @@ function makeListItem(item) {
   copy.append(makeMetadata(item, {tags: true}));
   link.append(makeCover(item, "item-thumbnail"), copy);
   const side = window.Douku.node("div", null, "item-side");
-  side.append(window.Douku.node("time", shortDate(state.sort === "captured_desc" ? item.captured_at : item.published_at), "item-date"));
+  const jump = makeEvidenceButton(item);
+  if (jump) side.append(jump);
+  const meta = window.Douku.node("div", null, "item-side-meta");
+  meta.append(window.Douku.node("time", shortDate(state.sort === "captured_desc" ? item.captured_at : item.published_at), "item-date"));
   const actions = window.Douku.node("div", null, "entry-actions");
   if (isDatabaseManaged(item)) {
     const favorite = makeFavoriteButton(item, "is-sm"); favorite.dataset.entryAction = "favorite"; actions.append(favorite);
@@ -814,7 +851,7 @@ function makeListItem(item) {
   more.addEventListener("click", () => openEntryMenu(item, more)); actions.append(more);
   actions.querySelectorAll("button").forEach((button) => { button.tabIndex = state.focusedEntryId === item.entry_id ? 0 : -1; });
   article.addEventListener("focusin", () => focusEntry(item.entry_id, {focus: false, scroll: false}));
-  side.append(actions); article.append(link, side);
+  meta.append(actions); side.append(meta); article.append(link, side);
   if (state.topicSelectionMode) article.append(makeSelectionIndicator(item.entry_id));
   return article;
 }
@@ -857,6 +894,8 @@ function makeGalleryCard(item) {
   }
   copy.append(makeMetadata(item));
   link.append(cover, copy); article.append(link);
+  const jump = makeEvidenceButton(item);
+  if (jump) article.append(jump);
   if (item.favorite) { const badge = window.Douku.node("span", null, "gallery-favorite"); badge.append(svgIcon("bookmark")); badge.setAttribute("aria-label", "库内收藏"); cover.append(badge); }
   if (state.topicSelectionMode) article.append(makeSelectionIndicator(item.entry_id));
   return article;
@@ -960,7 +999,7 @@ function openEntryMenu(item, trigger, {reader = false} = {}) {
   }
   if (reader) {
     const copy = window.Douku.node("button", "复制链接"); copy.type = "button";
-    copy.addEventListener("click", () => { closeEntryMenu(true); copyText(`${location.origin}/articles/${encodeURIComponent(item.entry_id)}`, "已复制文章链接"); });
+    copy.addEventListener("click", () => { closeEntryMenu(true); window.Douku.copyText(`${location.origin}/articles/${encodeURIComponent(item.entry_id)}`, "已复制文章链接"); });
     nodes.splice(isDatabaseManaged(item) ? 1 : 0, 0, copy);
   }
   if (!nodes.length) nodes.push(window.Douku.node("p", "只读 Markdown 资料"));
@@ -1329,7 +1368,7 @@ function renderTrash() {
     row.dataset.trashId = item.trash_id; row.tabIndex = item.trash_id === (state.trashFocusId || state.trashItems[0]?.trash_id) ? 0 : -1;
     row.addEventListener("focusin", () => { state.trashFocusId = item.trash_id; $$(".trash-item").forEach((node) => { node.tabIndex = node === row ? 0 : -1; }); });
     row.addEventListener("keydown", (event) => {
-      if (event.target.closest("button,a,input")) return;
+      if (!window.Douku.canUsePageKeys(event) || event.target.closest("button,a,input")) return;
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       const rows = $$(".trash-item"); const at = rows.indexOf(row);
       if (["j", "k", "ArrowDown", "ArrowUp"].includes(key)) {
@@ -1347,7 +1386,7 @@ function renderTrash() {
         }
         if (!event.shiftKey) state.trashSelectionAnchor = "";
         next.focus();
-      } else if (key === "x") { event.preventDefault(); check.click(); }
+      } else if (key === "x" && !event.shiftKey && !event.repeat) { event.preventDefault(); check.click(); }
     });
     const check = document.createElement("input");
     check.type = "checkbox";
@@ -1515,7 +1554,7 @@ function makeTopicGuide(value) {
   const actions = window.Douku.node("div", null, "topic-guide-actions");
   const copy = window.Douku.node("button", "复制研究指令", "primary-button");
   copy.type = "button"; copy.disabled = !activeCount;
-  copy.addEventListener("click", () => copyText(prompt.value, "研究指令已复制，请发到 Agent 对话中"));
+  copy.addEventListener("click", () => window.Douku.copyText(prompt.value, "研究指令已复制，请发到 Agent 对话中"));
   actions.append(copy);
   if (!value.artifacts.length) {
     const remove = window.Douku.node("button", null, "text-button topic-delete-button");
@@ -1714,6 +1753,7 @@ function makeArticleKeyframes(frames, videoUrl, {open = false, keep = false} = {
   frames.forEach((frame, index) => {
     if (!frame.url?.startsWith("/media/")) return;
     const figure = window.Douku.node("figure");
+    if (frame.timestamp_ms != null) figure.dataset.timestampMs = frame.timestamp_ms;
     const link = window.Douku.node("a");
     link.href = frame.url; link.target = "_blank"; link.rel = "noopener";
     const image = window.Douku.node("img");
@@ -1752,6 +1792,8 @@ function makeArticleTranscript(transcript, {open = false} = {}) {
     const list = window.Douku.node("ol", null, "transcript-segments");
     rows.forEach((row) => {
       const segment = window.Douku.node("li", null, "transcript-segment");
+      segment.dataset.startMs = row.start_ms;
+      segment.dataset.endMs = row.end_ms;
       const start = formatLocation({timestamp_ms: row.start_ms});
       const end = formatLocation({timestamp_ms: row.end_ms});
       segment.append(window.Douku.node("span", row.timestamp_precision === "window"
@@ -1834,6 +1876,7 @@ function openAdjacentArticle(delta) {
 
 function clearReader() {
   state.readerTocTarget = "";
+  state.readerEvidence = null;
   state.readerObserver?.disconnect(); state.readerObserver = null;
   state.readingBlocks = []; state.readingIndex = -1;
   if (state.readingProgressFrame !== null) cancelAnimationFrame(state.readingProgressFrame);
@@ -1882,6 +1925,7 @@ function decorateArticleSectionHeadings(body) {
   };
   $$(':scope > h2', body).forEach((heading) => {
     const original = heading.textContent.trim();
+    if (original === "一句话" || original === "Summary") heading.dataset.evidenceSection = "summary";
     const card = original.match(/^内容卡片\s*·\s*(.+)$/);
     const label = sections[original] || (card && types[card[1]] ? `Quick Reference · ${types[card[1]]}` : null);
     if (!label) return;
@@ -1904,11 +1948,13 @@ function decorateArticleImages(body, item) {
   }
   const figures = document.createDocumentFragment();
   images.forEach((image, index) => {
+    const imageIndex = image.alt.match(/\d+/)[0];
     const paragraph = image.parentElement;
     const figure = window.Douku.node("figure", null, "article-original-image");
+    figure.dataset.imageIndex = imageIndex;
     const link = window.Douku.node("a");
     link.href = image.src; link.target = "_blank"; link.rel = "noopener noreferrer";
-    link.setAttribute("aria-label", `打开第 ${index + 1} 张原图`);
+    link.setAttribute("aria-label", `打开第 ${imageIndex} 张原图`);
     image.loading = "lazy"; image.decoding = "async";
     link.append(image);
     figure.append(link, window.Douku.node("figcaption", `${index + 1} / ${images.length}`));
@@ -2096,7 +2142,7 @@ function renderArticleData(data, entryId, push) {
   return hero;
 }
 
-function focusCitation(citation) {
+function focusCitation(citation, {position = true} = {}) {
   const root = $("#article-content .article-body");
   if (!root) return;
   $$("mark.citation-highlight", root).forEach((mark) => mark.replaceWith(...mark.childNodes));
@@ -2121,15 +2167,67 @@ function focusCitation(citation) {
     range.setStart(textNode, start);
     range.setEnd(textNode, start + match.length);
     range.surroundContents(mark);
-    const folded = mark.closest("details");
-    if (folded) folded.open = true;
-    const block = state.readingBlocks.findIndex((node) => node.contains(mark));
-    focusReadingBlock(block, {scroll: false});
-    mark.scrollIntoView({behavior: window.Douku.motionAllowed() ? "smooth" : "instant", block: "center"});
-    window.setTimeout(() => mark.classList.add("settled"), 1800);
+    if (position) {
+      const folded = mark.closest("details");
+      if (folded) folded.open = true;
+      const block = state.readingBlocks.findIndex((node) => node.contains(mark));
+      focusReadingBlock(block, {scroll: false});
+      mark.scrollIntoView({behavior: window.Douku.motionAllowed() ? "smooth" : "instant", block: "center"});
+      window.setTimeout(() => mark.classList.add("settled"), 1800);
+    }
+    return mark;
+  }
+  if (position) $("#article-content").scrollIntoView({behavior: window.Douku.motionAllowed() ? "smooth" : "instant", block: "start"});
+}
+
+function focusSearchEvidence(citation, {restore = false, focus = true} = {}) {
+  const root = $("#article-content .article-body");
+  const {image_index: imageIndex, timestamp_ms: time, timestamp_precision: precision,
+    match_kind: kind, transcript_range_ms: transcriptRange} = citation;
+  const segments = $$(".transcript-segment", root);
+  let targets = [];
+  if (imageIndex != null) {
+    targets = $$(".article-original-image", root).filter((node) => Number(node.dataset.imageIndex) === imageIndex);
+  } else if (kind === "summary") {
+    const heading = $('[data-evidence-section="summary"]', root);
+    if (heading) targets = [heading.nextElementSibling?.matches("p") ? heading.nextElementSibling : heading];
+  } else if (precision === "window" || kind === "transcript" || transcriptRange) {
+    const [start, end] = (precision === "window"
+      ? [citation.timestamp_start_ms, citation.timestamp_end_ms]
+      : transcriptRange) || [];
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      targets = segments.filter((node) => Number(node.dataset.startMs) < end && Number(node.dataset.endMs) > start);
+    }
+  } else if (Number.isFinite(time)) {
+    const segment = segments.find((node) => Number(node.dataset.startMs) <= time && time < Number(node.dataset.endMs));
+    const frame = $$(".keyframe-grid [data-timestamp-ms]", root).find((node) => Number(node.dataset.timestampMs) === time);
+    const target = (kind === "ocr" || citation.relation_reason === "视频画面文字与问题匹配") ? frame : segment || frame;
+    if (target) targets = [target];
+  } else {
+    const mark = focusCitation({snippet: citation.snippet}, {position: false});
+    if (mark) targets = [mark];
+  }
+  if (!targets.length) {
+    if (!restore) toast("无法定位这条证据，可继续阅读文章或打开原作品核对。");
     return;
   }
-  $("#article-content").scrollIntoView({behavior: window.Douku.motionAllowed() ? "smooth" : "instant", block: "start"});
+  const target = targets[0];
+  state.readerEvidence = {citation, target};
+  targets.forEach((node) => node.classList.add("is-search-evidence"));
+  if (precision === "window") {
+    target.prepend(window.Douku.node("p", `命中范围 ${searchWindowLocation(citation)}`, "evidence-range-note"));
+  }
+  if (!focus) return;
+  const disclosure = target.closest("details");
+  if (disclosure) disclosure.open = true;
+  const summary = disclosure?.querySelector("summary");
+  const block = state.readingBlocks.findIndex((node) => node === summary || node.contains(target));
+  focusReadingBlock(block, {scroll: false});
+  state.readerTocTarget = summary?.id || "";
+  target.tabIndex = -1;
+  target.scrollIntoView({block: restore ? "nearest" : "center", behavior: "instant"});
+  target.focus({preventScroll: true});
+  updateReadingMetrics();
 }
 
 function renderArticleError(error) {
@@ -2176,11 +2274,6 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
   const root = $("#article-content");
   if (state.panelPage === "library") state.libraryScrollTop = $("#main-content").scrollTop;
   const preserveReading = !push && state.panelPage === "article" && state.currentEntry === entryId && state.currentArticleItem;
-  const readingTop = preserveReading ? $("#main-content").scrollTop : 0;
-  const readingIndex = preserveReading ? state.readingIndex : -1;
-  const readingBlock = state.readingBlocks[readingIndex];
-  const readingBookmark = readingBlock ? {text: readingBlock.textContent, tag: readingBlock.tagName} : null;
-  const readingHadFocus = readingBlock === document.activeElement;
   const requestId = ++state.readerRequestId;
   state.pendingArticleRequest = requestId;
   closeEntryMenu();
@@ -2200,6 +2293,13 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
   try {
     const data = await api(`/api/articles/${encodeURIComponent(entryId)}`);
     if (requestId !== state.readerRequestId) return;
+    const readingTop = preserveReading ? $("#main-content").scrollTop : 0;
+    const readingIndex = preserveReading ? state.readingIndex : -1;
+    const readingBlock = state.readingBlocks[readingIndex];
+    const readingBookmark = readingBlock ? {text: readingBlock.textContent, tag: readingBlock.tagName} : null;
+    const readingHadFocus = readingBlock === document.activeElement;
+    const previousEvidence = preserveReading ? state.readerEvidence : null;
+    const evidenceHadFocus = previousEvidence?.target === document.activeElement;
     const canTransition = animateNavigation && window.Douku.motionAllowed() && sourceIsUsable
       && typeof document.startViewTransition === "function";
     if (canTransition) {
@@ -2234,7 +2334,12 @@ async function openArticle(entryId, push = true, transitionSource = null, citati
       const index = readingBookmark ? state.readingBlocks.findIndex((block) => block.tagName === readingBookmark.tag && block.textContent === readingBookmark.text) : -1;
       focusReadingBlock(index >= 0 ? index : Math.min(readingIndex, state.readingBlocks.length - 1), {scroll: false, focus: readingHadFocus}); updateReadingMetrics();
     }
-    if (citation) window.setTimeout(() => { if (state.currentEntry === entryId) focusCitation(citation); }, 50);
+    if (requestId === state.readerRequestId) {
+      if (citation) focusSearchEvidence(citation);
+      else if (previousEvidence) {
+        focusSearchEvidence(previousEvidence.citation, {restore: true, focus: evidenceHadFocus});
+      }
+    }
   } catch (error) {
     if (requestId === state.readerRequestId) {
       if (error.status === 404) window.Douku.showMissing();
@@ -2329,7 +2434,8 @@ function renderPanelTabs(page) {
     button.setAttribute("aria-controls", PANEL_PANES[tab]);
     button.addEventListener("click", () => selectPanelTab(tab));
     button.addEventListener("keydown", (event) => {
-      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      if (!window.Douku.canUsePageKeys(event) || event.shiftKey
+          || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
       const index = tabs.indexOf(tab);
       const next = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs.at(-1)
@@ -2425,7 +2531,7 @@ function renderInfoPanel(item, {context = "library"} = {}) {
     const file = window.Douku.node("button", item.source_path?.split("/").at(-1) || "—", "info-filter-link source-file");
     file.type = "button"; file.title = item.source_path || ""; file.disabled = !item.source_path;
     file.setAttribute("aria-label", "复制来源文件路径");
-    file.addEventListener("click", () => copyText(item.source_path, "已复制来源文件路径"));
+    file.addEventListener("click", () => window.Douku.copyText(item.source_path, "已复制来源文件路径"));
     const value = window.Douku.node("dd"); value.append(file); addDetail("来源文件", value);
     info.replaceChildren(window.Douku.node("h2", "文章信息"), summary, details);
     if (isDatabaseManaged(item)) {
@@ -2434,13 +2540,24 @@ function renderInfoPanel(item, {context = "library"} = {}) {
       const remove = window.Douku.node("button", "删除文章", "danger-text-button"); remove.type = "button";
       remove.addEventListener("click", () => deleteLibraryItem(item)); actions.append(analyze, remove);
     }
-  } else info.replaceChildren(makeCover(item, "info-cover"), title, summary, details);
+  } else {
+    const copy = window.Douku.node("div", null, "info-preview-copy");
+    copy.append(title, summary);
+    const preview = window.Douku.node("div", null, "info-preview");
+    preview.append(copy);
+    if (item.cover_url) {
+      const cover = makeCover(item, "info-cover");
+      cover.querySelector("img").addEventListener("error", () => cover.remove());
+      preview.append(cover);
+    }
+    info.replaceChildren(preview, actions, details);
+  }
   if (context === "library" && item.inspirations?.length) {
     const inspirations = window.Douku.node("section", null, "info-inspirations");
     inspirations.append(window.Douku.node("h3", `灵感 ${item.inspirations.length}`));
     item.inspirations.forEach((value) => inspirations.append(window.Douku.node("p", value.text))); info.append(inspirations);
   }
-  info.append(actions);
+  if (context === "article") info.append(actions);
 }
 
 function formatLocation(location) {
@@ -2493,21 +2610,6 @@ function renderPanelSummary() {
   } else renderInfoPanel(item, {context: state.panelPage});
   if (state.panelPage === "article" && item) renderInspirationsPanel(item);
   if (state.panelPage !== "topic") $("#topic-sources-pane").replaceChildren();
-}
-
-async function copyText(value, successMessage) {
-  const focused = document.activeElement;
-  try {
-    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
-    else {
-      const field = document.createElement("textarea");
-      field.value = value; field.style.position = "fixed"; field.style.opacity = "0";
-      document.body.append(field); field.select();
-      try { if (!document.execCommand("copy")) throw new Error("复制失败"); }
-      finally { field.remove(); focused?.focus({preventScroll: true}); }
-    }
-    toast(successMessage);
-  } catch (_error) { toast("复制失败，请重试"); }
 }
 
 function renderPanelState() {
@@ -2576,7 +2678,7 @@ function commandCatalog() {
     ["trash", "打开废纸篓", "trash-2", "g x", () => window.Douku.navigate("/trash")],
     ["settings", "打开设置", "settings", "g s", () => window.Douku.navigate("/settings")],
     ["theme", "切换主题", "sun", "", () => window.DoukuTheme.set(document.documentElement.dataset.theme === "dark" ? "light" : "dark")],
-    ["shortcuts", "显示快捷键", "keyboard", "?", () => $("#shortcuts-dialog").showModal()],
+    ["shortcuts", "显示快捷键", "keyboard", "?", openShortcuts],
   ].map(([commandId, title, icon, shortcut, run]) => ({commandId, title, icon, shortcut, run}));
 }
 
@@ -2796,82 +2898,110 @@ function resetNavigationPrefix() {
   window.clearTimeout(state.navigationPrefixTimer);
   state.navigationPrefixTimer = 0;
   state.navigationPrefixAt = 0;
-  window.Douku.chordPending = false;
+}
+
+function shortcutPopoverOpen() {
+  return $("#entry-menu:not(.hidden), #filter-popover:not(.hidden), #select-menu:not([hidden]), #imports-favorites-view:not(.hidden) #favorites-selection-options[open]");
+}
+
+function handleNavigationKeydown(event) {
+  const D = window.Douku;
+  if (!D.canUsePageKeys(event) || event.shiftKey || D.isEditingTarget(event.target)
+      || $("dialog[open]") || shortcutPopoverOpen()) {
+    resetNavigationPrefix();
+    return;
+  }
+  const key = event.key.toLowerCase();
+  if (state.navigationPrefixAt && Date.now() - state.navigationPrefixAt < 1000) {
+    if (event.repeat && key.length === 1) {
+      event.preventDefault();
+      return;
+    }
+    resetNavigationPrefix();
+    const section = {l: "all", r: "recent", f: "favorite", i: "inspiration"}[key];
+    const path = {t: "/topics", j: "/jobs", x: "/trash", s: "/settings", g: "/tags"}[key];
+    if (section || path) {
+      event.preventDefault();
+      if (section) $(`.nav-item[data-section='${section}']`).click();
+      else D.navigate(path);
+      return;
+    }
+  }
+  if (key === "g" && !event.repeat) {
+    state.navigationPrefixAt = Date.now();
+    window.clearTimeout(state.navigationPrefixTimer);
+    state.navigationPrefixTimer = window.setTimeout(resetNavigationPrefix, 1000);
+  }
+}
+
+function openShortcuts() {
+  resetNavigationPrefix();
+  const dialog = $("#shortcuts-dialog");
+  dialog.showModal();
+  dialog.scrollTop = 0;
 }
 
 function handleGlobalKeydown(event) {
-  if (event.defaultPrevented || event.isComposing) return;
+  const D = window.Douku;
+  if (event.defaultPrevented || D.isComposingKey(event) || $("dialog[open]")) return;
   const key = event.key.toLowerCase();
-  const editing = Boolean(event.target.closest("input, textarea, select, [role='combobox'], [contenteditable]:not([contenteditable='false'])"));
-  const modal = $("dialog[open]");
-  if (modal) { resetNavigationPrefix(); return; }
-  if ((event.metaKey || event.ctrlKey) && key === "k") {
+  const editing = D.isEditingTarget(event.target);
+  if (key === "k" && !event.shiftKey && !event.altKey && !event.repeat
+      && (event.metaKey !== event.ctrlKey) && (event.metaKey || !editing)) {
     event.preventDefault(); openCommandMenu(); return;
   }
-  if (event.key === "Escape") {
-    resetNavigationPrefix();
+  if (!D.canUsePageKeys(event)) return;
+  if (event.key === "Escape" && !event.shiftKey && !event.repeat) {
     if (!$("#entry-menu").classList.contains("hidden")) { closeEntryMenu(true); }
     else if (!$("#filter-popover").classList.contains("hidden")) { closeFilterPopover(); $("#filter-toggle").focus(); }
     else if (panelBreakpoint() === "overlay" && isPanelOpen()) setChatPanelOpen(false);
+    else if (editing) return;
     else if (state.pendingArticleRequest) showLibrary(false);
     else if (state.panelPage === "article") showLibrary();
     else if (state.panelPage === "library" && event.target.closest(".nav-item[data-section]")) {
       $("#main-content").focus({preventScroll: true});
+    } else return;
+    event.preventDefault();
+    return;
+  }
+  if (editing || shortcutPopoverOpen()) return;
+  if (state.panelPage === "article") {
+    const interactive = Boolean(event.target.closest("button,a,[role='tab'],#library-sidebar,#side-panel"));
+    if (!event.shiftKey && !event.repeat && key === "u" && !interactive) {
+      event.preventDefault(); showLibrary(); return;
     }
-    return;
-  }
-  if (editing || event.metaKey || event.ctrlKey || event.altKey) {
-    resetNavigationPrefix();
-    return;
-  }
-  if (key === "g" && event.repeat) return;
-  if (state.navigationPrefixAt && Date.now() - state.navigationPrefixAt < 1000) {
-    resetNavigationPrefix();
-    const section = {l: "all", r: "recent", f: "favorite", i: "inspiration"}[key];
-    const path = {t: "/topics", j: "/jobs", x: "/trash", s: "/settings", g: "/tags"}[key];
-    if (section) { event.preventDefault(); $(`.nav-item[data-section='${section}']`).click(); return; }
-    if (path) { event.preventDefault(); window.Douku.navigate(path); return; }
-  }
-  if (key === "g") {
-    resetNavigationPrefix();
-    state.navigationPrefixAt = Date.now();
-    state.navigationPrefixTimer = window.setTimeout(resetNavigationPrefix, 1000);
-    window.Douku.chordPending = true;
-    return;
-  }
-  resetNavigationPrefix();
-  if (state.panelPage === "article" && !event.target.closest("#entry-menu,#filter-popover")) {
-    const interactive = Boolean(event.target.closest("button,a,[role='tab'],#library-sidebar"));
-    if (key === "u" && !interactive) { event.preventDefault(); showLibrary(); return; }
     if (state.currentArticleItem) {
-      if (event.shiftKey && ["i", "n"].includes(key)) {
+      if (event.shiftKey && !event.repeat && ["i", "n", "o"].includes(key)) {
         event.preventDefault();
-        const tab = {i: "info", n: "inspiration"}[key];
+        if (key === "o") { $("#reader-actions .reader-original")?.click(); return; }
+        const tab = key === "i" ? "info" : "inspiration";
         selectPanelTab(tab); setChatPanelOpen(true);
         if (key === "n") openInspiration("", $("#inspiration-pane .add-inspiration") || document.activeElement);
         else $("#panel-tab-info").focus();
         return;
       }
-      if (!interactive && !event.target.closest("#side-panel")) {
+      if (!event.shiftKey && !interactive) {
         if (key === "j" || event.key === "ArrowDown") { event.preventDefault(); moveReadingFocus(1); return; }
         if (key === "k" || event.key === "ArrowUp") { event.preventDefault(); moveReadingFocus(-1); return; }
-        if (!event.shiftKey && ["n", "p"].includes(key)) { event.preventDefault(); openAdjacentArticle(key === "n" ? 1 : -1); return; }
-        if (key === "f" && !event.shiftKey) {
+        if (!event.repeat && ["n", "p"].includes(key)) { event.preventDefault(); openAdjacentArticle(key === "n" ? 1 : -1); return; }
+        if (key === "f" && !event.repeat) {
           event.preventDefault();
           const favorite = $("#reader-actions .article-favorite-button");
           if (favorite && !favorite.disabled) favorite.click();
           else if (!favorite) toast("只读 Markdown 文章不能标为库内收藏");
           return;
         }
-        if (key === "o" && event.shiftKey) { event.preventDefault(); $("#reader-actions .reader-original")?.click(); return; }
       }
     }
   }
-  if (state.panelPage === "library"
-      && !event.target.closest("#side-panel, #library-sidebar, #filter-popover, #entry-menu")) {
-    const items = $("#library-results").classList.contains("hidden") ? [] : filteredItems();
-    if (key === "v") { event.preventDefault(); $(state.libraryView === "list" ? "#view-gallery" : "#view-list").click(); return; }
-    if (key === "f" && event.shiftKey) { event.preventDefault(); openFilterPopover(); return; }
+  if (state.panelPage === "library" && !event.target.closest("#side-panel, #library-sidebar")) {
+    if (!event.repeat && !event.shiftKey && key === "v") {
+      event.preventDefault(); $(state.libraryView === "list" ? "#view-gallery" : "#view-list").click(); return;
+    }
+    if (!event.repeat && event.shiftKey && key === "f") { event.preventDefault(); openFilterPopover(); return; }
+    const results = $("#library-results");
+    const inResults = results.contains(event.target) || event.target.matches("#main-content, body");
+    const items = !event.shiftKey && inResults && !results.classList.contains("hidden") ? filteredItems() : [];
     if (items.length) {
       let delta = null;
       if (key === "j" || event.key === "ArrowDown") delta = 1;
@@ -2884,6 +3014,7 @@ function handleGlobalKeydown(event) {
       }
       if (delta !== null && delta !== undefined) { event.preventDefault(); moveFocus(delta); return; }
       if (["Home", "End"].includes(event.key)) { event.preventDefault(); focusEntry((event.key === "Home" ? items[0] : items.at(-1)).entry_id); return; }
+      if (event.repeat) return;
       if (key === "o" || (event.key === "Enter" && event.target.matches("[data-entry-action='open'], #main-content, body"))) { event.preventDefault(); openFocused(); return; }
       if (key === "f") {
         event.preventDefault();
@@ -2901,6 +3032,7 @@ function handleGlobalKeydown(event) {
       }
     }
   }
+  if (event.repeat) return;
   if (event.key === "/") {
     event.preventDefault();
     if (state.panelPage === "library") $("#search-input").focus();
@@ -2908,7 +3040,7 @@ function handleGlobalKeydown(event) {
     else openCommandMenu();
   } else if (event.key === "[") { event.preventDefault(); setSidebarOpen(state.sidebarCollapsed); }
   else if (event.key === "]") { event.preventDefault(); setChatPanelOpen(!isPanelOpen()); }
-  else if (event.key === "?") { event.preventDefault(); $("#shortcuts-dialog").showModal(); }
+  else if (event.key === "?") { event.preventDefault(); openShortcuts(); }
 }
 
 function authSummaryLabel(value) {
@@ -2991,6 +3123,7 @@ function bindEvents() {
     writeStateToURL("push");
   }));
   $("#sidebar-search").addEventListener("click", openCommandMenu);
+  $("#shortcuts-nav").addEventListener("click", openShortcuts);
   $("#library-selection-cancel").addEventListener("click", () => {
     state.topicSelectionMode = false; state.selectedEntryIds.clear(); renderLibrary();
   });
@@ -3096,6 +3229,7 @@ function bindEvents() {
     renderFilters(); renderLibrary(); writeStateToURL("push");
   }));
   $("#entry-menu").addEventListener("keydown", (event) => {
+    if (!window.Douku.canUsePageKeys(event)) return;
     if (event.key === "Tab") { closeEntryMenu(true); return; }
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     const choices = focusableElements($("#entry-menu")); if (!choices.length) return;
@@ -3154,11 +3288,12 @@ function bindEvents() {
     syncCommandActiveState($("#command-results"));
   });
   $("#command-input").addEventListener("keydown", (event) => {
+    if (!window.Douku.canUsePageKeys(event) || event.shiftKey) return;
     if (event.key === "Escape") { event.preventDefault(); $("#command-dialog").close(); return; }
     const length = commandMatches().length;
     if (event.key === "ArrowDown" && length) { event.preventDefault(); state.commandIndex = (state.commandIndex + 1) % length; renderCommandResults(); }
     if (event.key === "ArrowUp" && length) { event.preventDefault(); state.commandIndex = (state.commandIndex - 1 + length) % length; renderCommandResults(); }
-    if (event.key === "Enter") { event.preventDefault(); if (length) $("#command-results .command-result.active")?.click(); }
+    if (event.key === "Enter") { event.preventDefault(); if (length && !event.repeat) $("#command-results .command-result.active")?.click(); }
   });
   window.addEventListener("douku:route", (event) => {
     beginNavigation();
@@ -3204,7 +3339,12 @@ function bindEvents() {
     }
   });
   $$('[data-theme-select]').forEach((select) => select.addEventListener("change", (event) => window.DoukuTheme?.set(event.target.value)));
+  // Resolve navigation sequences before a focused row handles the second key.
+  document.addEventListener("keydown", handleNavigationKeydown, {capture: true});
   document.addEventListener("keydown", handleGlobalKeydown);
+  document.addEventListener("pointerdown", resetNavigationPrefix, {capture: true});
+  document.addEventListener("focusin", resetNavigationPrefix);
+  window.addEventListener("blur", resetNavigationPrefix);
   document.addEventListener("douku:select-open", () => {
     resetNavigationPrefix(); closeEntryMenu(); closeFilterPopover();
   });
@@ -3285,7 +3425,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadTopics();
     if (!$("#trash-view").classList.contains("hidden")) await loadTrash();
     if (state.panelPage === "tags") await window.Douku.tags.load();
-    if (state.panelPage === "article" && state.currentEntry) await openArticle(state.currentEntry, false);
+    if (state.panelPage === "article" && state.currentArticleItem && !state.pendingArticleRequest) {
+      await openArticle(state.currentEntry, false);
+    }
     if (state.panelPage === "topic" && state.currentTopic) await openTopic(state.currentTopic, false);
     if (origins.some(origin => origin !== window.Douku.clientId)) toast("资料库已更新");
   });

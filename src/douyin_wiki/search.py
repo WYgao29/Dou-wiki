@@ -4,7 +4,7 @@ import json
 import re
 import uuid
 from collections import defaultdict
-from collections.abc import Collection
+from collections.abc import Collection, Iterable, Iterator
 from typing import Any
 
 from .adapters.embeddings import EmbeddingService, cosine_similarity
@@ -12,6 +12,24 @@ from .database import Database, lexical_tokens
 from .errors import EntryNotFoundError
 from .models import AnalysisResult, EntryRecord, Evidence, OCRObservation, TranscriptSegment
 from .timing import audio_timing, coarse_label
+
+
+def _transcript_chunks(
+    segments: Iterable[tuple[int, int, str]],
+) -> Iterator[tuple[int, int, str]]:
+    parts: list[str] = []
+    start = end = size = 0
+    for segment_start, segment_end, text in segments:
+        if parts and size + len(text) > 800:
+            yield start, end, "".join(parts)
+            parts, size = [], 0
+        if not parts:
+            start, end = segment_start, segment_end
+        end = max(end, segment_end)
+        parts.append(text)
+        size += len(text)
+    if parts:
+        yield start, end, "".join(parts)
 
 
 class KnowledgeIndexer:
@@ -119,17 +137,10 @@ class KnowledgeIndexer:
         transcript = [
             TranscriptSegment.model_validate(item) for item in data.get("transcript_corrected", [])
         ]
-        current: list[TranscriptSegment] = []
-        size = 0
-        for segment in transcript:
-            if current and size + len(segment.text) > 800:
-                add("transcript", "".join(item.text for item in current), current[0].start_ms)
-                current = []
-                size = 0
-            current.append(segment)
-            size += len(segment.text)
-        if current:
-            add("transcript", "".join(item.text for item in current), current[0].start_ms)
+        for start, _, text in _transcript_chunks(
+            (row.start_ms, row.end_ms, row.text) for row in transcript
+        ):
+            add("transcript", text, start)
 
         post_text = str(data.get("metadata", {}).get("post_text") or "").strip()
         if post_text:
@@ -370,8 +381,22 @@ class KnowledgeSearch:
             saved = self.database.get_entry_data(entry.id)
             transcript = saved.get("transcript_corrected") or saved.get("transcript_raw", [])
             source, quote = "", row["text"]
+            transcript_range = None
             if row["kind"] == "transcript":
                 source = "audio"
+                # Match the stored chunk against the current corrected transcript.
+                # This also recovers ranges for indexes created before the Web jump.
+                transcript_range = next(
+                    (
+                        (start, end)
+                        for start, end, text in _transcript_chunks(
+                            (segment["start_ms"], segment["end_ms"], segment["text"])
+                            for segment in saved.get("transcript_corrected", [])
+                        )
+                        if start == row["timestamp_ms"] and text.strip() == row["text"]
+                    ),
+                    None,
+                )
             elif row["kind"] == "knowledge_atom":
                 atom = next(
                     (
@@ -394,6 +419,8 @@ class KnowledgeSearch:
                     **timing,
                     timestamp_ms=row["timestamp_ms"],
                     image_index=row.get("image_index"),
+                    match_kind=row["kind"],
+                    transcript_range_ms=transcript_range,
                     original_url=entry.original_url,
                     inspirations=entry.inspirations,
                     relation_reason=relation_reason,

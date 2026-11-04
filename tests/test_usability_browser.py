@@ -153,6 +153,108 @@ async def test_navigation_shortcuts_run_as_key_sequences(ui, second_key, destina
     await expect(page).to_have_url(f"http://testserver{destination}")
 
 
+async def test_navigation_sequences_take_priority_over_focused_rows(ui):
+    page, service, _client, calls = ui
+    service.trash_entry("dy-123", confirmed=True)
+    failed = service.database.create_job(
+        CaptureRequest(share_text="https://www.douyin.com/video/7000000000000000200"),
+        status=JobStatus.FAILED,
+    )
+    await page.goto("http://testserver/trash")
+    row = page.locator(".trash-item").first
+    await row.focus()
+    await page.keyboard.press("g")
+    await page.keyboard.press("j")
+    await expect(page).to_have_url("http://testserver/jobs")
+    task = page.locator(f'.job-row[data-job-id="{failed.id}"]')
+    await expect(task.locator("[data-action=retry]")).to_be_visible()
+    await task.focus()
+    await page.keyboard.press("g")
+    await page.keyboard.press("r")
+    await expect(page).to_have_url("http://testserver/?section=recent")
+    assert ("POST", f"/api/jobs/{failed.id}/retry") not in calls
+
+
+async def test_shortcuts_respect_editor_and_toolbar_focus(ui):
+    page, _service, _client, _calls = ui
+    search = page.get_by_role("searchbox", name="筛选当前资料")
+    palette = page.get_by_role("dialog", name="全局搜索")
+    await page.keyboard.press("/")
+    await expect(search).to_be_focused()
+    await page.keyboard.press("Control+k")
+    await expect(search).to_be_focused()
+    await expect(palette).not_to_be_visible()
+    await page.keyboard.press("Meta+k")
+    await expect(palette).to_be_visible()
+    await page.keyboard.press("Escape")
+
+    toolbar = page.locator("#filter-toggle")
+    await toolbar.focus()
+    await page.keyboard.press("ArrowDown")
+    await expect(toolbar).to_be_focused()
+    await page.keyboard.press("Meta+Shift+k")
+    await expect(palette).not_to_be_visible()
+    await page.keyboard.press("g")
+    await page.locator("#main-content").focus()
+    await page.keyboard.press("j")
+    await expect(page).to_have_url("http://testserver/")
+    await expect(page.locator("#library-results [data-entry-action=open]:focus")).to_have_count(1)
+
+
+async def test_command_enter_during_composition_keeps_the_palette_open(ui):
+    page, _service, _client, _calls = ui
+    await page.keyboard.press("Meta+k")
+    command = page.locator("#command-input")
+    await expect(command).to_be_focused()
+    await expect(page.locator('[data-command-id="imports"]')).to_be_visible()
+    for composition in [{"isComposing": True}, {"keyCode": 229}]:
+        await command.dispatch_event("keydown", {"key": "Enter", **composition})
+        await expect(command).to_be_focused()
+        await expect(page).to_have_url("http://testserver/")
+    await page.keyboard.press("Enter")
+    await expect(page).to_have_url("http://testserver/imports")
+
+
+async def test_shortcuts_guide_opens_from_sidebar_and_restores_focus(ui):
+    page, _service, _client, _calls = ui
+    button = page.get_by_role("button", name="键盘快捷键")
+    await button.press("Enter")
+    guide = page.get_by_role("dialog", name="键盘快捷键")
+    await expect(guide.get_by_role("heading", name="页面跳转")).to_be_attached()
+    await page.keyboard.press("Escape")
+    await expect(guide).not_to_be_visible()
+    await expect(button).to_be_focused()
+
+
+async def test_favorites_selection_menu_owns_shortcuts_until_focus_leaves(ui):
+    page, service, _client, _calls = ui
+    batch = await scan(service)
+    url = f"http://testserver/imports/favorites?job={batch.id}"
+    await page.goto(url)
+    menu = page.locator("#favorites-selection-options")
+    summary = menu.locator("summary")
+    await expect(summary).to_be_visible()
+    await summary.press("Enter")
+    await page.keyboard.press("g")
+    await page.keyboard.press("j")
+    await expect(page).to_have_url(url)
+    await expect(menu).to_have_js_property("open", True)
+    await page.keyboard.press("Tab")
+    await page.keyboard.press("Escape")
+    await expect(menu).to_have_js_property("open", False)
+    await expect(summary).to_be_focused()
+
+    await summary.press("Enter")
+    for _ in range(3):
+        await page.keyboard.press("Tab")
+    choice = page.locator('#favorites-items input[data-eligible="true"]').first
+    await expect(choice).to_be_focused()
+    await expect(menu).to_have_js_property("open", False)
+    await page.keyboard.press("g")
+    await page.keyboard.press("j")
+    await expect(page).to_have_url("http://testserver/jobs")
+
+
 async def test_holding_g_does_not_trigger_the_tags_shortcut(ui):
     page, _service, _client, _calls = ui
     await page.locator("#main-content").focus()

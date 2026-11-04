@@ -412,7 +412,8 @@
     const tabs = [...document.querySelectorAll("[data-tags-view]")];
     tabs.forEach(tab => tab.addEventListener("click", () => selectView(tab.dataset.tagsView)));
     $("tags-view").querySelector(".tags-tabs").addEventListener("keydown", (event) => {
-      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      if (!D.canUsePageKeys(event) || event.shiftKey
+          || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       const index = tabs.indexOf(event.target);
       if (index < 0) return;
       event.preventDefault();
@@ -465,10 +466,10 @@
       }
     });
     document.addEventListener("keydown", (event) => {
-      if (!active() || state.view !== "all" || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) return;
-      if (D.chordPending || event.key === "g") return;
+      if (!active() || state.view !== "all" || !D.canUsePageKeys(event) || event.shiftKey) return;
       if (document.querySelector("dialog[open]")) return;
-      if (event.target.closest("input, textarea, select, [role='combobox'], [contenteditable='true']")) return;
+      if (D.isEditingTarget(event.target) || event.target.closest("input")) return;
+      if (!event.target.matches("#main-content, body") && !$("tags-rows").contains(event.target)) return;
       if (event.key !== "j" && event.key !== "k") return;
       const rows = [...$("tags-rows").querySelectorAll("[data-tag-name]")];
       if (!rows.length) return;

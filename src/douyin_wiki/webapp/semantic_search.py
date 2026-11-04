@@ -75,7 +75,12 @@ def register_semantic_search(app, core, catalog, item_payload, facets, read_tags
                             if match.entry_id not in evidence:
                                 evidence[match.entry_id] = []
                                 ordered.append(by_id[match.entry_id])
-                            evidence[match.entry_id].append(match.model_dump(mode="json"))
+                            payload = match.model_dump(mode="json")
+                            if match.match_kind is not None:
+                                payload["match_kind"] = match.match_kind
+                            if match.transcript_range_ms is not None:
+                                payload["transcript_range_ms"] = list(match.transcript_range_ms)
+                            evidence[match.entry_id].append(payload)
                         return (
                             ordered[:limit],
                             "semantic",
